@@ -76,34 +76,47 @@ python manage.py user add ivanov --name "Иванов И." --role admin
 
 ### Выкат на сервер (Docker)
 
-1. **На машине с интернетом** — собрать образ и сохранить его в архив:
+Образ — один контейнер около 550 МБ (в архиве 137 МБ): Python, Tesseract с венгерским, сервис. Собирается там, где
+есть интернет. На сервер переносится архивом.
+
+1. **На машине с интернетом**, из корня репозитория:
 
    ```bash
-   docker compose -f docker/docker-compose.yml build
+   bash docker/build_release.sh
    ```
+
+   Результат — `dist/hut_<дата>_<коммит>.tar.gz` и рядом его `sha256`.
+2. **На сервер скопировать:**
+   - архив образа;
+   - репозиторий без `data/`;
+   - глоссарии проектов в `projects/<имя>/data/`. Они не в git, переносятся отдельно.
+3. **На сервере.** Загрузить образ:
 
    ```bash
-   docker save hut:latest | gzip > hut.tar.gz
+   docker load < hut_<дата>_<коммит>.tar.gz
    ```
 
-2. **На сервере:**
-   - скопировать архив и загрузить образ: `docker load < hut.tar.gz`;
-   - разложить репозиторий без `data/`;
-   - положить глоссарии проекта в `projects/<имя>/data/`;
-   - `cp docker/.env.template docker/.env` и вписать `HUT_SECRET_KEY`.
-3. **Запуск** — из `docker/`:
+   Затем `cp docker/.env.template docker/.env` и вписать новый `HUT_SECRET_KEY` (команда генерации — в шаблоне).
+4. **Запуск** — из `docker/`:
 
    ```bash
    docker compose up -d
    ```
 
-   Первого пользователя завести так:
+   Первого админа завести так:
 
    ```bash
-   docker compose exec hut python manage.py user add ivanov --role admin
+   docker compose exec hut python manage.py user add <логин> --role admin
    ```
 
-4. **Проверка:** `curl http://<сервер>:8010/health`, затем вход в браузере и пробный документ.
+5. **Приёмка** — из `docker/`, скрипт только проверяет и ничего не меняет:
+
+   ```bash
+   bash deploy_check.sh
+   ```
+
+   10 проверок: контейнер, `/health`, вход, ключ, Tesseract hun, доступ к порталу из контейнера, проекты, админ,
+   свободный диск, ротация логов. Репетиция на машине разработки 06.10: 10 из 10.
 
 Внутри сети сервис стоит закрыть HTTPS (обратный прокси) и выставить `HUT_COOKIE_SECURE=1`: через него проходят пароли и токены.
 
