@@ -6,12 +6,12 @@
   Если метки сломаны — весь перевод в первую группу (начертание первой группы).
 - PDF: исходный текст переведённых абзацев убирается (текстовый слой — redaction текста;
   OCR-страница — белая заливка + удаление нарисованных букв), перевод вписывается в рамку
-  абзаца, расширенную до соседей (insert_htmlbox ужимает кегль, если не влезает)."""
-import re, json, html, zipfile
+  абзаца, расширенную до соседей (insert_htmlbox ужимает кегль, если не влезает).
+  DOCX для PDF-исходника — из переведённого PDF конвертером pdf2docx (docx_from_pdf)."""
+import re, html, zipfile
 from pathlib import Path
 
 from segments import W, _own_runs
-from layout import rules
 
 TAG = re.compile(r"</?f\d+>")
 
@@ -98,7 +98,9 @@ def build_pdf(src, out, segs, res):
             else:
                 for bb in s["loc"]["frags"]:
                     page.add_redact_annot(fitz.Rect(bb), fill=False)
-        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE,
+        # скан: пиксели под белой плашкой стираются в самой картинке — иначе её вытаскивает конвертер в DOCX
+        # и под русским текстом проступает венгерский (30RDGT nyilv, 06.10)
+        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS if ocr else fitz.PDF_REDACT_IMAGE_NONE,
                               graphics=fitz.PDF_REDACT_LINE_ART_REMOVE_IF_COVERED if ocr else fitz.PDF_REDACT_LINE_ART_NONE,
                               text=fitz.PDF_REDACT_TEXT_REMOVE)
         boxes = [s["loc"]["bbox"] for s in segs if s["page"] == pno]
@@ -140,137 +142,79 @@ def build_pdf(src, out, segs, res):
     return {"shrunk": shrink, "pages": len(pages)}
 
 
-def _page_blocks(psegs):
-    """Сегменты страницы → полосы по вертикали: одиночный сегмент — абзац, несколько рядом — строка таблицы.
-    Полоса растёт, пока следующий сегмент перекрывает её по высоте (ячейка на несколько строк тянет полосу)."""
-    bands = []
-    for s in sorted(psegs, key=lambda s: (s["loc"]["bbox"][1], s["loc"]["bbox"][0])):
-        y0, y1 = s["loc"]["bbox"][1], s["loc"]["bbox"][3]
-        if bands and y0 < bands[-1]["y1"] - 2:
-            bands[-1]["segs"].append(s); bands[-1]["y1"] = max(bands[-1]["y1"], y1)
-        else:
-            bands.append({"segs": [s], "y1": y1})
-    # подряд идущие полосы из 2+ сегментов — одна таблица
-    blocks = []
-    for b in bands:
-        if len(b["segs"]) == 1:
-            blocks.append(("p", b["segs"][0]))
-        elif blocks and blocks[-1][0] == "t":
-            blocks[-1][1].append(b["segs"])
-        else:
-            blocks.append(("t", [b["segs"]]))
-    return blocks
+P2D = {"line_break_width_ratio": 1.0, "line_overlap_threshold": 1.0}
 
 
-def _cluster(vals, tol):
-    out = []
-    for v in sorted(vals):
-        if out and v - out[-1][-1] <= tol:
-            out[-1].append(v)
-        else:
-            out.append([v])
-    return [sum(c) / len(c) for c in out]
-
-
-def _grid(rows, hs, vs):
-    """Сетка таблицы: границы столбцов — вертикальные линейки PDF внутри таблицы (иначе кластеры левых краёв),
-    границы строк — горизонтальные линейки (иначе полосы). Сегмент — в ячейку по центру своей рамки
-    (заголовки ячеек центрированы, содержимое по левому краю: по x0 столбцы двоились, замер 01.10)."""
-    segs = [s for row in rows for s in row]
-    x0 = min(s["loc"]["bbox"][0] for s in segs); x1 = max(s["loc"]["bbox"][2] for s in segs)
-    y0 = min(s["loc"]["bbox"][1] for s in segs); y1 = max(s["loc"]["bbox"][3] for s in segs)
-    vx = [x for ry0, ry1, x in vs if x0 + 4 < x < x1 - 4 and min(y1, ry1) - max(y0, ry0) > 4]
-    if vx:
-        edges = [x0] + _cluster(vx, 3) + [x1]
-    else:
-        lefts = _cluster([s["loc"]["bbox"][0] for s in segs], 14)
-        edges = lefts + [x1]
-    # линия строки часто нарисована отрезками по ячейкам — суммарное покрытие на одной высоте
-    cover = {}
-    for rx0, rx1, y in hs:
-        if y0 + 2 < y < y1 - 2:
-            key = round(y / 2)
-            cover[key] = cover.get(key, 0) + max(0, min(x1, rx1) - max(x0, rx0))
-    hy = [k * 2 for k, c in cover.items() if c > 0.3 * (x1 - x0)]
-    if hy:
-        ys = [y0] + _cluster(hy, 2) + [y1 + 1]
-    else:
-        ys = [min(s["loc"]["bbox"][1] for s in row) for row in rows] + [y1 + 1]
-    ncol, nrow = len(edges) - 1, len(ys) - 1
-    cells = {}
-    for s in segs:
-        bx0, by0, bx1, by1 = s["loc"]["bbox"]
-        cx = (bx0 + bx1) / 2 if vx else bx0 + 1
-        ci = max(0, min(ncol - 1, next((i for i in range(ncol) if cx < edges[i + 1]), ncol - 1)))
-        ri = max(0, min(nrow - 1, next((i for i in range(nrow) if by0 + 1 < ys[i + 1]), nrow - 1)))
-        cells.setdefault((ri, ci), []).append(s)
-    # пустые строки (между линейками нет текста) — выкинуть
-    used = sorted({r for r, _ in cells})
-    remap = {r: k for k, r in enumerate(used)}
-    return edges, len(used), {(remap[r], c): v for (r, c), v in cells.items()}
-
-
-def pdf_to_docx(src, out, segs, res):
-    """Редактируемый DOCX из PDF: абзацы с отступом/кеглем/жирностью, строки рядом — таблица, страница PDF —
-    страница Word. Вёрстка приблизительная (в отличие от PDF «на месте»), зато правится в Word."""
-    import fitz
+def _merge_docx(paths, out):
+    """Склейка постраничных DOCX в один: каждая страница — свой раздел (размер и поля как в PDF), картинки
+    переносятся с новыми связями (get_or_add_image — без конфликтов имён частей)."""
+    import io
+    import copy
     from docx import Document
-    from docx.shared import Pt, Mm
-    from docx.enum.text import WD_BREAK
     from docx.oxml.ns import qn
-    doc_pdf = fitz.open(src)
-    d = Document()
-    st = d.styles["Normal"]
-    st.font.name = "Times New Roman"; st.font.size = Pt(10)
-    st.element.rPr.rFonts.set(qn("w:eastAsia"), "Times New Roman")
-    sec = d.sections[0]
-    sec.page_width, sec.page_height = Mm(210), Mm(297)
-    sec.left_margin = sec.right_margin = Mm(15); sec.top_margin = sec.bottom_margin = Mm(12)
-    usable = (210 - 30) / 25.4 * 72                       # ширина набора, pt
-    text = lambda s: TAG.sub("", (res.get(str(s["id"])) or {}).get("ru") or s["text"])
-    pages = sorted({s["page"] for s in segs})
-    tables = 0
-    for k, pno in enumerate(pages):
-        psegs = [s for s in segs if s["page"] == pno]
-        if not psegs:
-            continue
-        left = min(s["loc"]["bbox"][0] for s in psegs)
-        right = max(s["loc"]["bbox"][2] for s in psegs)
-        scale = min(1.0, usable / max(right - left, 1))
-        hs, vs = rules(doc_pdf[pno])
-        for kind, obj in _page_blocks(psegs):
-            grid = _grid(obj, hs, vs) if kind == "t" else None
-            if kind == "p" or len(grid[0]) == 2:
-                # абзац; «таблица» из одного столбца (строки OCR чуть перекрылись по высоте) — тоже абзацы
-                for s in ([obj] if kind == "p" else sorted((s for row in obj for s in row),
-                                                            key=lambda s: s["loc"]["bbox"][1])):
-                    p = d.add_paragraph()
-                    p.paragraph_format.left_indent = Pt(max(0, (s["loc"]["bbox"][0] - left) * scale))
-                    p.paragraph_format.space_after = Pt(2)
-                    run = p.add_run(text(s))
-                    run.font.size = Pt(max(6, min(14, s["loc"]["size"])))
-                    run.bold = bool(s["loc"].get("bold"))
-            else:
-                edges, nrow, cells = grid
-                t = d.add_table(rows=nrow, cols=len(edges) - 1)
-                t.style = "Table Grid"
-                tables += 1
-                for ci in range(len(edges) - 1):
-                    w = Pt(max(20, (edges[ci + 1] - edges[ci]) * scale))
-                    for cell in t.columns[ci].cells:
-                        cell.width = w
-                for (ri, ci), ss in cells.items():
-                    cell = t.cell(ri, ci)
-                    for j, s in enumerate(sorted(ss, key=lambda s: (s["loc"]["bbox"][1], s["loc"]["bbox"][0]))):
-                        p = cell.paragraphs[0] if j == 0 else cell.add_paragraph()
-                        run = p.add_run(text(s))
-                        run.font.size = Pt(max(6, min(12, s["loc"]["size"] - 0.5)))
-                        run.bold = bool(s["loc"].get("bold"))
-                d.add_paragraph().paragraph_format.space_after = Pt(0)
-        if k < len(pages) - 1:
-            d.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
-    d.save(out)
-    return {"pages": len(pages), "tables": tables}
+    target = Document(paths[0])
+    body = target.element.body
+    for path in paths[1:]:
+        src = Document(path)
+        last_sect = body.find(qn("w:sectPr"))
+        # конец текущего раздела: его sectPr уходит в пустой абзац, разрыв — со следующей страницы
+        p = body.makeelement(qn("w:p"), {})
+        ppr = p.makeelement(qn("w:pPr"), {})
+        ppr.append(copy.deepcopy(last_sect))
+        p.append(ppr)
+        last_sect.addprevious(p)
+        for el in list(src.element.body):
+            if el.tag == qn("w:sectPr"):
+                continue
+            el = copy.deepcopy(el)
+            for node in el.iter():
+                for attr in (qn("r:embed"), qn("r:link"), qn("r:id")):
+                    rid = node.get(attr)
+                    if rid and rid in src.part.rels and "image" in src.part.rels[rid].reltype:
+                        new_rid, _ = target.part.get_or_add_image(io.BytesIO(src.part.rels[rid].target_part.blob))
+                        node.set(attr, new_rid)
+            last_sect.addprevious(el)
+        body.replace(last_sect, copy.deepcopy(src.element.body.find(qn("w:sectPr"))))
+    target.save(out)
+
+
+def docx_from_pdf(pdf, out):
+    """DOCX по переведённому PDF — конвертером pdf2docx: таблицы и разбивка по страницам как в PDF.
+    Прежняя самодельная сборка по блокам страницы разваливала таблицы с колонками разной ширины (30RDGT feladat,
+    06.10: 129 таблиц вместо одной на страницу, 32 страницы вместо 15).
+    - Каждая страница конвертируется отдельно и потом склеивается: при разборе нескольких страниц сразу pdf2docx 0.5.13
+      молча теряет часть мелких надписей (подписи «Примечание:» — 57 из 116; по одной странице — все).
+    - line_break_width_ratio=1 — переносы строк как в PDF (иначе строки абзаца склеивались без пробела:
+      «уполномоченныйпредставитель»); line_overlap_threshold=1 — выбрасывать только полные дубли строк.
+    Сбой конвертера не валит перевод: DOCX нет, PDF и таблица вычитки есть."""
+    import logging
+    import tempfile
+    try:
+        import fitz
+        from pdf2docx import Converter
+    except ImportError:
+        return {"error": "pdf2docx не установлен"}
+    level = logging.getLogger().level
+    logging.getLogger().setLevel(logging.ERROR)            # pdf2docx пишет по строке на страницу в INFO
+    try:
+        n = fitz.open(str(pdf)).page_count
+        with tempfile.TemporaryDirectory() as tmp:
+            parts = []
+            for pno in range(n):
+                part = Path(tmp) / f"p{pno:04d}.docx"
+                cv = Converter(str(pdf))
+                try:
+                    cv.convert(str(part), pages=[pno], **P2D)
+                finally:
+                    cv.close()
+                parts.append(part)
+            _merge_docx(parts, out)
+        return {"converter": "pdf2docx", "pages": n}
+    except Exception as e:                                  # noqa: BLE001 — сторонний конвертер, перевод уже собран
+        Path(out).unlink(missing_ok=True)
+        return {"error": f"{type(e).__name__}: {e}"[:200]}
+    finally:
+        logging.getLogger().setLevel(level)
 
 
 def _h_note(r):
@@ -337,7 +281,7 @@ def source_path(d):
 
 
 def assemble_all(jf, d, out_dir=None):
-    """Перевод в исходном формате (DOCX на месте / PDF на месте + DOCX по раскладке) и таблица вычитки.
+    """Перевод в исходном формате (DOCX на месте / PDF на месте + DOCX из переведённого PDF) и таблица вычитки.
     out_dir — куда класть файлы (по умолчанию рядом с JSON)."""
     src = source_path(d)
     outd, stem = Path(out_dir or Path(jf).parent), Path(jf).stem
@@ -346,6 +290,6 @@ def assemble_all(jf, d, out_dir=None):
         info = build_docx(src, outd / f"{stem}_RU.docx", d["segs"], d["res"])
     else:
         info = build_pdf(src, outd / f"{stem}_RU.pdf", d["segs"], d["res"])
-        info["docx"] = pdf_to_docx(src, outd / f"{stem}_RU.docx", d["segs"], d["res"])
+        info["docx"] = docx_from_pdf(outd / f"{stem}_RU.pdf", outd / f"{stem}_RU.docx")
     review_xlsx(outd / f"{stem}_вычитка.xlsx", d["segs"], d["res"], stem)
     return info

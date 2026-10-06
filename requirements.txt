@@ -2,6 +2,7 @@ PyMuPDF>=1.24,<1.29        # 1.27–1.28 проверены; в новых ве�
 python-docx>=1.1
 openpyxl>=3.1
 lxml>=5
+pdf2docx==0.5.13           # DOCX из переведённого PDF (тянет opencv-python-headless)
 # веб-сервис
 fastapi>=0.110
 uvicorn>=0.29

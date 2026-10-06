@@ -275,8 +275,21 @@ def _dehyphen(words):
     return out
 
 
+def missing_share(text_layer, tess_words):
+    """Доля настоящих слов Tesseract (от 4 букв, с тремя строчными подряд), которых нет в текстовом слое даже
+    в похожем написании. Число слов обманывает: кружки отметок Tesseract читает как «oO», рамки — «LL», коды дробит
+    и искажает («31RD315401») — страницы с полным текстовым слоем уходили в OCR (30RDGT feladat, стр. 4 и 9, 06.10).
+    Замер: где OCR нужен — 34–92 % слов нет в слое, ложные срабатывания — 0–11 %."""
+    tl = {w.lower() for w in re.findall(r"\w{4,}", text_layer)}
+    cand = [w["t"] for w in tess_words if re.fullmatch(r"\w{4,}", w["t"]) and re.search(r"[a-záéíóöőúüű]{3}", w["t"].lower())]
+    if not cand:
+        return 0.0
+    return sum(1 for w in cand if w.lower() not in tl and not difflib.get_close_matches(w.lower(), tl, 1, 0.8)) / len(cand)
+
+
 def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, ratio=0.85):
-    """ocr: 'auto' — страница идёт через OCR, если в текстовом слое < ratio слов Tesseract."""
+    """ocr: 'auto' — страница идёт через OCR, если в текстовом слое < ratio слов Tesseract и заметной доли
+    настоящих слов Tesseract в слое нет (missing_share > 20 %)."""
     import fitz
     from concurrent.futures import ThreadPoolExecutor
     from layout import frags_from_text, frags_from_words, rules, group, avail_rects
@@ -306,7 +319,8 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
     for pno in rng:
         n_text = len(re.findall(r"\w{2,}", doc[pno].get_text()))
         n_tess = len([w for w in tw[pno] if re.search(r"\w{2,}", w["t"])])
-        plan[pno] = (ocr is True) or (ocr == "auto" and n_tess >= 15 and n_text < ratio * n_tess)
+        plan[pno] = (ocr is True) or (ocr == "auto" and n_tess >= 15 and n_text < ratio * n_tess
+                                      and missing_share(doc[pno].get_text(), tw[pno]) > 0.2)
     ocr_pages = [p for p in rng if plan[p]]
     with ThreadPoolExecutor(4) as ex:
         pr = dict(zip(ocr_pages, ex.map(portal, ocr_pages)))
