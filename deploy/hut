@@ -15,6 +15,7 @@ set -uo pipefail
 cd "$(dirname "$0")"
 port=$(grep -E '^HUT_PORT=' .env 2>/dev/null | cut -d= -f2)
 port=${port:-8010}
+tty=""; [ -t 0 ] || tty="-T"      # без терминала (из скрипта) — без интерактива; пароль тогда через --password
 
 check() {
   local ok=0 fail=0
@@ -40,7 +41,7 @@ except urllib.error.HTTPError as e: assert e.code in (401, 403), e"
 }
 
 case "${1:-}" in
-  user)    shift; docker compose exec hut python manage.py user "$@" ;;
+  user)    shift; docker compose exec $tty hut python manage.py user "$@" ;;
   project)
     if [ "${2:-}" = "add" ]; then
       [ $# -eq 4 ] || { echo "Нужно: ./hut project add <имя> <файл глоссария>"; exit 1; }
