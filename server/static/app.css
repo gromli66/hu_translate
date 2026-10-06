@@ -91,3 +91,4 @@ table.expert td.actions button { margin: 0 0 .25rem; }
 .tm-variant { padding: .3rem 0; border-top: 1px solid var(--pico-muted-border-color); }
 .row select { width: auto; margin: 0; }
 .row input[type=search] { margin: 0; }
+table.expert td input[name=ru] { min-width: 16rem; }
