@@ -17,12 +17,8 @@ git clone https://github.com/gromli66/hu_translate.git && cd hu_translate
 docker compose up -d --build
 ```
 
-**2. Глоссарии.** В git их нет — это данные заказчика. Архив `glossaries_paks.tar.gz` (комплект «Пакш»)
-передаётся отдельно; распаковать в папку `hu_translate`:
-
-```bash
-tar xzf glossaries_paks.tar.gz
-```
+**2. Глоссарии.** Комплект «Пакш» уже в репозитории — [projects/paks/](projects/paks/), делать ничего не нужно.
+Это данные заказчика: репозиторий приватный, наружу не выкладывать.
 
 Новый комплект со своим глоссарием (docx, xlsx или md с таблицей «венгерский | русский | комментарий»):
 
@@ -58,7 +54,7 @@ docker compose exec hut python manage.py user add ivanov
 ```
 server/      веб-сервис (FastAPI + HTMX)
 src/         движок перевода
-projects/    глоссарии проектов (в git пусто)
+projects/    глоссарии проектов (paks — «Пакш»)
 data/        база и переводы (создаётся при запуске)
 docs/        DEV.md — устройство, качество, ограничения; PLAN_service.md
 tests/       pytest
