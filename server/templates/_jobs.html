@@ -30,8 +30,10 @@
     </td>
     <td class="actions">
       {% if j.status == 'done' %}
-        <a role="button" class="small outline" href="/jobs/{{ j.uid }}/review">Вычитка</a>
-        <a role="button" class="small" href="/jobs/{{ j.uid }}/download">Скачать</a>
+        <a role="button" class="small outline" href="/jobs/{{ j.uid }}/review"
+           title="Проверить и поправить перевод построчно: оригинал и перевод рядом, проблемные строки подсвечены">Вычитка</a>
+        <a role="button" class="small" href="/jobs/{{ j.uid }}/download"
+           title="Архив: переведённые документы (DOCX/PDF) и таблицы вычитки xlsx">Скачать</a>
       {% elif j.status in ('failed', 'cancelled') %}
         <button class="outline small" hx-post="/jobs/{{ j.uid }}/retry" hx-target="#jobs">Повторить</button>
       {% elif j.status in ('running', 'queued') %}

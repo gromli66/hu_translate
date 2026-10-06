@@ -98,3 +98,7 @@ table.expert td input[name=ru] { min-width: 16rem; }
 .qbar > span { display: block; height: 100%; }
 .q-edited { background: #4caf50; } .q-susp { background: #ef8f2f; } .q-err { background: #d9534f; }
 table.quality td { white-space: nowrap; }
+/* справка эксперта */
+.help article { padding: 1rem 1.25rem; }
+.help h3 { margin-bottom: .6rem; }
+.help li { margin-bottom: .25rem; }

@@ -88,6 +88,7 @@ def test_expert_pages_and_roles(client, demo):
     login(client, "bob")
     page = client.get("/expert/candidates?project=demo").text
     assert "tápszivattyú" in page and "глоссарий: версия 1" in page
+    assert "Рабочий цикл" in client.get("/expert/help?project=demo").text
     cid = db.one("select id from glossary where layer='candidate'")["id"]
     r = client.post(f"/expert/candidates/{cid}", data={"action": "accept", "ru": "насос ПВ"})
     assert "Принято: tápszivattyú → насос ПВ" in r.text

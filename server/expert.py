@@ -225,6 +225,14 @@ def quality(request: Request, project: str = ""):
     return page(request, "expert_quality.html", u, **ctx(request, u, project, "quality", q=quality_rows(project)))
 
 
+# ------------------------------------------------------------------ справка
+@router.get("/help", response_class=HTMLResponse)
+def help_page(request: Request, project: str = ""):
+    u = need_expert(request)
+    project = project_of(request, project)
+    return page(request, "expert_help.html", u, **ctx(request, u, project, "help"))
+
+
 # ------------------------------------------------------------------ импорт глоссария заказчика
 @router.get("/import", response_class=HTMLResponse)
 def import_page(request: Request, project: str = ""):
