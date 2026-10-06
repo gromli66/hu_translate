@@ -6,7 +6,7 @@ from pathlib import Path
 from fastapi import Request
 from fastapi.templating import Jinja2Templates
 
-from server import db
+from server import config, db
 
 HERE = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=HERE / "templates")
@@ -31,6 +31,14 @@ MESSAGES = {
 
 class NeedLogin(Exception):
     pass
+
+
+class NotAllowed(Exception):
+    """Вошёл, но роли не хватает (например, экраны эксперта)."""
+
+
+def projects():
+    return sorted(f.parent.name for f in config.PROJECTS.glob("*/project.json"))
 
 
 def current_user(request: Request):

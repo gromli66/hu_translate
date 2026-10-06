@@ -15,6 +15,7 @@
       {% if user %}
       <ul>
         <li><a href="/">Переводы</a></li>
+        {% if user.role in ('expert', 'admin') %}<li><a href="/expert">Эксперт</a></li>{% endif %}
         <li><a href="/profile">Профиль</a></li>
         <li><small class="muted">{{ user.name or user.login }} · {{ role_ru[user.role] }}</small></li>
         <li><form method="post" action="/logout" class="inline"><button class="outline secondary small">Выйти</button></form></li>

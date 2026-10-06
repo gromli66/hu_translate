@@ -1,0 +1,23 @@
+{% extends "expert_base.html" %}
+{% block expert %}
+<p class="muted">Фразы, которые редакторы поправили в своих переводах. Пока фраза не утверждена, правка действует только
+  в переводах её автора. Утверждённая — у всех: такая фраза дальше берётся без модели. Фразы с разными вариантами — первыми.</p>
+<p class="muted">Ждут решения: {{ total }}{% if total > groups|length %} (показаны первые {{ groups|length }}){% endif %}</p>
+{% if not groups %}
+<p class="muted">Неподтверждённых правок нет.</p>
+{% endif %}
+{% for g in groups %}
+<article class="tm-group">
+  <p class="hu">{{ g.hu }}</p>
+  {% if g.approved %}<p><small class="muted">сейчас утверждено:</small> {{ g.approved }}</p>{% endif %}
+  {% for v in g.variants %}
+  <div class="row tm-variant" id="tm-{{ v.id }}">
+    <span class="grow">{{ v.ru }}</span>
+    <small class="muted">{{ v.who }} · {{ v.created }}</small>
+    <button class="small" hx-post="/expert/memory/{{ v.id }}" hx-vals='{"action": "approve"}' hx-target="#tm-{{ v.id }}">Утвердить</button>
+    <button class="small outline secondary" hx-post="/expert/memory/{{ v.id }}" hx-vals='{"action": "reject"}' hx-target="#tm-{{ v.id }}">Отклонить</button>
+  </div>
+  {% endfor %}
+</article>
+{% endfor %}
+{% endblock %}

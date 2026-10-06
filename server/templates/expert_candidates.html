@@ -1,0 +1,38 @@
+{% extends "expert_base.html" %}
+{% block expert %}
+<p class="muted">Кандидаты собираются сами: из каждого нового комплекта (частые сочетания вне глоссария) и из правок
+  редакторов (какой термин заменили). В перевод они не идут, пока вы не примете. Принятый термин действует со следующего
+  перевода; «строгим» — обязателен: перевод без него уходит на повтор.</p>
+<div class="chips" role="toolbar" aria-label="Фильтр кандидатов">
+  {% for k, name in [('all', 'Все'), ('conflicts', 'Конфликты'), ('edits', 'Из правок'), ('terms', 'Из комплектов')] %}
+  <a class="chip" href="?project={{ project }}&show={{ k }}" aria-pressed="{{ 'true' if show == k else 'false' }}">{{ name }}</a>
+  {% endfor %}
+  <small class="muted hint">всего {{ total }}</small>
+</div>
+{% if not rows %}
+<p class="muted">Кандидатов нет. Они появятся после новых переводов и правок.</p>
+{% else %}
+<table class="expert">
+  <thead><tr><th>Венгерский</th><th>Русский (можно поправить)</th><th>Откуда</th><th>Примеры</th><th></th></tr></thead>
+  <tbody>
+  {% for c in rows %}
+  <tr>
+    <td><strong>{{ c.hu }}</strong>{% if c.conflict %}<br><small class="warn">конфликт{% if c.note %}: {{ c.note }}{% endif %}</small>{% endif %}</td>
+    <td><input name="ru" value="{{ c.ru }}" aria-label="Русский перевод термина"></td>
+    <td><small>{{ 'правки' if c.source == 'edits' else 'комплекты' }} · встречается {{ c.count }} · людей {{ c.authors }}</small></td>
+    <td><small class="muted">{% for e in c.examples %}{{ e[:140] }}{% if not loop.last %}<br>{% endif %}{% endfor %}</small></td>
+    <td class="actions">
+      <button class="small" hx-post="/expert/candidates/{{ c.id }}" hx-vals='{"action": "accept"}' hx-include="closest tr"
+              hx-target="closest tr" hx-swap="outerHTML">Принять</button>
+      <button class="small outline" hx-post="/expert/candidates/{{ c.id }}" hx-vals='{"action": "strict"}' hx-include="closest tr"
+              hx-target="closest tr" hx-swap="outerHTML" title="Обязателен: перевод без него уходит на повтор">Строгим</button>
+      <button class="small outline secondary" hx-post="/expert/candidates/{{ c.id }}" hx-vals='{"action": "reject"}'
+              hx-target="closest tr" hx-swap="outerHTML">Отклонить</button>
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% if total > offset + step %}<p><a href="?project={{ project }}&show={{ show }}&offset={{ offset + step }}">Следующие {{ step }}</a></p>{% endif %}
+{% endif %}
+{% endblock %}

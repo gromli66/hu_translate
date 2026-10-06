@@ -75,3 +75,19 @@ main.container:has(.review-grid) { max-width: 1400px; }
 #table .tabulator-row.is-current { outline: 2px solid var(--pico-primary); outline-offset: -2px; }
 #table .tabulator-cell textarea { background: var(--pico-background-color); color: var(--pico-color); }
 [hidden] { display: none !important; }   /* .row (flex) не должен перебивать hidden */
+
+/* ---------- эксперт ---------- */
+main.container:has(.expert-head) { max-width: 1400px; }
+.expert-head { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
+.expert-head .project-pick select { margin: 0; padding: .25rem 2rem .25rem .6rem; width: auto; }
+a.chip { text-decoration: none; display: inline-block; }
+table.expert td { vertical-align: top; }
+table.expert td input { margin: 0; padding: .3rem .5rem; }
+table.expert td.actions { white-space: nowrap; width: 1%; }
+table.expert td.actions button { margin: 0 0 .25rem; }
+.grow { flex: 1 1 auto; }
+.tm-group { padding: .8rem 1rem; margin-bottom: .8rem; }
+.tm-group .hu { color: var(--pico-muted-color); margin-bottom: .4rem; }
+.tm-variant { padding: .3rem 0; border-top: 1px solid var(--pico-muted-border-color); }
+.row select { width: auto; margin: 0; }
+.row input[type=search] { margin: 0; }

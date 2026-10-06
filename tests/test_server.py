@@ -144,6 +144,7 @@ def test_one_job_per_user(env, monkeypatch):
         uid = f"job{k}"
         (jobs.job_dir(uid) / "in").mkdir(parents=True)
         (jobs.job_dir(uid) / "in" / "a.docx").write_bytes(b"doc")
+        (jobs.job_dir(uid) / "job.json").write_text('{"project": "", "review": true}', encoding="utf-8")
         db.x("insert into jobs(uid, owner, project, files, status, created) values (?, ?, 'demo', '[\"a.docx\"]', 'queued', ?)",
              (uid, ids[who], time.time() + k))
     s = jobs.Scheduler()

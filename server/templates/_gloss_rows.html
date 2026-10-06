@@ -1,0 +1,21 @@
+{% for g in rows %}
+<tr>
+  <td><small class="{{ 'muted' if g.layer == 'customer' else '' }}">{{ 'заказчик' if g.layer == 'customer' else 'эксперт' }}</small></td>
+  <td>{{ g.hu }}{% if g.note %}<br><small class="muted">{{ g.note[:120] }}</small>{% endif %}</td>
+  {% if g.layer == 'expert' %}
+  <td><input name="ru" value="{{ g.ru }}" aria-label="Русский перевод"></td>
+  <td><input type="checkbox" name="strict" value="true" role="switch" {% if g.strict %}checked{% endif %} aria-label="Строгий"></td>
+  <td class="actions">
+    {% if saved %}<small class="ok">сохранено</small>{% endif %}
+    <button class="small" hx-post="/expert/glossary/{{ g.id }}" hx-vals='{"action": "save"}' hx-include="closest tr"
+            hx-target="closest tr" hx-swap="outerHTML">Сохранить</button>
+    <button class="small outline secondary" hx-post="/expert/glossary/{{ g.id }}" hx-vals='{"action": "delete"}'
+            hx-target="closest tr" hx-swap="outerHTML" hx-confirm="Удалить термин «{{ g.hu }}»?">Удалить</button>
+  </td>
+  {% else %}
+  <td>{{ g.ru }}</td><td></td><td></td>
+  {% endif %}
+</tr>
+{% else %}
+<tr><td colspan="5" class="muted">Ничего не найдено.</td></tr>
+{% endfor %}

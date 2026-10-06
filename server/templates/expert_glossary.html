@@ -1,0 +1,32 @@
+{% extends "expert_base.html" %}
+{% block expert %}
+<p class="muted">Глоссарий заказчика — основа, у него приоритет; меняется только импортом. Термины эксперта можно
+  править, делать строгими и удалять. Каждое изменение повышает версию: следующие переводы идут с ним.
+  Записей: заказчик {{ counts.customer or 0 }}, эксперт {{ counts.expert or 0 }}.</p>
+<details>
+  <summary>Добавить термин</summary>
+  <form method="post" action="/expert/glossary/add" class="grid">
+    <input type="hidden" name="project" value="{{ project }}">
+    <input name="hu" placeholder="венгерский: tápszivattyú" required aria-label="Венгерский">
+    <input name="ru" placeholder="русский: питательный насос" required aria-label="Русский">
+    <label class="switch"><input type="checkbox" name="strict" value="true" role="switch"> Строгий</label>
+    <button type="submit">Добавить</button>
+  </form>
+</details>
+<div class="row">
+  <input type="search" name="q" value="{{ q }}" placeholder="поиск по венгерскому или русскому" class="grow"
+         hx-get="/expert/glossary/rows" hx-trigger="keyup changed delay:300ms, search" hx-target="#gloss-rows"
+         hx-include="[name=layer], [name=project]" aria-label="Поиск по глоссарию">
+  <select name="layer" hx-get="/expert/glossary/rows" hx-target="#gloss-rows" hx-include="[name=q], [name=project]" aria-label="Слой">
+    <option value="" {% if not layer %}selected{% endif %}>все слои</option>
+    <option value="customer" {% if layer == 'customer' %}selected{% endif %}>заказчик</option>
+    <option value="expert" {% if layer == 'expert' %}selected{% endif %}>эксперт</option>
+  </select>
+  <input type="hidden" name="project" value="{{ project }}">
+</div>
+<table class="expert">
+  <thead><tr><th>Слой</th><th>Венгерский</th><th>Русский</th><th>Строгий</th><th></th></tr></thead>
+  <tbody id="gloss-rows">{% include "_gloss_rows.html" %}</tbody>
+</table>
+<small class="muted">Показаны первые 100 совпадений — уточните поиск.</small>
+{% endblock %}

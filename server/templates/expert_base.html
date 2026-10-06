@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Эксперт — Переводчик HU→RU{% endblock %}
+{% block content %}
+<div class="expert-head">
+  <nav class="doc-tabs" aria-label="Разделы эксперта">
+    <a href="/expert/candidates?project={{ project }}" {% if tab == 'candidates' %}aria-current="page"{% endif %}>Кандидаты в термины</a>
+    <a href="/expert/memory?project={{ project }}" {% if tab == 'memory' %}aria-current="page"{% endif %}>Память переводов</a>
+    <a href="/expert/glossary?project={{ project }}" {% if tab == 'glossary' %}aria-current="page"{% endif %}>Глоссарий</a>
+    <a href="/expert/import?project={{ project }}" {% if tab == 'import' %}aria-current="page"{% endif %}>Импорт глоссария заказчика</a>
+  </nav>
+  <form method="get" class="inline project-pick">
+    <select name="project" onchange="this.form.submit()" aria-label="Проект">
+      {% for p in projects %}<option value="{{ p }}" {% if p == project %}selected{% endif %}>{{ p }}</option>{% endfor %}
+    </select>
+  </form>
+  <small class="muted">глоссарий: версия {{ version }}</small>
+</div>
+{% block expert %}{% endblock %}
+{% endblock %}

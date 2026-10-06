@@ -109,6 +109,7 @@ def test_tm_for_next_job_respects_owner_and_approval(env, monkeypatch):
          (ids["root"], now))
     for who in ("alice", "bob"):
         (jobs.job_dir(who) / "in").mkdir(parents=True)
+        (jobs.job_dir(who) / "job.json").write_text('{"project": "", "review": true}', encoding="utf-8")
         db.x("insert into jobs(uid, owner, project, files, status, created) values (?, ?, 'demo', '[]', 'queued', ?)",
              (who, ids[who], now))
     s = jobs.Scheduler()

@@ -1,0 +1,42 @@
+{% extends "expert_base.html" %}
+{% block expert %}
+<p class="muted">Глоссарий заказчика заменяется целиком. Подходят md (формат переводчика), docx (таблицы
+  «венгерский | русский | комментарий», разделы — заголовки, правила — список под «Правила применения») и xlsx
+  (колонки A, B, C). Сначала покажем, что изменится, — заменим только после подтверждения.</p>
+{% if error %}<p class="msg warn">{{ error }}</p>{% endif %}
+{% if not preview %}
+<article>
+  <form method="post" action="/expert/import" enctype="multipart/form-data">
+    <input type="hidden" name="project" value="{{ project }}">
+    <label>Файл глоссария <input type="file" name="file" accept=".md,.docx,.xlsx" required></label>
+    <button type="submit">Показать изменения</button>
+  </form>
+</article>
+{% else %}
+<article>
+  <h4>{{ file }}: записей {{ n }}{% if rules %}, правила применения есть{% endif %}</h4>
+  <p>Новых: <strong>{{ preview.added|length }}</strong> · изменится перевод: <strong>{{ preview.changed|length }}</strong> ·
+    исчезнет: <strong class="{{ 'warn' if preview.removed else '' }}">{{ preview.removed|length }}</strong></p>
+  {% if preview.changed %}
+  <details open><summary>Изменится перевод (первые 50)</summary><ul>
+    {% for hu, old, new in preview.changed[:50] %}<li>{{ hu }}: <s class="muted">{{ old }}</s> → {{ new }}</li>{% endfor %}
+  </ul></details>
+  {% endif %}
+  {% if preview.removed %}
+  <details><summary>Исчезнет (первые 50)</summary><ul>
+    {% for hu, ru in preview.removed[:50] %}<li>{{ hu }} → {{ ru }}</li>{% endfor %}
+  </ul></details>
+  {% endif %}
+  {% if preview.added %}
+  <details><summary>Новые (первые 50)</summary><ul>
+    {% for hu, ru in preview.added[:50] %}<li>{{ hu }} → {{ ru }}</li>{% endfor %}
+  </ul></details>
+  {% endif %}
+  <form method="post" action="/expert/import/confirm" class="row">
+    <input type="hidden" name="token" value="{{ token }}">
+    <button type="submit">Заменить глоссарий заказчика</button>
+    <a href="/expert/import?project={{ project }}">Отмена</a>
+  </form>
+</article>
+{% endif %}
+{% endblock %}

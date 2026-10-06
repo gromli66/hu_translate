@@ -20,7 +20,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from server import config, db, security, jobs, review
-from server.web import HERE, COOKIE, NeedLogin, need_user, page, own_job
+from server import expert
+from server.web import HERE, COOKIE, NeedLogin, NotAllowed, need_user, page, own_job, projects
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 SCHED = jobs.Scheduler()
@@ -38,6 +39,7 @@ async def lifespan(_app):
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
 app.include_router(review.router)
+app.include_router(expert.router)
 
 
 # ------------------------------------------------------------------ вход
@@ -46,6 +48,12 @@ async def _need_login(request: Request, _exc):
     if request.headers.get("HX-Request"):          # фрагмент HTMX: перейти на вход всей страницей
         return Response(status_code=200, headers={"HX-Redirect": "/login"})
     return RedirectResponse("/login", status_code=303)
+
+
+@app.exception_handler(NotAllowed)
+async def _not_allowed(request: Request, _exc):
+    return HTMLResponse("<p>Этот раздел — для экспертов. Роль выдаёт администратор.</p><p><a href='/'>К переводам</a></p>",
+                        status_code=403)
 
 
 @app.get("/health")
@@ -82,10 +90,6 @@ def logout(request: Request):
 
 
 # ------------------------------------------------------------------ переводы
-def projects():
-    return sorted(f.parent.name for f in config.PROJECTS.glob("*/project.json"))
-
-
 def _plural(n, one, few, many):
     n10, n100 = n % 10, n % 100
     return one if n10 == 1 and n100 != 11 else few if 2 <= n10 <= 4 and not 12 <= n100 <= 14 else many

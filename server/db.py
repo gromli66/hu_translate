@@ -28,9 +28,22 @@ create table if not exists tm(
   author integer not null references users(id), job text, created real not null,
   decided_by integer references users(id), decided_at real,
   unique (project, hu_key, author));
+create table if not exists projects(
+  name text primary key, rules text not null default '', version integer not null default 1, updated real);
+create table if not exists glossary(
+  id integer primary key, project text not null,
+  layer text not null check (layer in ('customer', 'expert', 'candidate')),
+  hu text not null, ru text not null, note text not null default '', section text not null default '',
+  strict integer not null default 0,
+  status text not null default 'active' check (status in ('active', 'accepted', 'rejected')),
+  source text not null default 'file', count integer not null default 0,
+  authors text not null default '[]', examples text not null default '[]',
+  created real not null, created_by integer, decided_by integer, decided_at real);
+create index if not exists glossary_layer on glossary(project, layer, status);
 """
 # колонки, добавленные после первого выката: (таблица, колонка, объявление)
-MIGRATIONS = [("jobs", "mode", "text not null default 'translate'")]
+MIGRATIONS = [("jobs", "mode", "text not null default 'translate'"),
+              ("jobs", "glossary_version", "integer")]
 
 
 @contextmanager

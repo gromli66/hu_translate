@@ -8,7 +8,6 @@
 Разнос по похожим строкам (числа, перевод по образцу) и пересборка файлов — кнопкой «Применить»:
 задача уходит в очередь в режиме edits и идёт под токеном владельца. Пока она идёт, правка закрыта."""
 import re
-import sys
 import json
 import time
 import threading
@@ -20,7 +19,6 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from server import config, db, jobs
 from server.web import need_user, page, own_job
 
-sys.path.insert(0, str(config.ROOT / "src"))
 import pipeline as P            # чтение JSON задачи, ключ фразы; к порталу веб-процесс не обращается
 import glossary as G
 
@@ -189,7 +187,10 @@ def edit(request: Request, uid: str, doc: str = Form(...), sid: str = Form(...),
                         changed.append({"id": str(s["id"]), "ru": new, "kind": "edited"})
         for stem in touched:
             P.save_doc(work_of(uid), stem, docs[stem])
-        pend = [p for p in pending(uid) if P.tmkey(p[0]) != key] + [[P.cl(seg["text"]), new]]
+        # [венгерский, стало, было (самое первое — до всех правок этой фразы), автор]
+        prev = next((p for p in pending(uid) if P.tmkey(p[0]) == key), None)
+        first_before = prev[2] if prev and len(prev) > 2 else P.cl(old)
+        pend = [p for p in pending(uid) if P.tmkey(p[0]) != key] + [[P.cl(seg["text"]), new, first_before, u["id"]]]
         pending_file(uid).write_text(json.dumps(pend, ensure_ascii=False), encoding="utf-8")
     now = time.time()
     db.x("insert into edits(job, doc, seg, hu, ru_before, ru_after, author, created) values (?, ?, ?, ?, ?, ?, ?, ?)",

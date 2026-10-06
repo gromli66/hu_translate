@@ -15,7 +15,7 @@ import threading
 import subprocess
 from pathlib import Path
 
-from server import config, db, security
+from server import config, db, security, glossary_db
 
 RUNNER = [sys.executable, "-m", "server.runner"]
 log = logging.getLogger("hut.jobs")
@@ -38,6 +38,24 @@ def _tail(path, n=3):
     except OSError:
         return ""
     return " | ".join(lines[-n:])[-400:]
+
+
+def _collect_candidates(uid, mode):
+    """Кандидаты в термины, собранные исполнителем, — в БД (слой candidate проекта)."""
+    j = db.one("select project, owner from jobs where uid=?", (uid,))
+    f = job_dir(uid) / ("candidates.json" if mode == "translate" else "edit_terms.json")
+    try:
+        items = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    source = "terms" if mode == "translate" else "edits"
+    by_author = {}
+    for it in items:
+        by_author.setdefault(it.get("author") or j["owner"], []).append(it)
+    for author, its in by_author.items():
+        n = glossary_db.merge_candidates(j["project"], its, source, author)
+        log.info("задача %s: новых кандидатов в термины %s (%s)", uid, n, source)
+    f.unlink(missing_ok=True)
 
 
 class Scheduler:
@@ -104,6 +122,12 @@ class Scheduler:
             "select hu_key, ru from tm where project=? and (status='approved' or (status='unconfirmed' and author=?)) "
             "order by status='approved', created", (job["project"], owner))}
         (jd / "tm.json").write_text(json.dumps(tm, ensure_ascii=False), encoding="utf-8")
+        if job["mode"] == "translate":          # глоссарий — снимок текущей версии проекта; применение правок
+            ver, pj = glossary_db.snapshot(job["project"])     # идёт на снимке, с которым переводили
+            spec = json.loads((jd / "job.json").read_text(encoding="utf-8"))
+            spec["project"] = str(pj)
+            (jd / "job.json").write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
+            db.x("update jobs set glossary_version=? where uid=?", (ver, uid))
         env = dict(os.environ, ROSATOM_AI_TOKEN=token, HU_CACHE=str(config.DATA / "cache"),
                    PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
         lf = open(jd / "log.txt", "a", encoding="utf-8")
@@ -129,6 +153,7 @@ class Scheduler:
         готовый перевод: задача остаётся «готово», правки ждут следующего «Применить»."""
         now = time.time()
         if ok:
+            _collect_candidates(uid, mode)
             summ = json.dumps(read_progress(uid).get("summary") or {}, ensure_ascii=False)
             db.x("update jobs set status='done', mode='translate', finished=?, summary=?, error=null where uid=?",
                  (now, summ, uid))

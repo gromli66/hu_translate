@@ -109,6 +109,38 @@ def translate_terms(cands, batch=25):
     return out
 
 
+EDIT_PROMPT = """Редактор исправил перевод сегмента эксплуатационной документации АЭС (ВВЭР-440) с венгерского на русский.
+Оригинал: {hu}
+Было: {before}
+Стало: {after}
+
+Если правка заменила перевод термина (устойчивого сочетания: оборудование, система, должность, подразделение, действие,
+состояние, документ) — назови венгерский термин в словарной форме, как в оригинале, и его правильный русский перевод
+из исправленного варианта. Если правка не терминологическая (стиль, порядок слов, исправление смысла, опечатка,
+числа) — верни пустой список.
+Ответ — только JSON: [{{"hu": "...", "ru": "..."}}]"""
+
+
+def from_edits(triples):
+    """Правки редакторов [(венгерский, было, стало)] → кандидаты в термины [{hu, ru, example}].
+    Один короткий запрос на правку; нетерминологические правки дают пустой список."""
+    out = []
+    for hu, before, after in triples:
+        if not before or before.strip() == after.strip():
+            continue
+        r = chat([{"role": "user", "content": EDIT_PROMPT.format(hu=hu, before=before, after=after)}],
+                 max_tokens=3000, think=True, tag="edit_terms")
+        m = re.search(r"\[.*\]", r.get("text", ""), re.S)
+        try:
+            arr = json.loads(m.group()) if m else []
+        except json.JSONDecodeError:
+            arr = []
+        for o in arr if isinstance(arr, list) else []:
+            if isinstance(o, dict) and o.get("hu") and o.get("ru"):
+                out.append({"hu": str(o["hu"]).strip(), "ru": str(o["ru"]).strip(), "example": hu})
+    return out
+
+
 def write_md(terms, path, title):
     lines = [f"# Дополнительный глоссарий (авто) — {title}", "",
              "Собран предпроходом termx.py: частые сочетания документа вне основного глоссария, перевод порталом.",
