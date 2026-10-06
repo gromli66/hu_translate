@@ -88,7 +88,8 @@ def test_fix_units_and_service_marks():
 def test_ocr_leader_noise_removed():
     assert S._denoise("AláíráS:,...sszsseseeeeeeeeseeeeseeeseezeszeezesen") == "AláíráS…"
     assert S._denoise("Dátum:....................") == "Dátum…"
-    for word in ("elszállítása", "teszteseteket", "kiszerelése", "Ellenőrizte"):   # обычные слова не трогаем
+    assert S._denoise("Aláírás:..............ggsseeseseeeteeeéeteeíéeéséééétésései") == "Aláírás…"
+    for word in ("elszállítása", "teszteseteket", "kiszerelése", "Ellenőrizte", "szükségessége:"):   # слова не трогаем
         assert S._denoise(word) == word
 
 

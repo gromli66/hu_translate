@@ -77,6 +77,22 @@ def build_docx(src, out, segs, res):
     return {"broken_tags": broken}
 
 
+def _free(rect, busy, own):
+    """Рамка под перевод без мест, уже занятых соседями: занятое ниже начала — обрезает рамку снизу, правее —
+    справа. Свою исходную строку (own) рамка не теряет: перевод «Номер версии», перенесённый на вторую строку,
+    больше не накрывается длинным переводом строки ниже (30RDGT nyilv, 06.10)."""
+    import fitz
+    r = fitz.Rect(rect)
+    for b in busy:
+        if not r.intersects(b):
+            continue
+        if b.y0 > r.y0 + 1 and b.y0 >= own[3] - 0.5:
+            r.y1 = min(r.y1, b.y0 - 0.5)
+        elif b.x0 > r.x0 + 1 and b.x0 >= own[2] - 0.5:
+            r.x1 = min(r.x1, b.x0 - 1)
+    return r
+
+
 def build_pdf(src, out, segs, res):
     import fitz
     doc = fitz.open(src)
@@ -90,11 +106,12 @@ def build_pdf(src, out, segs, res):
         ocr = any(s["loc"].get("ocr") for s, _ in todo)
         for s, r in todo:
             if ocr:
-                # OCR-страница: буквы нарисованы кривыми — белая заливка по общей рамке абзаца,
-                # влево с запасом под тире/номер пункта, которые Tesseract мог не включить в рамку
-                x0, y0, x1, y1 = s["loc"]["bbox"]
-                left = 16 if re.match(r"\s*[-–•]", s["text"]) else 2
-                page.add_redact_annot(fitz.Rect(x0 - left, y0 - 1.5, x1 + 2, y1 + 1.5), fill=(1, 1, 1))
+                # OCR-страница: белая заливка по рамкам строк абзаца, а не по общей рамке — общая рамка формы
+                # захватывала соседние поля и рукописные подписи (30RDGT nyilv, 06.10); у первой строки — запас
+                # влево под тире/номер пункта, которые Tesseract мог не включить в рамку
+                for i, (x0, y0, x1, y1) in enumerate(s["loc"]["frags"]):
+                    left = 16 if i == 0 and re.match(r"\s*[-–•]", s["text"]) else 2
+                    page.add_redact_annot(fitz.Rect(x0 - left, y0 - 1.5, x1 + 2, y1 + 1.5), fill=(1, 1, 1))
             else:
                 for bb in s["loc"]["frags"]:
                     page.add_redact_annot(fitz.Rect(bb), fill=False)
@@ -120,18 +137,28 @@ def build_pdf(src, out, segs, res):
             txt = html.escape(TAG.sub("", r["ru"])).replace("\n", "<br>").replace("\t", "&emsp;")
             if loc.get("bold"):
                 txt = f"<b>{txt}</b>"
-            items.append((s, rect, txt, align, loc["size"]))
+            items.append((s, rect, txt, align, loc["size"], loc.get("family", "serif")))
         # общий масштаб страницы: пробная вставка на пустой странице, медиана нужных масштабов
         trial = fitz.open(); tp = trial.new_page(width=page.rect.width, height=page.rect.height)
         need = []
-        for s, rect, txt, align, size in items:
-            css = f"* {{font-family: serif; font-size: {size:.1f}pt; line-height: 1.15; text-align: {align};}}"
+        for s, rect, txt, align, size, fam in items:
+            css = f"* {{font-family: {fam}; font-size: {size:.1f}pt; line-height: 1.15; text-align: {align};}}"
             need.append(tp.insert_htmlbox(rect, txt, css=css, scale_low=0)[1])
         k = sorted(need)[int(len(need) * 0.3)] if need else 1.0
-        for (s, rect, txt, align, size), nk in zip(items, need):
+        if ocr:
+            # скан формы: тесные ячейки не должны ужимать всю страницу (подписи полей уходили в 3 pt) —
+            # общий масштаб не ниже 0,85, дальше каждая ячейка ужимается сама
+            k = max(k, 0.85)
+        busy = []                     # занятое уже вписанными абзацами: следующие его не получают
+        order = sorted(range(len(items)), key=lambda i: (round(items[i][1].y0 / 3), items[i][1].x0))
+        for i in order:
+            s, rect, txt, align, size, fam = items[i]
+            rect = _free(rect, busy, s["loc"]["bbox"])
             sz = size * min(k, 1.0)
-            css = f"* {{font-family: serif; font-size: {sz:.1f}pt; line-height: 1.15; text-align: {align};}}"
+            # семейство шрифта — как в оригинале (моноширинный Courier 3SZ19 вписывался засечным шрифтом)
+            css = f"* {{font-family: {fam}; font-size: {sz:.1f}pt; line-height: 1.15; text-align: {align};}}"
             spare, scale = page.insert_htmlbox(rect, txt, css=css, scale_low=0)
+            busy.append(fitz.Rect(rect.x0, rect.y0, rect.x1, rect.y1 - max(spare, 0)))
             if scale * min(k, 1.0) < 0.7:
                 shrink.append({"page": pno + 1, "id": s["id"], "scale": round(scale * min(k, 1.0), 2)})
         sub.insert_pdf(doc, from_page=pno, to_page=pno)
@@ -202,11 +229,17 @@ def docx_from_pdf(pdf, out):
             parts = []
             for pno in range(n):
                 part = Path(tmp) / f"p{pno:04d}.docx"
-                cv = Converter(str(pdf))
-                try:
-                    cv.convert(str(part), pages=[pno], **P2D)
-                finally:
-                    cv.close()
+                # pdf2docx падает на некоторых таблицах («Failed to merge docx_cell», титул 30RDGT, 06.10) и
+                # молча отдаёт пустую страницу — тогда повтор без распознавания таблиц по тексту, потом совсем без таблиц
+                for extra in ({}, {"parse_stream_table": False}, {"parse_stream_table": False, "parse_lattice_table": False}):
+                    cv = Converter(str(pdf))
+                    try:
+                        cv.convert(str(part), pages=[pno], raw_exceptions=True, **P2D, **extra)
+                        break
+                    except Exception:                      # noqa: BLE001 — следующий набор настроек
+                        continue
+                    finally:
+                        cv.close()
                 parts.append(part)
             _merge_docx(parts, out)
         return {"converter": "pdf2docx", "pages": n}

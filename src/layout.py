@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Раскладка страницы PDF: фрагменты строк → абзацы (единицы перевода) с рамками.
 
-Один алгоритм для текстового слоя и для слов Tesseract:
+Один алгоритм для текстового слоя и для слов Tesseract (фрагменты сканов — segments.ocr_frags):
 - строка режется на фрагменты по горизонтальному разрыву > GAP (столбцы таблиц без вертикальных линий);
 - фрагмент присоединяется к открытому абзацу, если он ниже вплотную, перекрывается по x,
   между ними нет горизонтальной линейки, начертание то же и фрагмент не начинается с маркера пункта;
@@ -10,6 +10,16 @@ import re
 import fitz
 
 GAP = 30.0          # выключка по ширине в узких ячейках даёт пробелы до ~25 pt
+
+
+def family(font):
+    """Семейство шрифта для вставки перевода: моноширинный / без засечек / с засечками (по имени шрифта PDF)."""
+    f = font.lower()
+    if any(k in f for k in ("courier", "mono", "consol", "lucidaconsole")):
+        return "monospace"
+    if any(k in f for k in ("arial", "helvetica", "sans", "verdana", "tahoma", "calibri")):
+        return "sans-serif"
+    return "serif"
 MARK = re.compile(r"^\s*(\(?\d+(\.\d+)*\.?\)?|[a-zA-Z]\.?\)|[A-Z]\.\d*\.?|[-–•▪]|\d+/\d+\.)\s")
 
 
@@ -43,11 +53,11 @@ def frags_from_text(page, vs=()):
                 if cur is not None and bb[0] - cur["bbox"][2] <= GAP and                         not _vrule_in(vs, cur["bbox"][2], bb[0], bb[1], bb[3]):
                     cur["t"] += txt
                     cur["bbox"] = _union([cur["bbox"], bb])
-                    cur["chars"].append((len(txt.strip()), s["size"], bold))
+                    cur["chars"].append((len(txt.strip()), s["size"], bold, family(s["font"])))
                 else:
                     if cur is not None:
                         out.append(cur)
-                    cur = {"t": txt, "bbox": bb, "chars": [(len(txt.strip()), s["size"], bold)]}
+                    cur = {"t": txt, "bbox": bb, "chars": [(len(txt.strip()), s["size"], bold, family(s["font"]))]}
             if cur is not None:
                 out.append(cur)
     # выключенная строка: PyMuPDF отдаёт каждое слово отдельной «строкой» — склеить по базовой линии
@@ -65,30 +75,15 @@ def frags_from_text(page, vs=()):
         n = sum(c[0] for c in f["chars"]) or 1
         f["size"] = max(f["chars"], key=lambda c: c[0])[1]
         f["bold"] = sum(c[0] for c in f["chars"] if c[2]) > n / 2
+        fam = {}
+        for c in f["chars"]:
+            fam[c[3]] = fam.get(c[3], 0) + c[0]
+        f["family"] = max(fam, key=fam.get)
         f["t"] = f["t"].strip()
         del f["chars"]
     return [f for f in out if f["t"]]
 
 
-def frags_from_words(words):
-    """Фрагменты из слов Tesseract: words = [{t, line, box, h}] в порядке чтения."""
-    out, cur = [], None
-    for w in words:
-        if not w["t"]:
-            continue
-        if cur is not None and cur["line"] == w["line"] and w["box"][0] - cur["bbox"][2] <= GAP:
-            cur["t"] += " " + w["t"]; cur["bbox"] = _union([cur["bbox"], w["box"]]); cur["hs"].append(w["h"])
-        else:
-            if cur is not None:
-                out.append(cur)
-            cur = {"t": w["t"], "bbox": list(w["box"]), "line": w["line"], "hs": [w["h"]]}
-    if cur is not None:
-        out.append(cur)
-    for f in out:
-        hs = sorted(f.pop("hs")); f.pop("line")
-        f["size"] = round(hs[len(hs) // 2] * 1.25, 1)   # высота заглавной/строчной с выносными → кегль, грубо
-        f["bold"] = False
-    return out
 
 
 def rules(page):
@@ -145,7 +140,8 @@ def _right_limit(frags, vs, bb, page_right):
     return lim
 
 
-def group(frags, hs, vs=()):
+def group(frags, hs, vs=(), form=False):
+    """form=True (скан формы): строка, кончающаяся двоеточием, — подпись поля, к ней не приклеивается следующая."""
     page_right = max((f["bbox"][2] for f in frags), default=0)
     frags = sorted(frags, key=lambda f: (round(f["bbox"][1] / 3), f["bbox"][0]))
     pars = []
@@ -166,6 +162,8 @@ def group(frags, hs, vs=()):
                     continue
                 if _rule_between(hs, x0, x1, last[3], y0):
                     continue
+                if form and p["frags"][-1]["t"].rstrip().endswith(":"):
+                    continue
                 # короткая строка (до преграды справа далеко) закрывает абзац
                 lim = _right_limit(frags, vs, last, page_right)
                 width = lim - px0
@@ -179,6 +177,10 @@ def group(frags, hs, vs=()):
             best["frags"].append(f); best["bbox"] = _union([best["bbox"], f["bbox"]])
     for p in pars:
         p["text"] = join_lines([f["t"] for f in p["frags"]])
+        fam = {}
+        for f in p["frags"]:
+            fam[f.get("family", "serif")] = fam.get(f.get("family", "serif"), 0) + len(f["t"])
+        p["family"] = max(fam, key=fam.get) if fam else "serif"
     return pars
 
 
@@ -227,3 +229,24 @@ def avail_rects(pars, hs, vs, page_rect):
             if y >= y1 - 0.5 and min(lim_x, rx1) - max(x0, rx0) > 5:
                 lim_y = min(lim_y, y - 1)
         p["avail"] = [x0, y0, max(x1, lim_x), max(y1, lim_y)]
+
+
+def rules_from_image(gray, dpi, min_h_pt=15, min_v_pt=20):
+    """Сплошные линейки таблицы на скане (у скана нет векторных линий): морфологическое «открытие» длинным ядром
+    оставляет только длинные прямые штрихи — буквы, пунктир под подпись и флажки отсеиваются.
+    gray — numpy-массив оттенков серого; возвращает (hs, vs) в пунктах, как rules()."""
+    import cv2
+    k = dpi / 72
+    bw = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 31, 15)
+    out = {}
+    for name, ksize, minlen in (("h", (int(min_h_pt * k), 1), min_h_pt), ("v", (1, int(min_v_pt * k)), min_v_pt)):
+        lines = cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, ksize))
+        _, _, stats, _ = cv2.connectedComponentsWithStats(lines, 8)
+        res = []
+        for x, y, w, h, _area in stats[1:]:
+            if name == "h" and w / k >= minlen and h / k <= 4:
+                res.append((x / k, (x + w) / k, (y + h / 2) / k))
+            elif name == "v" and h / k >= minlen and w / k <= 4:
+                res.append((y / k, (y + h) / k, (x + w / 2) / k))
+        out[name] = res
+    return out["h"], out["v"]
