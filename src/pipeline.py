@@ -75,13 +75,76 @@ def set_vocab(tr, segs):
 
 
 # ------------------------------------------------------------------ 1. извлечение
+DOC_SUFFIXES = (".docx", ".pdf")
+
+
+def unpack_portfolio(f, dest):
+    """PDF-портфолио (в каталоге есть /Collection): видимая страница — заглушка Adobe «откройте в Acrobat X»,
+    сами документы лежат вложениями. Вложенные DOCX/PDF распаковываются в dest и переводятся как отдельные
+    документы; для обычного PDF — None. (30RDGT.PDF, 06.10: переводилась только заглушка из двух фраз.)"""
+    import fitz
+    d = fitz.open(f)
+    if d.xref_get_key(d.pdf_catalog(), "Collection")[0] == "null" or not d.embfile_count():
+        return None
+    dest.mkdir(parents=True, exist_ok=True)
+    out, emb = [], {}
+    for i in range(d.embfile_count()):
+        name = Path(d.embfile_info(i).get("filename") or f"{f.stem}_{i}").name
+        if Path(name).suffix.lower() not in DOC_SUFFIXES:
+            continue
+        if not name.startswith(f.stem):                 # имя документа в комплекте должно быть уникальным
+            name = f"{f.stem} {name}"
+        p = dest / name
+        p.write_bytes(d.embfile_get(i))
+        out.append(p)
+        emb[i] = name
+    # опись: из чего собирать переведённое портфолио той же структуры (rebuild_portfolios)
+    (dest / "_portfolio.json").write_text(json.dumps({"source": str(Path(f).resolve()), "map": emb}, ensure_ascii=False),
+                                          encoding="utf-8")
+    return out
+
+
+def rebuild_portfolios(work, out):
+    """Переведённое портфолио: копия исходного, где каждое вложение заменено своим переводом (PDF — PDF «на месте»,
+    DOCX — DOCX). Заказчик получает один файл той же структуры, что прислал; переводы по отдельности тоже остаются."""
+    import fitz
+    for man in sorted((Path(work) / "unpacked").glob("*/_portfolio.json")):
+        m = json.loads(man.read_text(encoding="utf-8"))
+        d = fitz.open(m["source"])
+        keys = d.embfile_names()                 # по ключам, не по номерам: удаление сдвигает номера
+        done = 0
+        for idx, name in m["map"].items():
+            ru = Path(out) / f"{Path(name).stem}_RU{Path(name).suffix.lower()}"
+            if ru.exists():
+                key = keys[int(idx)]
+                info = d.embfile_info(key)
+                # embfile_upd в PyMuPDF 1.27 падает на bytes («no attribute m_internal») — заменяем удалением и добавлением
+                d.embfile_del(key)
+                d.embfile_add(key, ru.read_bytes(), filename=info.get("filename"), ufilename=info.get("ufilename"),
+                              desc=info.get("desc"))
+                done += 1
+        target = Path(out) / f"{Path(m['source']).stem}_RU.pdf"
+        d.save(target, garbage=3, deflate=True)
+        log(f"сборка: {target.name} — портфолио, переведённых вложений {done} из {len(m['map'])}")
+
+
 def extract(inputs, work, progress=_quiet):
     work = Path(work); (work / "json").mkdir(parents=True, exist_ok=True)
     S.OCR_DIR = work / "ocr"
-    files = []
+    queue = []
     for x in inputs:
         x = Path(x)
-        files += sorted(p for p in (x.iterdir() if x.is_dir() else [x]) if p.suffix.lower() in (".docx", ".pdf"))
+        queue += sorted(p for p in (x.iterdir() if x.is_dir() else [x]) if p.suffix.lower() in DOC_SUFFIXES)
+    files = []
+    while queue:                                         # портфолио внутри портфолио тоже раскрывается
+        f = queue.pop(0)
+        inner = unpack_portfolio(f, work / "unpacked" / f.stem) if f.suffix.lower() == ".pdf" else None
+        if inner is None:
+            files.append(f)
+        else:
+            log(f"извлечение: {f.name} — PDF-портфолио, документов внутри: {len(inner)} "
+                f"({', '.join(p.name for p in inner)}); страница-заглушка пропущена")
+            queue = inner + queue
     for i, f in enumerate(files):
         progress("извлечение", i, len(files))
         jf = work / "json" / f"{f.stem}.json"
@@ -314,6 +377,7 @@ def assemble(work, progress=_quiet):
         d = json.loads(f.read_text(encoding="utf-8"))
         info = assemble_all(f, d, Path(work) / "out")
         log(f"сборка: {f.stem} — {str(info)[:80]}")
+    rebuild_portfolios(work, Path(work) / "out")
     progress("сборка", len(files), len(files))
 
 

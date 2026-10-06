@@ -85,6 +85,13 @@ def test_fix_units_and_service_marks():
     assert T.fix_units("5 mg/dm3 [уточнить]") == "5 мг/дм³"
 
 
+def test_ocr_leader_noise_removed():
+    assert S._denoise("AláíráS:,...sszsseseeeeeeeeseeeeseeeseezeszeezesen") == "AláíráS…"
+    assert S._denoise("Dátum:....................") == "Dátum…"
+    for word in ("elszállítása", "teszteseteket", "kiszerelése", "Ellenőrizte"):   # обычные слова не трогаем
+        assert S._denoise(word) == word
+
+
 def test_needs_translation():
     assert not S.needs_translation("30TL02GT")
     assert S.needs_translation("Szelep zárva")

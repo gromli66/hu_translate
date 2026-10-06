@@ -195,6 +195,18 @@ def merge_readers(words, portal_text):
     return [w for w, k in zip(out, keep) if k]
 
 
+# пунктир под подпись («Aláírás: ............») OCR читает буквами: «sszsseseeeeeeeseeee…» — такого венгерского слова
+# не бывает (30RDGT nyilv, 06.10: мусор уходил в перевод и раздувал строки формы); заменяем на «…»
+_LEADER = re.compile(r"[.,…:;]*[szeé.,:;…itn]{10,}")
+
+
+def _denoise(tok):
+    def rep(m):
+        s = m.group()
+        return "…" if sum(c in "szeé.,:;…" for c in s) / len(s) >= 0.8 else s
+    return _LEADER.sub(rep, tok)
+
+
 def ocr_paragraphs(words, portal_text):
     """Абзацы OCR-страницы: границы — по строкам чтения портала, текст — сверка чтецов,
     рамка — объединение рамок совпавших слов Tesseract. Возвращает (абзацы, слов только у Tesseract)."""
@@ -228,7 +240,7 @@ def ocr_paragraphs(words, portal_text):
         bxs = [box[j] for j in idx if box[j] is not None]
         if not bxs:
             continue
-        pars.append({"t": " ".join(text[j] for j in idx),
+        pars.append({"t": " ".join(_denoise(text[j]) for j in idx),
                      "bbox": [min(b_[0] for b_ in bxs), min(b_[1] for b_ in bxs), max(b_[2] for b_ in bxs), max(b_[3] for b_ in bxs)],
                      "bold": False})
     return pars, lost
