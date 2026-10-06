@@ -48,7 +48,9 @@ class Scheduler:
 
     def start(self):
         db.x("update jobs set status='queued', started=null where status='running'")
-        db.x("update jobs set status='cancelled', finished=? where status='cancelling'", (time.time(),))
+        db.x("update jobs set status='cancelled', finished=? where status='cancelling' and mode='translate'",
+             (time.time(),))
+        db.x("update jobs set status='done', mode='translate' where status='cancelling' and mode='edits'")
         self.stop_ev.clear()
         self.thread = threading.Thread(target=self._loop, name="hut-scheduler", daemon=True)
         self.thread.start()
@@ -80,40 +82,60 @@ class Scheduler:
             del self.procs[uid]
             self._finish(uid, rc)
         busy = {owner for _, owner, _ in self.procs.values()}
-        for job in db.q("select j.uid, j.owner, u.token_enc from jobs j join users u on u.id = j.owner "
-                        "where j.status='queued' order by j.created"):
+        for job in db.q("select j.uid, j.owner, j.project, j.mode, u.token_enc from jobs j "
+                        "join users u on u.id = j.owner where j.status='queued' order by j.created"):
             if len(self.procs) >= config.MAX_JOBS:
                 break
             if job["owner"] in busy:
                 continue
             token = security.dec(job["token_enc"])
             if not token:
-                db.x("update jobs set status='failed', finished=?, error=? where uid=?",
-                     (time.time(), "Нет токена портала. Впишите его в профиле и запустите перевод снова.", job["uid"]))
+                self._end(job["uid"], job["mode"], False, "Нет токена портала. Впишите его в профиле и запустите снова.")
                 continue
-            self._spawn(job["uid"], job["owner"], token)
+            self._spawn(job, token)
             busy.add(job["owner"])
 
-    def _spawn(self, uid, owner, token):
+    def _spawn(self, job, token):
+        uid, owner = job["uid"], job["owner"]
         jd = job_dir(uid)
+        # память переводов для задачи: утверждённое по проекту + неподтверждённое самого владельца;
+        # утверждённое идёт последним и при совпадении фразы побеждает
+        tm = {r["hu_key"]: r["ru"] for r in db.q(
+            "select hu_key, ru from tm where project=? and (status='approved' or (status='unconfirmed' and author=?)) "
+            "order by status='approved', created", (job["project"], owner))}
+        (jd / "tm.json").write_text(json.dumps(tm, ensure_ascii=False), encoding="utf-8")
         env = dict(os.environ, ROSATOM_AI_TOKEN=token, HU_CACHE=str(config.DATA / "cache"),
                    PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
         lf = open(jd / "log.txt", "a", encoding="utf-8")
-        p = subprocess.Popen(RUNNER + [str(jd)], cwd=config.ROOT, env=env, stdout=lf, stderr=subprocess.STDOUT)
+        p = subprocess.Popen(RUNNER + [str(jd), job["mode"]], cwd=config.ROOT, env=env, stdout=lf,
+                             stderr=subprocess.STDOUT)
         self.procs[uid] = (p, owner, lf)
         db.x("update jobs set status='running', started=? where uid=?", (time.time(), uid))
         log.info("задача %s запущена", uid)
 
     def _finish(self, uid, rc):
-        st = db.one("select status from jobs where uid=?", (uid,))["status"]
-        now = time.time()
-        if st == "cancelling":
-            db.x("update jobs set status='cancelled', finished=? where uid=?", (now, uid))
+        j = db.one("select status, mode from jobs where uid=?", (uid,))
+        if j["status"] == "cancelling":
+            self._end(uid, j["mode"], None, "")
         elif rc == 0:
-            summ = read_progress(uid).get("summary") or {}
-            db.x("update jobs set status='done', finished=?, summary=? where uid=?",
-                 (now, json.dumps(summ, ensure_ascii=False), uid))
+            self._end(uid, j["mode"], True, "")
         else:
-            db.x("update jobs set status='failed', finished=?, error=? where uid=?",
-                 (now, _tail(job_dir(uid) / "log.txt") or f"процесс завершился с кодом {rc}", uid))
-        log.info("задача %s: %s (код %s)", uid, st, rc)
+            self._end(uid, j["mode"], False, _tail(job_dir(uid) / "log.txt") or f"процесс завершился с кодом {rc}")
+        log.info("задача %s (%s): %s, код %s", uid, j["mode"], j["status"], rc)
+
+    @staticmethod
+    def _end(uid, mode, ok, error):
+        """ok: True — успех, False — сбой, None — отменено. Сбой или отмена применения правок не портят
+        готовый перевод: задача остаётся «готово», правки ждут следующего «Применить»."""
+        now = time.time()
+        if ok:
+            summ = json.dumps(read_progress(uid).get("summary") or {}, ensure_ascii=False)
+            db.x("update jobs set status='done', mode='translate', finished=?, summary=?, error=null where uid=?",
+                 (now, summ, uid))
+        elif mode == "edits":
+            db.x("update jobs set status='done', mode='translate', finished=?, error=? where uid=?",
+                 (now, "Правки не применились: " + error if error else None, uid))
+        elif ok is None:
+            db.x("update jobs set status='cancelled', finished=? where uid=?", (now, uid))
+        else:
+            db.x("update jobs set status='failed', finished=?, error=? where uid=?", (now, error, uid))

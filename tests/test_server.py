@@ -160,8 +160,8 @@ def test_one_job_per_user(env, monkeypatch):
 
 def test_progress_weights(tmp_path):
     sys.path.insert(0, str(config.ROOT / "src"))
-    from server.runner import Progress
-    pr = Progress(tmp_path / "p.json", review=True)
+    from server.runner import Progress, W_REVIEW
+    pr = Progress(tmp_path / "p.json", W_REVIEW)
     pr("перевод", 5, 10)
     p = json.loads((tmp_path / "p.json").read_text(encoding="utf-8"))
     assert p["pct"] == 27.5 and p["stage"] == "перевод"

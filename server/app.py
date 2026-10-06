@@ -18,30 +18,13 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Form, UploadFile, File
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 
-from server import config, db, security, jobs
+from server import config, db, security, jobs, review
+from server.web import HERE, COOKIE, NeedLogin, need_user, page, own_job
 
-HERE = Path(__file__).resolve().parent
-templates = Jinja2Templates(directory=HERE / "templates")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 SCHED = jobs.Scheduler()
-COOKIE = "hut_session"
 ALLOWED = (".docx", ".pdf")
-ROLE_RU = {"user": "пользователь", "expert": "эксперт", "admin": "админ"}
-
-# сообщения после действий: код в адресе → текст (сам текст в адрес не попадает)
-MESSAGES = {
-    "queued": ("Перевод поставлен в очередь. Прогресс — в списке ниже.", "ok"),
-    "no_token": ("Сначала впишите токен портала в профиле — переводы идут под ним.", "warn"),
-    "no_files": ("Нужны файлы DOCX или PDF. Другие форматы переводчик не читает.", "warn"),
-    "bad_project": ("Такого проекта нет. Выберите проект из списка.", "warn"),
-    "token_saved": ("Токен сохранён. Проверьте его кнопкой «Проверить».", "ok"),
-    "token_removed": ("Токен удалён.", "ok"),
-    "pw_changed": ("Пароль изменён.", "ok"),
-    "pw_bad": ("Текущий пароль не подошёл.", "warn"),
-    "pw_short": ("Новый пароль — не короче 8 знаков.", "warn"),
-}
 
 
 @asynccontextmanager
@@ -54,38 +37,15 @@ async def lifespan(_app):
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
+app.include_router(review.router)
 
 
 # ------------------------------------------------------------------ вход
-class NeedLogin(Exception):
-    pass
-
-
 @app.exception_handler(NeedLogin)
 async def _need_login(request: Request, _exc):
     if request.headers.get("HX-Request"):          # фрагмент HTMX: перейти на вход всей страницей
         return Response(status_code=200, headers={"HX-Redirect": "/login"})
     return RedirectResponse("/login", status_code=303)
-
-
-def current_user(request: Request):
-    sid = request.cookies.get(COOKIE)
-    if not sid:
-        return None
-    return db.one("select u.* from sessions s join users u on u.id = s.user_id "
-                  "where s.id=? and s.expires>? and u.active=1", (sid, time.time()))
-
-
-def need_user(request: Request):
-    u = current_user(request)
-    if not u:
-        raise NeedLogin()
-    return u
-
-
-def page(request, name, user=None, **ctx):
-    m = MESSAGES.get(request.query_params.get("m", ""))
-    return templates.TemplateResponse(request, name, dict(ctx, user=user, role_ru=ROLE_RU, msg=m))
 
 
 @app.get("/health")
@@ -149,7 +109,7 @@ def job_views(user):
     out = []
     for r in rows:
         files = json.loads(r["files"])
-        v = {"uid": r["uid"], "status": r["status"], "project": r["project"],
+        v = {"uid": r["uid"], "status": r["status"], "project": r["project"], "mode": r["mode"],
              "title": files[0] + (f" + {len(files) - 1} {_plural(len(files) - 1, 'файл', 'файла', 'файлов')}"
                                   if len(files) > 1 else ""),
              "created": time.strftime("%d.%m %H:%M", time.localtime(r["created"])),
@@ -209,20 +169,15 @@ def create_job(request: Request, files: List[UploadFile] = File(...), project: s
     return RedirectResponse("/?m=queued", status_code=303)
 
 
-def own_job(u, uid):
-    j = db.one("select * from jobs where uid=?", (uid,))
-    if not j or (j["owner"] != u["id"] and u["role"] != "admin"):
-        return None
-    return j
-
-
 @app.post("/jobs/{uid}/cancel", response_class=HTMLResponse)
 def cancel_job(request: Request, uid: str):
     u = need_user(request)
     j = own_job(u, uid)
     if not j:
         return Response(status_code=404)
-    if j["status"] == "queued":
+    if j["status"] == "queued" and j["mode"] == "edits":       # перевод готов, отменяется только применение правок
+        db.x("update jobs set status='done', mode='translate' where uid=?", (uid,))
+    elif j["status"] == "queued":
         db.x("update jobs set status='cancelled', finished=? where uid=?", (time.time(), uid))
     elif j["status"] == "running":
         db.x("update jobs set status='cancelling' where uid=?", (uid,))

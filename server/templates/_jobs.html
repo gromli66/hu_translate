@@ -12,13 +12,14 @@
     <td class="state">
       {% if j.status == 'running' %}
         <progress value="{{ j.pct }}" max="100"></progress>
-        <small>{{ j.stage }} · {{ j.pct | round | int }} %{% if j.eta %} · {{ j.eta }}{% endif %}</small>
+        <small>{% if j.mode == 'edits' %}применяю правки: {% endif %}{{ j.stage }} · {{ j.pct | round | int }} %{% if j.eta %} · {{ j.eta }}{% endif %}</small>
       {% elif j.status == 'queued' %}
         <small>В очереди: {{ j.pos }}-й. Начнётся, когда освободится место.</small>
       {% elif j.status == 'cancelling' %}
         <small>Отменяется…</small>
       {% elif j.status == 'done' %}
         <small class="ok">Готово · строк {{ j.segments }}{% if j.attention %} · просят внимания {{ j.attention }}{% endif %}</small>
+        {% if j.error %}<br><small class="warn">{{ j.error }}</small>{% endif %}
       {% elif j.status == 'failed' %}
         <small class="warn">Не получилось: {{ j.error }}</small>
       {% elif j.status == 'cancelled' %}
@@ -27,6 +28,7 @@
     </td>
     <td class="actions">
       {% if j.status == 'done' %}
+        <a role="button" class="small outline" href="/jobs/{{ j.uid }}/review">Вычитка</a>
         <a role="button" class="small" href="/jobs/{{ j.uid }}/download">Скачать</a>
       {% elif j.status in ('running', 'queued') %}
         <button class="outline secondary small" hx-post="/jobs/{{ j.uid }}/cancel" hx-target="#jobs"

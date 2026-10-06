@@ -29,3 +29,49 @@ table.jobs td.state progress { margin-bottom: .2rem; }
 table.jobs td.actions { width: 1%; white-space: nowrap; text-align: right; }
 .htmx-indicator { display: none; }
 .htmx-request .htmx-indicator, .htmx-request.htmx-indicator { display: inline; }
+
+/* ---------- вычитка ---------- */
+:root { --hut-edited-bg: #e3f4e1; }
+@media (prefers-color-scheme: dark) {
+  :root { --hut-error-bg: #5a1f1f; --hut-suspect-bg: #5a3a12; --hut-auto-bg: #1e3a56; --hut-term-bg: #4a4216;
+          --hut-edited-bg: #1f4a2a; }
+}
+main.container:has(.review-grid) { max-width: 1400px; }
+.review-head { display: flex; align-items: baseline; gap: 1.5rem; flex-wrap: wrap; }
+.review-head h3 { margin: 0; }
+.doc-tabs { display: flex; gap: .25rem; flex-wrap: wrap; }
+.doc-tabs a { padding: .2rem .6rem; border-radius: var(--pico-border-radius); text-decoration: none; }
+.doc-tabs a[aria-current] { background: var(--pico-primary-background); color: var(--pico-primary-inverse); }
+.chips { display: flex; gap: .4rem; flex-wrap: wrap; align-items: center; margin: .8rem 0; }
+/* Pico внутри кнопок подменяет --pico-color на белый — у чипов свои переменные */
+:root { --hut-text: var(--pico-color); }
+.chip { --pico-color: var(--hut-text); --pico-background-color: transparent; --pico-border-color: var(--pico-muted-border-color);
+        width: auto; margin: 0; padding: .2rem .7rem; font-size: .85rem; border-radius: 1rem; }
+.chip[aria-pressed=true] { border-color: var(--pico-primary); box-shadow: 0 0 0 1px var(--pico-primary); }
+.chip.k-error { background: var(--hut-error-bg); } .chip.k-suspect { background: var(--hut-suspect-bg); }
+.chip.k-auto { background: var(--hut-auto-bg); } .chip.k-term { background: var(--hut-term-bg); }
+.chip.k-edited { background: var(--hut-edited-bg); }
+.chips .hint { margin-left: auto; }
+.review-grid { display: grid; grid-template-columns: minmax(0, 2.4fr) minmax(0, 1fr); gap: 1rem; align-items: start; }
+@media (max-width: 900px) { .review-grid { grid-template-columns: 1fr; } }
+.side { position: sticky; top: 1rem; max-height: 75vh; overflow: auto; }
+.side-card { margin: 0; padding: 1rem; }
+.side-card .hu { font-size: .9rem; color: var(--pico-muted-color); margin-bottom: .4rem; }
+.side-card .ru { font-weight: 500; }
+.side-card h6 { margin: .9rem 0 .3rem; font-size: .8rem; text-transform: none; color: var(--pico-muted-color); }
+.side-card .before { text-decoration: line-through; color: var(--pico-muted-color); }
+.side-card ul { margin-bottom: .3rem; padding-left: 1rem; }
+.side-card li { font-size: .9rem; }
+/* Tabulator в цветах Pico, строки — по виду отметки */
+#table.tabulator { background: transparent; border-color: var(--pico-muted-border-color); font-size: .9rem; }
+#table .tabulator-header, #table .tabulator-header .tabulator-col { background: var(--pico-card-background-color); color: var(--pico-color); }
+#table .tabulator-tableholder, #table .tabulator-row { background: transparent; color: var(--pico-color); }
+#table .tabulator-row .tabulator-cell { white-space: pre-wrap; border-right-color: var(--pico-muted-border-color); }
+#table .tabulator-row.k-error { background: var(--hut-error-bg); }
+#table .tabulator-row.k-suspect { background: var(--hut-suspect-bg); }
+#table .tabulator-row.k-auto { background: var(--hut-auto-bg); }
+#table .tabulator-row.k-term .tabulator-cell:nth-child(4) { background: var(--hut-term-bg); }
+#table .tabulator-row.k-edited { background: var(--hut-edited-bg); }
+#table .tabulator-row.is-current { outline: 2px solid var(--pico-primary); outline-offset: -2px; }
+#table .tabulator-cell textarea { background: var(--pico-background-color); color: var(--pico-color); }
+[hidden] { display: none !important; }   /* .row (flex) не должен перебивать hidden */

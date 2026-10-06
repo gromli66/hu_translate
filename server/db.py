@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-"""SQLite: пользователи, сессии, задачи. Соединение на каждый вызов: страницы и очередь работают из разных потоков."""
+"""SQLite: пользователи, сессии, задачи, правки редакторов, память переводов.
+Соединение на каждый вызов: страницы и очередь работают из разных потоков."""
 import sqlite3
 from contextlib import contextmanager
 
@@ -17,7 +18,19 @@ create table if not exists jobs(
   review integer not null default 1, status text not null, error text, summary text,
   created real not null, started real, finished real);
 create index if not exists jobs_status on jobs(status, created);
+create table if not exists edits(
+  id integer primary key, job text not null references jobs(uid), doc text not null, seg text not null,
+  hu text not null, ru_before text not null, ru_after text not null, author integer not null references users(id),
+  created real not null);
+create table if not exists tm(
+  id integer primary key, project text not null, hu_key text not null, ru text not null,
+  status text not null default 'unconfirmed' check (status in ('unconfirmed', 'approved', 'rejected')),
+  author integer not null references users(id), job text, created real not null,
+  decided_by integer references users(id), decided_at real,
+  unique (project, hu_key, author));
 """
+# колонки, добавленные после первого выката: (таблица, колонка, объявление)
+MIGRATIONS = [("jobs", "mode", "text not null default 'translate'")]
 
 
 @contextmanager
@@ -36,6 +49,9 @@ def init():
     with conn() as c:
         c.execute("pragma journal_mode=wal")
         c.executescript(SCHEMA)
+        for table, col, decl in MIGRATIONS:
+            if col not in {r[1] for r in c.execute(f"pragma table_info({table})")}:
+                c.execute(f"alter table {table} add column {col} {decl}")
 
 
 def q(sql, args=()):

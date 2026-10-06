@@ -2,7 +2,9 @@
 """Исполнитель одной задачи: отдельный процесс, который запускает очередь (server/jobs.py).
 Глобальное состояние движка (токен, папка OCR, настройки проверяющего) живёт только в этом процессе.
 Токен приходит в переменной окружения ROSATOM_AI_TOKEN, в командной строке и логе его нет.
-usage: python -m server.runner <папка задачи>   (job.json, in/ → work/, progress.json)"""
+Режимы: translate — перевод с нуля (память переводов из tm.json, который готовит очередь из БД);
+edits — разнос правок из edits_pending.json по похожим строкам и пересборка файлов.
+usage: python -m server.runner <папка задачи> [translate|edits]   (job.json, in/ → work/, progress.json)"""
 import sys
 import json
 import time
@@ -14,15 +16,16 @@ sys.stdout.reconfigure(encoding="utf-8")
 import pipeline as P
 
 # доля шага в общей полосе прогресса, %
-WEIGHTS = {True: {"извлечение": (0, 5), "перевод": (5, 50), "проверка": (50, 95), "сборка": (95, 100)},
-           False: {"извлечение": (0, 5), "перевод": (5, 90), "сборка": (90, 100)}}
+W_REVIEW = {"извлечение": (0, 5), "перевод": (5, 50), "проверка": (50, 95), "сборка": (95, 100)}
+W_FAST = {"извлечение": (0, 5), "перевод": (5, 90), "сборка": (90, 100)}
+W_EDITS = {"правки": (0, 80), "сборка": (80, 100)}
 
 
 class Progress:
     """progress(шаг, сделано, всего) → progress.json (не чаще раза в 2 с). Время до готовности — по скорости шага."""
 
-    def __init__(self, path, review):
-        self.path, self.w = Path(path), WEIGHTS[review]
+    def __init__(self, path, weights):
+        self.path, self.w = Path(path), weights
         self.stage, self.t_stage, self.last = None, 0.0, 0.0
 
     def __call__(self, stage, done, total):
@@ -57,11 +60,22 @@ def summary(work):
     return {"segments": segs, "issues": issues, "suspicious": suspicious}
 
 
-def main(job_dir):
+def main(job_dir, mode="translate"):
     jd = Path(job_dir)
     spec = json.loads((jd / "job.json").read_text(encoding="utf-8"))
     prj, work = P.load_project(spec["project"]), jd / "work"
-    pr = Progress(jd / "progress.json", bool(spec["review"]))
+    if mode == "edits":
+        pend = jd / "edits_pending.json"
+        pairs = [tuple(p) for p in json.loads(pend.read_text(encoding="utf-8"))] if pend.exists() else []
+        pr = Progress(jd / "progress.json", W_EDITS)
+        if pairs:
+            P.propagate(work, prj, pairs, progress=pr)
+        P.assemble(work, pr)
+        pend.unlink(missing_ok=True)          # только после успешной пересборки: при сбое правки не теряются
+        pr.write({"stage": "готово", "pct": 100, "summary": summary(work)})
+        return
+    prj["tm"] = str(jd / "tm.json")           # утверждённая память проекта + неподтверждённая память владельца
+    pr = Progress(jd / "progress.json", W_REVIEW if spec["review"] else W_FAST)
     P.extract([jd / "in"], work, pr)
     P.translate(work, prj, progress=pr)
     if spec["review"]:
@@ -71,4 +85,4 @@ def main(job_dir):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    main(*sys.argv[1:3])

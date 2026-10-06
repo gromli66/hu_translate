@@ -340,6 +340,16 @@ def edits(work, prj, sim=0.8, workers=4):
             pairs += AR.apply(f, xf, prj["tm"], out)
     if not pairs:
         log("правок редактора нет"); return
+    changed = propagate(work, prj, pairs, sim, workers)
+    from assemble import assemble_all
+    for stem, d in changed.items():
+        assemble_all(Path(work) / "json" / f"{stem}.json", d, out)
+
+
+def propagate(work, prj, pairs, sim=0.8, workers=4, progress=_quiet):
+    """Утверждённые пары (венгерский, русский) → та же фраза с другими числами получает правку подстановкой,
+    похожие фразы (≥ sim) переводятся заново с парой как образцом. Документы сохраняются; возвращает
+    {док: данные} изменённых — сборку делает вызывающий (CLI — только изменённые, веб — все)."""
     docs = load_docs(work)
     uniq = {}
     for stem, d in docs.items():
@@ -380,10 +390,21 @@ def edits(work, prj, sim=0.8, workers=4):
         got, _ = tr._call([{"key": 0, "text": seg["text"]}], [], "", True, NOTE_RAG.format(hu=cl(hu), ru=ru))
         return job, got.get(0, "")
 
+    cnt, lock = {"n": 0}, threading.Lock()
+    progress("правки", 0, len(jobs))
+
+    def run_counted(job):
+        out = run(job)
+        with lock:
+            cnt["n"] += 1
+            progress("правки", cnt["n"], len(jobs))
+        return out
+
     with ThreadPoolExecutor(workers) as ex:
-        results = list(ex.map(run, jobs))
+        results = list(ex.map(run_counted, jobs))
     changed = set(); acc = 0
-    for (hu, ru, places), ru2 in direct + results:
+    # numbers=True — та же фраза с другими числами: решение редактора, повторённое механически (не «проверить»)
+    for ((hu, ru, places), ru2), numbers in [(x, True) for x in direct] + [(x, False) for x in results]:
         if not ru2:
             continue
         stem0, sid0, seg = places[0]
@@ -393,15 +414,14 @@ def edits(work, prj, sim=0.8, workers=4):
             acc += 1
             for stem, sid, _ in places:
                 r = docs[stem]["res"][sid]
-                r.setdefault("rag", {"before": r["ru"], "example": cl(hu)})
+                r.setdefault("rag", {"before": r["ru"], "example": cl(hu), "numbers": numbers})
                 r.pop("review", None); r.pop("autofix", None)      # вердикт был о прежнем переводе
                 r.update(ru=ru2, issues=iss2); changed.add(stem)
     for stem in changed:
         save_doc(work, stem, docs[stem])
-    log(f"по образцу принято {acc} из {len(direct) + len(results)}; пересобираю {len(changed)} док.")
-    from assemble import assemble_all
-    for stem in changed:
-        assemble_all(Path(work) / "json" / f"{stem}.json", docs[stem], out)
+    log(f"по образцу принято {acc} из {len(direct) + len(results)}; изменено документов {len(changed)}")
+    progress("правки", len(jobs), len(jobs))
+    return {stem: docs[stem] for stem in changed}
 
 
 # ------------------------------------------------------------------ термины нового комплекта (портал)

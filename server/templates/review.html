@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Вычитка — {{ title }}{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="/static/tabulator_simple.min.css">
+<div class="review-head">
+  <h3><a href="/" class="muted">Переводы</a> / {{ title }}</h3>
+  {% if docs|length > 1 %}
+  <nav class="doc-tabs">
+    {% for d in docs %}<a href="/jobs/{{ uid }}/review?doc={{ d|urlencode }}" {% if d == doc %}aria-current="page"{% endif %}>{{ d }}</a>{% endfor %}
+  </nav>
+  {% endif %}
+</div>
+
+{% if error %}<p class="msg warn">{{ error }}</p>{% endif %}
+{# div, а не p: форму внутри абзаца браузер выносит наружу, и она не прячется вместе с ним #}
+<div id="pending" class="msg ok row" {% if not pending %}hidden{% endif %}>
+  <span>Правок, ещё не разнесённых по похожим строкам и не попавших в файлы: <strong id="pending-count">{{ pending }}</strong>.</span>
+  <form method="post" action="/jobs/{{ uid }}/review/apply" class="inline">
+    <button class="small">Применить и пересобрать файлы</button>
+  </form>
+</div>
+
+{# не role="group": Pico.css оформляет такие группы по-своему, и текст чипов пропадает #}
+{% set attention = counts.error + counts.suspect + counts.auto %}
+<div class="chips" role="toolbar" aria-label="Фильтр строк">
+  <button class="chip" data-kind="" data-label="Все" aria-pressed="false">Все {{ total }}</button>
+  <button class="chip k-attention" data-kind="attention" data-label="Требуют внимания" aria-pressed="false">Требуют внимания {{ attention }}</button>
+  {% for k, name in kinds %}
+  <button class="chip k-{{ k }}" data-kind="{{ k }}" data-label="{{ name }}" aria-pressed="false">{{ name }} {{ counts[k] }}</button>
+  {% endfor %}
+  <small class="muted hint">Alt+↓ / Alt+↑ — следующая / предыдущая строка в фильтре · Enter — править ·
+    Shift+Enter — сохранить · Esc — отменить</small>
+</div>
+
+<div class="review-grid">
+  <div id="table" data-uid="{{ uid }}" data-doc="{{ doc }}" data-filter="{{ 'attention' if attention else '' }}"></div>
+  <aside id="side" class="side"><p class="muted">Выберите строку — здесь появятся причина отметки, термины глоссария
+    и прежний вариант перевода.</p></aside>
+</div>
+<script src="/static/tabulator.min.js"></script>
+<script src="/static/review.js"></script>
+{% endblock %}

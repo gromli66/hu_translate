@@ -1,0 +1,39 @@
+{# порядок — по важности: почему отмечено → было → термины; сам текст строки виден в таблице #}
+<article class="side-card k-{{ kind }}">
+  <small class="muted">Строка {{ sid }}</small>
+  {% if kind == 'ok' %}<p class="muted">Замечаний нет.</p>{% endif %}
+  {% if r.edited %}<p class="ok">Правка редактора.</p>{% endif %}
+  {% if r.issues %}
+  <h6>Формальная проверка</h6>
+  <ul>{% for i in r.issues %}<li>{{ i }}</li>{% endfor %}</ul>
+  {% endif %}
+  {% if r.review and r.review.serious %}
+  <h6>Подозрение смысловой проверки</h6>
+  <p>{{ r.review.reason }}</p>
+  {% endif %}
+  {% if r.autofix and r.autofix.accepted %}
+  <h6>Исправлено автоматически</h6>
+  <p>{{ r.autofix.reason }}</p>
+  {% endif %}
+  {% if r.rag and r.rag.numbers %}
+  <p class="ok">Правка редактора, подставлены свои числа. Образец: {{ r.rag.example }}</p>
+  {% elif r.rag %}
+  <h6>Переведено по образцу правки</h6>
+  <p>Образец: {{ r.rag.example }}</p>
+  {% endif %}
+  {% if before %}
+  <h6>Было</h6>
+  <p class="before">{{ before }}</p>
+  {# одинарные кавычки: tojson экранирует ' и <>&, но не " #}
+  {% if not busy %}<button class="outline small" onclick='hutRevert({{ sid|tojson }}, {{ before|tojson }})'>Вернуть «было»</button>{% endif %}
+  {% endif %}
+  {% if r.gloss_miss or r.warn %}
+  <h6>Не найдены термины глоссария</h6>
+  <ul>{% for t in (r.warn or []) + (r.gloss_miss or []) %}<li>{{ t }}</li>{% endfor %}</ul>
+  {% endif %}
+
+  <h6>Термины в строке</h6>
+  {% if terms %}
+  <ul class="terms">{% for t in terms %}<li><span>{{ t.hu }}</span> → <strong>{{ t.ru }}</strong> <small class="muted">{{ t.src }}</small></li>{% endfor %}</ul>
+  {% else %}<p class="muted">Терминов глоссариев в строке нет.</p>{% endif %}
+</article>

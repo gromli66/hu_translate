@@ -280,6 +280,8 @@ def _h_note(r):
     if (r.get("autofix") or {}).get("accepted"):
         return ("Автоисправление (проверить): " + (r["autofix"].get("reason") or "")[:200] + " | было: " +
                 TAG.sub("", r["autofix"].get("before") or "")[:300])
+    if r.get("rag") and r["rag"].get("numbers"):
+        return "Правка редактора, подставлены свои числа: " + r["rag"].get("example", "")[:200]
     if r.get("rag"):
         return ("По образцу правки редактора (проверить): " + r["rag"].get("example", "")[:200] + " | было: " +
                 TAG.sub("", r["rag"].get("before") or "")[:300])
@@ -308,7 +310,7 @@ def review_xlsx(out, segs, res, title):
                    "; ".join(r.get("warn", []) + r.get("gloss_miss", [])), None, _h_note(r)])
         row = ws.max_row
         # автоисправление (autofix.py): слепая вычитка 05.10 — серьёзных 32 → 14 на 123, но 12 внесено заново → голубым
-        if (r.get("autofix") or {}).get("accepted") or r.get("rag"):
+        if (r.get("autofix") or {}).get("accepted") or (r.get("rag") and not r["rag"].get("numbers")):
             for col in (4, 8):
                 ws.cell(row, col).fill = blue
         # смысловая проверка агентом портала (review_run.py): подозрение на искажение смысла — оранжевым
