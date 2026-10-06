@@ -3,7 +3,7 @@
 {% block content %}
 <article>
   <h3>Токен портала</h3>
-  <p class="muted">Переводы идут под вашим токеном go.ai-rosatom.ru. Он хранится на сервере в зашифрованном виде
+  <p class="muted">Переводы идут под вашим токеном go.ai-rosatom.ru (где его взять — в <a href="/help">справке</a>). Он хранится на сервере в зашифрованном виде
     и никому не показывается — даже вам.</p>
   <p>{% if has_token %}<span class="ok">Токен сохранён.</span>{% else %}<span class="warn">Токена нет.</span>{% endif %}</p>
   <form method="post" action="/profile/token">

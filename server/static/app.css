@@ -102,3 +102,8 @@ table.quality td { white-space: nowrap; }
 .help article { padding: 1rem 1.25rem; }
 .help h3 { margin-bottom: .6rem; }
 .help li { margin-bottom: .25rem; }
+.help .sw { display: inline-block; width: .9rem; height: .9rem; border-radius: .2rem; vertical-align: -.1rem;
+            border: 1px solid var(--pico-muted-border-color); }
+.sw.k-error { background: var(--hut-error-bg); } .sw.k-suspect { background: var(--hut-suspect-bg); }
+.sw.k-auto { background: var(--hut-auto-bg); } .sw.k-term { background: var(--hut-term-bg); }
+.sw.k-edited { background: var(--hut-edited-bg); }

@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Управление переводчиком HU→RU. Запускать из папки установки:  ./hut <команда>
+#
+#   user add <логин> [--role expert|admin]   новый пользователь, пароль спросит (роль по умолчанию — переводчик)
+#   user passwd <логин>                      сменить пароль
+#   user role <логин> <user|expert|admin>    сменить роль
+#   user disable <логин> | enable <логин>    отключить / включить
+#   user list                                все пользователи
+#   project add <имя> <файл глоссария>       новый проект (комплект) с глоссарием заказчика: docx, xlsx или md
+#   project list                             проекты
+#   backup                                   копия базы сейчас (сервис делает её и сам раз в сутки)
+#   status | logs | start | stop | restart
+#   check                                    проверка установки
+set -uo pipefail
+cd "$(dirname "$0")"
+port=$(grep -E '^HUT_PORT=' .env 2>/dev/null | cut -d= -f2)
+port=${port:-8010}
+
+check() {
+  local ok=0 fail=0
+  t() {   # t "что проверяем" "что делать, если нет" команда…
+    local name="$1" hint="$2"; shift 2
+    if "$@" >/dev/null 2>&1; then echo "OK    $name"; ok=$((ok + 1)); else echo "FAIL  $name — $hint"; fail=$((fail + 1)); fi
+  }
+  t "сервис запущен" "./hut start; ./hut logs" sh -c 'docker ps --filter name=^hut$ --filter status=running -q | grep -q .'
+  t "сервис отвечает на порту $port" "./hut logs" curl -fsS -m 5 "http://127.0.0.1:${port}/health"
+  t "страница входа открывается" "./hut logs" sh -c "curl -fsS -m 5 http://127.0.0.1:${port}/login | grep -q 'Вход'"
+  t "ключ шифрования задан" "запустите ./install.sh" sh -c "grep -qE '^HUT_SECRET_KEY=.+' .env"
+  t "распознавание сканов (Tesseract hun)" "образ повреждён — ./install.sh заново" \
+    sh -c "docker exec hut tesseract --list-langs | grep -qx hun"
+  t "портал go.ai-rosatom.ru доступен с сервера" "откройте серверу доступ к https://go.ai-rosatom.ru" \
+    docker exec hut python -c "import urllib.request,urllib.error,os
+try: urllib.request.urlopen(os.environ.get('ROSATOM_AI_BASE','https://go.ai-rosatom.ru')+'/api/models', timeout=15)
+except urllib.error.HTTPError as e: assert e.code in (401, 403), e"
+  t "есть проект с глоссарием" "./hut project add <имя> <глоссарий>" sh -c "ls projects/*/project.json"
+  t "есть администратор" "./hut user add <логин> --role admin" sh -c "docker exec hut python manage.py user list | grep -q ' admin '"
+  t "на диске больше 5 ГБ" "освободите место" sh -c "[ \$(df -Pk . | awk 'NR==2 {print \$4}') -gt 5000000 ]"
+  echo "итог: OK $ok, FAIL $fail"
+  [ "$fail" -eq 0 ]
+}
+
+case "${1:-}" in
+  user)    shift; docker compose exec hut python manage.py user "$@" ;;
+  project)
+    if [ "${2:-}" = "add" ]; then
+      [ $# -eq 4 ] || { echo "Нужно: ./hut project add <имя> <файл глоссария>"; exit 1; }
+      [ -f "$4" ] || { echo "Нет файла $4"; exit 1; }
+      mkdir -p "projects/$3/data" && cp "$4" "projects/$3/data/" \
+        && docker compose exec -T hut python manage.py project add "$3" "/app/projects/$3/data/$(basename "$4")"
+    else
+      shift; docker compose exec -T hut python manage.py project "$@"
+    fi ;;
+  backup)  docker compose exec -T hut python manage.py backup ;;
+  status)  docker compose ps; curl -fsS -m 5 "http://127.0.0.1:${port}/health" && echo ;;
+  logs)    docker compose logs --tail 100 hut ;;
+  start)   docker compose up -d ;;
+  stop)    docker compose stop ;;
+  restart) docker compose restart ;;
+  check)   check ;;
+  *)       sed -n '2,15p' "$0" ;;
+esac

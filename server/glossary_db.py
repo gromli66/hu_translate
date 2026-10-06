@@ -150,6 +150,13 @@ def _md(title, rules, rows):
     return "\n".join(parts) + "\n"
 
 
+def entries_md(title, rules, entries):
+    """md в формате движка из [(hu, ru, комментарий, раздел)] — глоссарий нового проекта (manage.py project add)."""
+    rows = [{"hu": hu, "ru": ru, "note": note, "section": sec, "strict": int("строгий" in note)}
+            for hu, ru, note, sec in entries]
+    return _md(title, rules, rows)
+
+
 def snapshot(name):
     """(версия, путь к project.json снимка). Снимок версии создаётся один раз и потом переиспользуется."""
     ver = version(name)

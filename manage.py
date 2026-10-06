@@ -7,8 +7,12 @@
   python manage.py user disable <логин> | enable <логин>
   python manage.py user list
   python manage.py backup                       — копия базы сейчас (сервис делает её и сам раз в сутки)
+  python manage.py project add <имя> <файл>     — новый проект (комплект) с глоссарием заказчика (md, docx, xlsx)
+  python manage.py project list
 Без --password пароль спрашивается с клавиатуры (так он не остаётся в истории команд)."""
+import re
 import sys
+import json
 import time
 import getpass
 import argparse
@@ -27,6 +31,34 @@ def ask_password(given):
     return p1
 
 
+def project_cmd(args):
+    """Проект = комплект документов со своим глоссарием заказчика. Новая версия глоссария существующего проекта
+    загружается экспертом в веб-интерфейсе (Эксперт → Импорт глоссария заказчика)."""
+    from server import config, glossary_db as GD
+    if args.cmd == "list":
+        for pj in sorted(config.PROJECTS.glob("*/project.json")):
+            print(pj.parent.name)
+        return
+    if not re.fullmatch(r"[\w-]{1,40}", args.name):
+        sys.exit("Имя проекта — латиница, цифры, «-» и «_», до 40 знаков.")
+    d = config.PROJECTS / args.name
+    if (d / "project.json").exists():
+        sys.exit(f"Проект {args.name} уже есть. Новую версию глоссария загружает эксперт: "
+                 "Эксперт → Импорт глоссария заказчика.")
+    try:
+        rules, entries = GD.parse_upload(args.glossary)
+    except (ValueError, OSError) as e:
+        sys.exit(f"Глоссарий не прочитан: {e}")
+    if not entries:
+        sys.exit("В файле не нашлось пар «венгерский — русский». Нужны таблицы: венгерский | русский | комментарий.")
+    (d / "data").mkdir(parents=True, exist_ok=True)
+    (d / "data" / "glossary.md").write_text(GD.entries_md(f"Глоссарий {args.name}", rules, entries), encoding="utf-8")
+    (d / "project.json").write_text(json.dumps({"glossary": "data/glossary.md", "tm": "data/tm.json"}, ensure_ascii=False,
+                                               indent=1), encoding="utf-8")
+    print(f"Проект {args.name}: терминов {len(entries)}{', правила применения есть' if rules else ''}. "
+          "В веб-интерфейсе он уже в списке проектов.")
+
+
 def main():
     sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser(description="Команды администратора переводчика")
@@ -40,11 +72,17 @@ def main():
         u.add_parser(name).add_argument("login")
     u.add_parser("list")
     sub.add_parser("backup")
+    pr = sub.add_parser("project").add_subparsers(dest="cmd", required=True)
+    pa = pr.add_parser("add"); pa.add_argument("name"); pa.add_argument("glossary")
+    pr.add_parser("list")
     args = ap.parse_args()
     db.init()
     if args.what == "backup":
         from server import maintenance
         print(f"Копия базы: {maintenance.backup()}")
+        return
+    if args.what == "project":
+        project_cmd(args)
         return
 
     if args.cmd == "list":

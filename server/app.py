@@ -236,6 +236,11 @@ def download(request: Request, uid: str):
                              f"filename*=UTF-8''{urllib.parse.quote('перевод_' + name + '.zip')}"})
 
 
+@app.get("/help", response_class=HTMLResponse)
+def help_page(request: Request):
+    return page(request, "help.html", need_user(request))
+
+
 # ------------------------------------------------------------------ профиль
 @app.get("/profile", response_class=HTMLResponse)
 def profile(request: Request):

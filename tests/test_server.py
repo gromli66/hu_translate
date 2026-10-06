@@ -74,6 +74,7 @@ def test_login_and_redirects(client):
     assert "Неверный логин или пароль" in r.text
     login(client, "alice")
     assert "Ваши переводы" in client.get("/").text
+    assert "Как перевести документы" in client.get("/help").text
 
 
 def test_job_needs_token(client):
