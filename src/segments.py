@@ -224,6 +224,35 @@ LABEL = re.compile(r"^[A-Za-zÁÉÍÓÖŐÚÜŰáéíóöőúüű]{3,}:")
 SYMBOL = re.compile(r"[\w<>≤≥=±÷+%°Δ×→]")
 # флажок ☐ Tesseract читает как «L]», «L1]», «[]»
 CHECKBOX = re.compile(r"^\[?[LlI1|]{0,2}\]$|^\[$")
+# подпись поля, слипшаяся с рукописью или линейкой слева: «oílNév:», «INév:»
+GLUED = re.compile(r"^(.+?)([A-ZÁÉÍÓÖŐÚÜŰ][a-záéíóöőúüű]{2,}:)$")
+
+
+def _boxlike(w, line_h):
+    """Флажок ☑/☐/☒, прочитанный буквами («VI», «[5», «£]»): до трёх знаков в почти квадратной рамке, неуверенно,
+    и рамка выше букв строки или есть скобка — печатное «A» перед кодом тоже бывает квадратным и с уверенностью 0.
+    Такое слово — картинка флажка: не переводится и не закрывается плашкой (32RDGT, 07.10)."""
+    x0, y0, x1, y1 = w["box"]
+    return len(w["raw"]) <= 3 and w.get("c", 100) < 60 and 0.75 <= (x1 - x0) / max(y1 - y0, 0.1) <= 1.3 \
+        and (w["h"] >= 1.15 * line_h or bool(re.search(r"[\[\]£|]", w["raw"])))
+
+
+def _split_glued(words):
+    """«oílNév:» — одно слово Tesseract из рукописной даты и подписи поля: целиком оно сходило за подпись (двоеточие)
+    и печаталось вместе с рукописью кеглем 15 (32RDGT, лист регистрации, 07.10). Подпись — отдельным словом,
+    рамка делится по числу букв; обрывок линейки («I», «|») отбрасывается."""
+    out = []
+    for w in words:
+        m = GLUED.match(w["t"])
+        if not m or re.search(r"[A-ZÁÉÍÓÖŐÚÜŰ]{2}", m.group(1)):
+            out.append(w)
+            continue
+        x0, y0, x1, y1 = w["box"]
+        cut = x0 + (x1 - x0) * len(m.group(1)) / len(w["t"])
+        if not re.fullmatch(r"[|Il1\[\]]", m.group(1)):
+            out.append(dict(w, t=m.group(1), box=[x0, y0, cut, y1]))
+        out.append(dict(w, t=m.group(2), box=[cut, y0, x1, y1]))
+    return out
 
 
 def ocr_words(words, portal_text):
@@ -234,7 +263,7 @@ def ocr_words(words, portal_text):
     Зона рукописи — рамки рукописных слов; неуверенное (< 90) бледное слово внутри зоны тоже рукописное.
     Возвращает (слова, слов портала без места на странице)."""
     # обрывки пунктира («sss», «see» высотой 0,5–1 pt) — не слова
-    ws = [dict(w, t=_denoise(w["t"]), raw=w["t"]) for w in words if w["h"] >= 2.0]
+    ws = [dict(w, t=_denoise(w["t"]), raw=w["t"]) for w in _split_glued(words) if w["h"] >= 2.0]
     # рукопись по геометрии строки: неуверенное слово вдвое выше соседей — рукописная дата/подпись поверх формы
     # (нижняя медиана: из двух слов «медиана» иначе — большее, и высокое слово не считалось высоким)
     by_line = {}
@@ -248,10 +277,18 @@ def ocr_words(words, portal_text):
         # рукописные цифры Tesseract читает и с уверенностью 67–75 («242.» вместо «2017.»), но краски в них
         # как у рукописи (0,04–0,075): очень бледное — рукопись всегда, бледное — при уверенности ниже 80
         w["hand"] = (ink < 0.05 or (cf < 80 and ink < INK_HAND) or (cf < 60 and tall)) and not LABEL.match(w["raw"])
+        w["box_like"] = _boxlike(w, hs_[(len(hs_) - 1) // 2])
+        # буллет • читается как «e»: одиночный знак ниже строки и почти сплошная краска (0,66 против 0,2–0,45
+        # у букв) — картинка, как флажок; иначе «e» переводилось в «е», а сам буллет закрывался плашкой (32RDGT)
+        w["box_like"] |= len(w["raw"]) == 1 and w["h"] < 0.7 * hs_[(len(hs_) - 1) // 2] and ink > 0.55
+    # флажки и буллеты — картинки: в сверку с порталом не идут ни у Tesseract, ни у портала — иначе кусок
+    # «• RD 3.1.;» портала доставался буллету «e» и пропадал вместе с ним (32RDGT, 07.10)
+    ws = [w for w in ws if not w["box_like"]]
     ptoks, pline = [], []
     for li, ln in enumerate(portal_text.splitlines()):
         for t in ln.split():
-            ptoks.append(t); pline.append(li)
+            if not re.fullmatch(r"[•·▪●○◦■□☐☑☒✓✔]+", t):
+                ptoks.append(t); pline.append(li)
     a, b = [_norm(w["t"]) for w in ws], [_norm(t) for t in ptoks]
     wline = [None] * len(ws)                         # строка чтения портала, к которой прижато слово
     conf = [False] * len(ws)
@@ -306,7 +343,7 @@ def ocr_words(words, portal_text):
     for w, h in zip(ws, hand):
         # знаки сравнения и единиц — смысл («v > 1,0 мм»: Tesseract читает «>» как «5», портал правит на «>»);
         # одиночные точки и запятые пунктира — нет
-        if not SYMBOL.search(w["t"]) or h or CHECKBOX.match(w["t"]):
+        if not SYMBOL.search(w["t"]) or h or CHECKBOX.match(w["t"]) or w["box_like"]:
             continue
         if w.get("c", 100) < 90 and w.get("ink", 1) < INK_HAND and near(w["box"]) and not LABEL.match(w["raw"]):
             continue                                   # рядом с рукописью и сам похож на неё («TÓ» в фамилии от руки)
@@ -350,8 +387,11 @@ def ocr_frags(words, vs=()):
         out.append(cur)
     for f in out:
         ws = f.pop("ws"); f.pop("line")
-        plain = sorted(w["h"] for w in ws if not DESC.search(w["t"]) and re.search(r"[a-zá-ű0-9]", w["t"], re.I))
-        hs = plain or sorted(w["h"] * 0.8 for w in ws)
+        # кегль — по уверенно прочитанным словам: рукописная дата, исправленная порталом («2025.ot,» → «2025.04.07.»),
+        # раздувала кегль строки «Dátum: …» до 15 pt (32RDGT, 07.10)
+        sure = [w for w in ws if w.get("c", 100) >= 80] or ws
+        plain = sorted(w["h"] for w in sure if not DESC.search(w["t"]) and re.search(r"[a-zá-ű0-9]", w["t"], re.I))
+        hs = plain or sorted(w["h"] * 0.8 for w in sure)
         size = hs[len(hs) // 2] / 0.72
         # проверка по ширине: средняя буква ≈ 0,5 кегля — раздутая по высоте рамка (подпись от руки, диакритика
         # над буквами) не даёт кегль 13 у подписи поля и у «Verziószám:»
@@ -365,6 +405,25 @@ def ocr_frags(words, vs=()):
         med = sorted(same)[len(same) // 2] if same else 0
         n = sum(len(w["t"]) for w in ws) or 1
         f["bold"] = med > 0 and sum(len(w["t"]) for w in ws if w.get("ink", 0) > 1.3 * med) > n / 2
+        # по одной-двум буквам («A» перед кодом, «0» в таблице) штрих не измерить: жирность от краски, иначе
+        # одиночный знак отрывался от абзаца или приклеивался к жирной шапке
+        st = sorted(w["stroke"] for w in sure if w.get("stroke"))
+        letters = sum(len(re.findall(r"\w", w["t"])) for w in sure)
+        f["_st"] = st[len(st) // 2] / f["size"] if st and letters >= 3 else None
+    # жирность — по толщине штриха относительно кегля: жирное в 1,3–1,7 раза толще медианы страницы (замер 32RDGT:
+    # обычный текст 0,72–0,96 pt, заголовки 1,44–2,64 pt); медиана — по числу букв, кэш без штриха — по краске
+    rel = sorted((f["_st"], len(f["t"])) for f in out if f["_st"])
+    if rel:
+        acc, half = 0, sum(n for _, n in rel) / 2
+        for ref, n in rel:
+            acc += n
+            if acc >= half:
+                break
+        for f in out:
+            if f["_st"]:
+                f["bold"] = f["_st"] > 1.3 * ref
+    for f in out:
+        f.pop("_st")
     # моноширинный шрифт (Courier): буква ≈ 0,6 кегля против 0,42–0,44 у Times (замер 06.10: 3SZ19 — 0,65,
     # 3PR42 и формы 30RDGT — 0,42–0,44); решение по странице, длинные строки — каждая сама
     ratio = lambda f: (f["bbox"][2] - f["bbox"][0]) / (len(f["t"]) * f["size"])
@@ -411,6 +470,20 @@ def _ink(gray, box, dpi):
     return float((cut < 128).mean()) if cut.size else 0.0
 
 
+def _stroke(gray, box, dpi):
+    """Толщина штриха слова, pt: медиана длин горизонтальных отрезков краски. Плотность краски жирное не отличает —
+    у прописных она выше сама по себе: заголовки титула 32RDGT не выходили жирными (07.10)."""
+    import numpy as np
+    k = dpi / 72
+    x0, y0, x1, y1 = (int(v * k) for v in box)
+    cut = gray[max(y0, 0):max(y1, y0 + 1), max(x0, 0):max(x1, x0 + 1)] < 128
+    if not cut.any():
+        return 0.0
+    d = np.diff(np.pad(cut.astype(np.int8), ((0, 0), (1, 1))), axis=1)
+    runs = np.nonzero(d == -1)[1] - np.nonzero(d == 1)[1]
+    return round(float(np.median(runs)) / k, 2)
+
+
 def _dehyphen(words):
     """Склейка переносов на концах строк Tesseract (внутри абзаца Tesseract)."""
     out = []
@@ -453,7 +526,7 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
     настоящих слов Tesseract в слое нет (missing_share > 20 %)."""
     import fitz
     from concurrent.futures import ThreadPoolExecutor
-    from layout import frags_from_text, rules, rules_from_image, group, avail_rects
+    from layout import frags_from_text, rules, rules_from_image, group, avail_rects, aligns
     doc = fitz.open(path)
     work = Path(OCR_DIR) / Path(path).stem; work.mkdir(parents=True, exist_ok=True)
     rng = list(pages if pages is not None else range(len(doc)))
@@ -467,6 +540,14 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
             if isinstance(cached, dict):            # старый кэш (список слов без уверенности) — пересчитать
                 for w in cached["words"]:           # из JSON номера строк приходят списками — ключи словаря
                     w["line"], w["key"] = tuple(w["line"]), tuple(w["key"])
+                if all("stroke" in w for w in cached["words"]):
+                    return cached
+                # кэш без толщины штриха: досчитать по картинке, Tesseract не перезапускать
+                pix = fitz.open(path)[pno].get_pixmap(dpi=dpi_tess, colorspace=fitz.csGRAY)
+                gray = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width)
+                for w in cached["words"]:
+                    w["stroke"] = _stroke(gray, w["box"], dpi_tess)
+                f.write_text(json.dumps(cached, ensure_ascii=False), encoding="utf-8")
                 return cached
         png = work / f"p{pno:04d}.png"
         pix = fitz.open(path)[pno].get_pixmap(dpi=dpi_tess, colorspace=fitz.csGRAY)
@@ -475,6 +556,7 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
         gray = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width)
         for w in ws:
             w["ink"] = round(_ink(gray, w["box"], dpi_tess), 3)
+            w["stroke"] = _stroke(gray, w["box"], dpi_tess)
         ih, iv = rules_from_image(gray, dpi_tess)
         out = {"words": ws, "hs": ih, "vs": iv}
         f.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
@@ -514,9 +596,11 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
         else:
             pars = group(frags_from_text(page, vs), hs, vs)
         avail_rects(pars, hs, vs, page.rect)
+        aligns(pars, vs)
         for p in pars:
             segs.append({"id": len(segs), "text": p["text"], "src": p["text"], "page": pno,
                          "loc": {"bbox": [round(v, 2) for v in p["bbox"]], "avail": [round(v, 2) for v in p["avail"]],
+                                 "align": p["align"], "cell": p["cell"],
                                  "frags": [[round(v, 2) for v in f["bbox"]] for f in p["frags"]],
                                  "size": p["size"], "bold": p["bold"], "family": p.get("family", "serif"),
                                  "ocr": plan[pno]}})

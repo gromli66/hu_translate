@@ -75,3 +75,84 @@ def test_free_keeps_own_line_and_avoids_neighbours():
     busy = [fitz.Rect(380, 116, 440, 135)]                    # «Номер версии», перенесённое на вторую строку
     r = _free(fitz.Rect(116, 126, 480, 140), busy, [116, 126, 320, 134])
     assert r.x1 <= 380 and r.y0 == 126                        # длинный перевод строки ниже не залезает под него
+
+
+def test_list_line_avail_stops_at_next_line():
+    """Рамки строк тесного списка перекрываются: перенос строки не должен наезжать на следующую (32RDGT, п. 2.2)."""
+    pars = [{"frags": [{"bbox": [203, 262, 299, 276.9]}], "bbox": [203, 262, 299, 276.9]},
+            {"frags": [{"bbox": [203, 274.6, 306, 289.5]}], "bbox": [203, 274.6, 306, 289.5]}]
+    L.avail_rects(pars, [], [], fitz.Rect(0, 0, 595, 842))
+    assert pars[0]["avail"][3] == 276.9
+
+
+import pytest
+
+
+@pytest.mark.parametrize("rot", [0, 90, 180, 270])
+def test_rotated_page_translation_lands_upright(tmp_path, rot):
+    """Страница с /Rotate: координаты сегментов — как страница видна, перевод встаёт на место исходной строки
+    и читается слева направо (32RDGT: листы с поворотом 270° получали перевод поперёк листа, 07.10)."""
+    from assemble import build_pdf
+    src, out = tmp_path / "src.pdf", tmp_path / "ru.pdf"
+    d = fitz.open(); p = d.new_page(width=595, height=842); p.set_rotation(rot)
+    p.insert_htmlbox(fitz.Rect(100, 100, 400, 130) * p.derotation_matrix, "Alma körte szilva",
+                     css="* {font-family: serif; font-size: 12pt;}", rotate=rot)
+    d.save(src)
+    page = fitz.open(src)[0]
+    pars = L.group(L.frags_from_text(page), [], [])
+    L.avail_rects(pars, [], [], page.rect)
+    assert [q["text"] for q in pars] == ["Alma körte szilva"]
+    x0, y0, x1, y1 = pars[0]["bbox"]
+    assert abs(x0 - 100) < 4 and 95 <= y0 < 115
+    seg = {"id": 0, "page": 0, "text": pars[0]["text"],
+           "loc": {"bbox": pars[0]["bbox"], "avail": [x0, y0, 500, y1], "frags": [f["bbox"] for f in pars[0]["frags"]],
+                   "size": 12, "bold": False, "family": "serif", "ocr": False}}
+    build_pdf(str(src), str(out), [seg], {"0": {"ru": "Яблоко груша слива"}})
+    q = fitz.open(out)[0]
+    rot_m = q.rotation_matrix
+    lines = [ln for b in q.get_text("dict")["blocks"] for ln in b.get("lines", [])]
+    assert "".join(s["text"] for ln in lines for s in ln["spans"]).split() == ["Яблоко", "груша", "слива"]
+    for ln in lines:
+        v = fitz.Point(ln["dir"]) * rot_m - fitz.Point(0, 0) * rot_m
+        r = fitz.Rect(ln["bbox"]) * rot_m
+        assert v.x > 0.9 and abs(v.y) < 0.1                    # слева направо на видимой странице
+        assert abs(r.x0 - x0) < 4 and abs(r.y0 - y0) < 6       # на месте исходной строки
+
+
+def test_glued_label_split_from_handwriting():
+    """«oílNév:» — рукописная дата слиплась с подписью поля: подпись отдельно, обрывок линейки «I» — прочь."""
+    out = S._split_glued([word("oílNév:", 150, 280, w=41), word("INév:", 172, 294, w=20), word("Megnevezés:", 10, 10)])
+    assert [w["t"] for w in out] == ["oíl", "Név:", "Név:", "Megnevezés:"]
+    assert out[0]["box"][2] == out[1]["box"][0] and out[1]["box"][2] == 191
+
+
+def test_checkbox_and_bullet_glyphs_are_not_text():
+    """Флажок ☑ («VI», «[5») и буллет • («e») — картинки: не переводятся и не стирают соседний код (32RDGT)."""
+    ws = [word("2./", 68, 100, w=10, h=7), word("VI", 230, 100, w=8.4, h=8.6, c=45),
+          word("új", 245, 100, w=12, h=7), word("[5", 308, 100, w=8.6, h=8.6, c=37),
+          word("ciklikus", 320, 100, h=7),
+          word("e", 120, 380, w=3.8, h=3.8, line=(2, 1, 1), ink=0.66, c=87),
+          word("RD3.1.;", 133, 378, w=34, h=8.4, line=(2, 1, 1), c=44),
+          word("RD", 170, 380, w=13, h=6.7, line=(2, 1, 1)), word("3.2.", 186, 380, w=14, h=6.7, line=(2, 1, 1))]
+    out, _ = S.ocr_words(ws, "2./ ☑ új ☑ ciklikus\n• RD 3.1.; RD 3.2.")
+    assert [w["t"] for w in out] == ["2./", "új", "ciklikus", "RD 3.1.;", "RD", "3.2."]
+
+
+def test_numbered_item_starts_paragraph():
+    """«3./ …» под строкой 2 — новый пункт, а не продолжение строки 2 (рамка абзаца накрывала подпись «2./»)."""
+    f = lambda t, x0, y0, x1: {"t": t, "bbox": [x0, y0, x1, y0 + 8], "size": 10, "bold": False}
+    pars = L.group([f("új utasítás ciklikus felülvizsgálat", 190, 100, 430), f("3./ A tesztelési utasítás", 69, 109, 300)],
+                   [], [], form=True)
+    assert len(pars) == 2
+
+
+def test_center_only_in_middle_of_own_cell_and_not_for_lists():
+    """По центру — посередине своей ячейки; строка списка, делящая левый край с соседом, — влево; штамп у кромки
+    листа края не сбивает (32RDGT, титул)."""
+    vs = [(0, 300, 69.0), (0, 300, 520.0)]
+    p = lambda x0, y0, x1: {"bbox": [x0, y0, x1, y0 + 10], "frags": [{"bbox": [x0, y0, x1, y0 + 10]}]}
+    stamp, title = p(0, 0, 60), p(110, 50, 480)
+    li1, li2 = p(203, 150, 300), p(203, 163, 386)
+    L.aligns([stamp, title, li1, li2], vs)
+    assert title["align"] == "center" and title["cell"] == [69.0, 520.0]
+    assert li1["align"] == "left" and li2["align"] == "left"

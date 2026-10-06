@@ -101,6 +101,9 @@ def build_pdf(src, out, segs, res):
     sub = fitz.open()
     for pno in pages:
         page = doc[pno]
+        # координаты сегментов — как страница видна; заливка и вставка — в системе неповёрнутой страницы,
+        # текст — с поворотом страницы (32RDGT: листы с /Rotate 270 получали перевод поперёк листа, 07.10)
+        der = page.derotation_matrix
         todo = [(s, res[str(s["id"])]) for s in segs if s["page"] == pno
                 and not res[str(s["id"])].get("copied") and res[str(s["id"])]["ru"]]
         ocr = any(s["loc"].get("ocr") for s, _ in todo)
@@ -111,10 +114,10 @@ def build_pdf(src, out, segs, res):
                 # влево под тире/номер пункта, которые Tesseract мог не включить в рамку
                 for i, (x0, y0, x1, y1) in enumerate(s["loc"]["frags"]):
                     left = 16 if i == 0 and re.match(r"\s*[-–•]", s["text"]) else 2
-                    page.add_redact_annot(fitz.Rect(x0 - left, y0 - 1.5, x1 + 2, y1 + 1.5), fill=(1, 1, 1))
+                    page.add_redact_annot(fitz.Rect(x0 - left, y0 - 1.5, x1 + 2, y1 + 1.5) * der, fill=(1, 1, 1))
             else:
                 for bb in s["loc"]["frags"]:
-                    page.add_redact_annot(fitz.Rect(bb), fill=False)
+                    page.add_redact_annot(fitz.Rect(bb) * der, fill=False)
         # скан: пиксели под белой плашкой стираются в самой картинке — иначе её вытаскивает конвертер в DOCX
         # и под русским текстом проступает венгерский (30RDGT nyilv, 06.10)
         page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS if ocr else fitz.PDF_REDACT_IMAGE_NONE,
@@ -129,8 +132,14 @@ def build_pdf(src, out, segs, res):
             ax1, ay1 = loc["avail"][2], loc["avail"][3]
             rect = fitz.Rect(x0, y0 - 0.5, max(ax1, x1), max(ay1, y1) + 0.5)
             align = "left"
-            # центр — только при равных полях слева и справа от рамки текста страницы
-            if abs((x0 - fl) - (fr - x1)) < 12 and (x1 - x0) < 0.7 * (fr - fl) and x0 - fl > 20:
+            if "align" in loc:                      # выключка и ячейка определены при извлечении (layout.aligns)
+                if loc["align"] == "center":
+                    cl, cr = loc["cell"]
+                    half = min((x0 + x1) / 2 - cl, cr - (x0 + x1) / 2) - 2
+                    rect = fitz.Rect((x0 + x1) / 2 - half, y0 - 0.5, (x0 + x1) / 2 + half, max(ay1, y1) + 0.5)
+                    align = "center"
+            # старые задачи: центр — при равных полях слева и справа от рамки текста страницы
+            elif abs((x0 - fl) - (fr - x1)) < 12 and (x1 - x0) < 0.7 * (fr - fl) and x0 - fl > 20:
                 half = min((x0 + x1) / 2 - fl, fr - (x0 + x1) / 2)
                 rect = fitz.Rect((x0 + x1) / 2 - half, y0 - 0.5, (x0 + x1) / 2 + half, max(ay1, y1) + 0.5)
                 align = "center"
@@ -157,7 +166,7 @@ def build_pdf(src, out, segs, res):
             sz = size * min(k, 1.0)
             # семейство шрифта — как в оригинале (моноширинный Courier 3SZ19 вписывался засечным шрифтом)
             css = f"* {{font-family: {fam}; font-size: {sz:.1f}pt; line-height: 1.15; text-align: {align};}}"
-            spare, scale = page.insert_htmlbox(rect, txt, css=css, scale_low=0)
+            spare, scale = page.insert_htmlbox(rect * der, txt, css=css, scale_low=0, rotate=page.rotation)
             busy.append(fitz.Rect(rect.x0, rect.y0, rect.x1, rect.y1 - max(spare, 0)))
             if scale * min(k, 1.0) < 0.7:
                 shrink.append({"page": pno + 1, "id": s["id"], "scale": round(scale * min(k, 1.0), 2)})

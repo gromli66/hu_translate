@@ -20,7 +20,7 @@ def family(font):
     if any(k in f for k in ("arial", "helvetica", "sans", "verdana", "tahoma", "calibri")):
         return "sans-serif"
     return "serif"
-MARK = re.compile(r"^\s*(\(?\d+(\.\d+)*\.?\)?|[a-zA-Z]\.?\)|[A-Z]\.\d*\.?|[-–•▪]|\d+/\d+\.)\s")
+MARK = re.compile(r"^\s*(\(?\d+(\.\d+)*\.?\)?|[a-zA-Z]\.?\)|[A-Z]\.\d*\.?|[-–•▪]|\d+/\d+\.|\d+\./)\s")
 
 
 def _union(bbs):
@@ -32,14 +32,17 @@ def _vrule_in(vs, xa, xb, y0, y1):
 
 
 def frags_from_text(page, vs=()):
-    """Фрагменты из текстового слоя: [{t, bbox, size, bold}]. vs — вертикальные линейки."""
+    """Фрагменты из текстового слоя: [{t, bbox, size, bold}]. vs — вертикальные линейки.
+    Координаты — как страница видна (с учётом /Rotate), как у слов OCR с картинки: PyMuPDF отдаёт текст в системе
+    неповёрнутой страницы (32RDGT, листы регистрации с поворотом 270°, 07.10)."""
     d = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_MEDIABOX_CLIP)
+    rot = page.rotation_matrix
     out = []
     for b in d["blocks"]:
         if b.get("type") != 0:
             continue
         for ln in b["lines"]:
-            if abs(ln["dir"][1]) > 0.1:          # повёрнутый текст не трогаем
+            if abs((fitz.Point(ln["dir"]) * rot - fitz.Point(0, 0) * rot).y) > 0.1:   # повёрнутый текст не трогаем
                 continue
             cur = None
             for s in ln["spans"]:
@@ -48,7 +51,7 @@ def frags_from_text(page, vs=()):
                     if cur is not None:
                         cur["t"] += txt
                     continue
-                bb = list(s["bbox"])
+                bb = list(fitz.Rect(s["bbox"]) * rot)
                 bold = bool(s["flags"] & 16) or "Bold" in s["font"]
                 if cur is not None and bb[0] - cur["bbox"][2] <= GAP and                         not _vrule_in(vs, cur["bbox"][2], bb[0], bb[1], bb[3]):
                     cur["t"] += txt
@@ -87,10 +90,11 @@ def frags_from_text(page, vs=()):
 
 
 def rules(page):
-    """Горизонтальные и вертикальные линейки (тонкие залитые прямоугольники и отрезки)."""
+    """Горизонтальные и вертикальные линейки (тонкие залитые прямоугольники и отрезки); координаты — как страница видна."""
     hs, vs = [], []
+    rot = page.rotation_matrix
     for dr in page.get_drawings():
-        r = dr["rect"]
+        r = dr["rect"] * rot
         if r.height <= 2.5 and r.width >= 15:
             hs.append((r.x0, r.x1, (r.y0 + r.y1) / 2))
         elif r.width <= 2.5 and r.height >= 8:
@@ -98,13 +102,13 @@ def rules(page):
         else:
             for it in dr["items"]:
                 if it[0] == "l":
-                    p, q = it[1], it[2]
+                    p, q = it[1] * rot, it[2] * rot
                     if abs(p.y - q.y) < 1 and abs(p.x - q.x) >= 15:
                         hs.append((min(p.x, q.x), max(p.x, q.x), p.y))
                     elif abs(p.x - q.x) < 1 and abs(p.y - q.y) >= 8:
                         vs.append((min(p.y, q.y), max(p.y, q.y), p.x))
                 elif it[0] == "re":
-                    rr = it[1]
+                    rr = it[1] * rot
                     if rr.width >= 15 and rr.height > 2.5:     # рамка ячейки: четыре стороны
                         hs += [(rr.x0, rr.x1, rr.y0), (rr.x0, rr.x1, rr.y1)]
                         vs += [(rr.y0, rr.y1, rr.x0), (rr.y0, rr.y1, rr.x1)]
@@ -219,16 +223,43 @@ def avail_rects(pars, hs, vs, page_rect):
             if x >= x1 - 0.5 and min(y1, ry1) - max(y0, ry0) > 0:
                 lim_x = min(lim_x, x - 2)
         lim_y = page_rect.y1 - 20
+        last = p["frags"][-1]["bbox"]
         for q in pars:
             if q is p:
                 continue
             qx0, qy0, qx1, qy1 = q["bbox"]
-            if qy0 >= y1 - 1 and min(lim_x, qx1) - max(x0, qx0) > 0:
+            # сосед снизу — начинается ниже середины своей последней строки: рамки строк в тесном списке
+            # перекрываются, и следующая строка не считалась соседом — перенос наезжал на неё (32RDGT, п. 2.2, 07.10)
+            if qy0 >= min(y1 - 1, (last[1] + last[3]) / 2) and min(lim_x, qx1) - max(x0, qx0) > 0:
                 lim_y = min(lim_y, qy0 - 1)
         for rx0, rx1, y in hs:
             if y >= y1 - 0.5 and min(lim_x, rx1) - max(x0, rx0) > 5:
                 lim_y = min(lim_y, y - 1)
         p["avail"] = [x0, y0, max(x1, lim_x), max(y1, lim_y)]
+
+
+def aligns(pars, vs):
+    """Выключка абзаца: по центру — если он посередине своей ячейки (между ближайшими вертикальными линейками,
+    без них — между краями текста страницы) и не делит левый край с соседом той же ячейки (строки списка).
+    Края текста всей страницы сбивал штамп у кромки листа — заголовок титула не центрировался (32RDGT, 07.10)."""
+    if not pars:
+        return
+    fl, fr = min(p["bbox"][0] for p in pars), max(p["bbox"][2] for p in pars)
+    for p in pars:
+        x0, y0, x1, y1 = p["bbox"]
+        over = lambda ry0, ry1: min(y1, ry1) - max(y0, ry0) > 0.5 * (y1 - y0)
+        lefts = [x for ry0, ry1, x in vs if x <= x0 + 1 and over(ry0, ry1)]
+        rights = [x for ry0, ry1, x in vs if x >= x1 - 1 and over(ry0, ry1)]
+        p["cell"] = [round(max(lefts), 2) if lefts else fl, round(min(rights), 2) if rights else fr]
+    for p in pars:
+        x0, y0, x1, y1 = p["bbox"]
+        cl, cr = p["cell"]
+        lm, rm = x0 - cl, cr - x1
+        center = lm > 15 and rm > 15 and abs(lm - rm) < max(8, 0.06 * (cr - cl))
+        if center and any(q is not p and q["cell"] == p["cell"] and abs(q["bbox"][0] - x0) < 1.5
+                          and abs((q["bbox"][0] + q["bbox"][2]) / 2 - (x0 + x1) / 2) > 8 for q in pars):
+            center = False
+        p["align"] = "center" if center else "left"
 
 
 def rules_from_image(gray, dpi, min_h_pt=15, min_v_pt=20):
