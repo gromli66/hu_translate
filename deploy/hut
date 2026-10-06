@@ -12,6 +12,7 @@
 #   status | logs | start | stop | restart
 #   check                                    проверка установки
 set -uo pipefail
+export MSYS_NO_PATHCONV=1           # Git Bash на Windows иначе подменяет пути вида /app/… (на Linux не влияет)
 cd "$(dirname "$0")"
 port=$(grep -E '^HUT_PORT=' .env 2>/dev/null | cut -d= -f2)
 port=${port:-8010}

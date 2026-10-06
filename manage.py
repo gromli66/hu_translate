@@ -45,8 +45,13 @@ def project_cmd(args):
     if (d / "project.json").exists():
         sys.exit(f"Проект {args.name} уже есть. Новую версию глоссария загружает эксперт: "
                  "Эксперт → Импорт глоссария заказчика.")
+    import zipfile
+    from docx.opc.exceptions import PackageNotFoundError
     try:
         rules, entries = GD.parse_upload(args.glossary)
+    except (zipfile.BadZipFile, PackageNotFoundError, KeyError):
+        sys.exit("Глоссарий не прочитан: файл повреждён или это не docx/xlsx. Нужен файл md, docx или xlsx "
+                 "с таблицами «венгерский | русский | комментарий».")
     except (ValueError, OSError) as e:
         sys.exit(f"Глоссарий не прочитан: {e}")
     if not entries:

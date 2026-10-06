@@ -4,6 +4,7 @@
 # настройки сохраняются.
 # Без вопросов (для автоматизации):  HUT_PORT=8010 ADMIN_LOGIN=admin ADMIN_PASSWORD='…' ./install.sh
 set -euo pipefail
+export MSYS_NO_PATHCONV=1           # Git Bash на Windows иначе подменяет пути вида /app/… (на Linux не влияет)
 cd "$(dirname "$0")"
 say() { printf '\n== %s\n' "$*"; }
 
