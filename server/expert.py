@@ -189,6 +189,42 @@ def glossary_edit(request: Request, gid: int, action: str = Form(...), ru: str =
                 project=g["project"], saved=True)
 
 
+# ------------------------------------------------------------------ качество
+def quality_rows(project):
+    """По месяцам и по версиям глоссария: переводов, строк, доля строк с правкой редактора, с подозрением проверки
+    и с формальным замечанием. Сводка — сразу после перевода (до правок); правки — строки, исправленные человеком."""
+    edited = {r["job"]: r["n"] for r in db.q("select job, count(distinct doc || '/' || seg) n from edits group by job")}
+    rows = db.q("select uid, finished, glossary_version, summary_initial from jobs "
+                "where project=? and summary_initial is not null order by finished", (project,))
+    by = {"month": {}, "version": {}}
+    for r in rows:
+        s = json.loads(r["summary_initial"])
+        for kind, key in (("month", time.strftime("%Y-%m", time.localtime(r["finished"]))),
+                          ("version", r["glossary_version"] or 1)):
+            g = by[kind].setdefault(key, {"key": key, "jobs": 0, "segments": 0, "edited": 0, "suspicious": 0, "issues": 0})
+            g["jobs"] += 1
+            g["segments"] += s.get("segments", 0)
+            g["suspicious"] += s.get("suspicious", 0)
+            g["issues"] += s.get("issues", 0)
+            g["edited"] += edited.get(r["uid"], 0)
+    out = {}
+    for kind, groups in by.items():
+        lst = []
+        for g in groups.values():
+            n = max(g["segments"], 1)
+            lst.append(dict(g, p_edited=100 * g["edited"] / n, p_susp=100 * g["suspicious"] / n,
+                            p_issues=100 * g["issues"] / n))
+        out[kind] = sorted(lst, key=lambda g: g["key"])
+    return out
+
+
+@router.get("/quality", response_class=HTMLResponse)
+def quality(request: Request, project: str = ""):
+    u = need_expert(request)
+    project = project_of(request, project)
+    return page(request, "expert_quality.html", u, **ctx(request, u, project, "quality", q=quality_rows(project)))
+
+
 # ------------------------------------------------------------------ импорт глоссария заказчика
 @router.get("/import", response_class=HTMLResponse)
 def import_page(request: Request, project: str = ""):

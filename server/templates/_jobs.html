@@ -24,6 +24,8 @@
         <small class="warn">Не получилось: {{ j.error }}</small>
       {% elif j.status == 'cancelled' %}
         <small class="muted">Отменено</small>
+      {% elif j.status == 'expired' %}
+        <small class="muted">Файлы удалены по сроку хранения</small>
       {% endif %}
     </td>
     <td class="actions">

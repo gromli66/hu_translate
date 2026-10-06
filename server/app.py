@@ -2,6 +2,7 @@
 """Веб-интерфейс переводчика: FastAPI + шаблоны Jinja2 + HTMX (живые обновления без своего JavaScript).
 Запуск: uvicorn server.app:app --port 8010. Пользователей заводит админ: python manage.py user add …"""
 import io
+import os
 import json
 import time
 import shutil
@@ -26,6 +27,8 @@ from server.web import HERE, COOKIE, NeedLogin, NotAllowed, need_user, page, own
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 SCHED = jobs.Scheduler()
 ALLOWED = (".docx", ".pdf")
+MAX_UPLOAD = int(os.environ.get("HUT_MAX_UPLOAD_MB", "").strip() or 200) * 1024 * 1024
+FAILS, FAIL_WINDOW, FAIL_LIMIT = {}, 600, 5          # неудачные входы: (логин, адрес) -> времена попыток
 
 
 @asynccontextmanager
@@ -68,9 +71,16 @@ def login_page(request: Request):
 
 @app.post("/login")
 def login(request: Request, login: str = Form(...), password: str = Form(...)):
+    key = (login.strip().lower(), request.client.host if request.client else "")
+    now = time.time()
+    FAILS[key] = [t for t in FAILS.get(key, []) if now - t < FAIL_WINDOW]
+    if len(FAILS[key]) >= FAIL_LIMIT:
+        return page(request, "login.html", error="Слишком много неудачных попыток. Подождите 10 минут.", login=login)
     u = db.one("select * from users where login=? and active=1", (login.strip(),))
     if not u or not security.check_pw(password, u["pw_hash"]):
+        FAILS[key].append(now)
         return page(request, "login.html", error="Неверный логин или пароль.", login=login)
+    FAILS.pop(key, None)
     sid = secrets.token_urlsafe(32)
     db.x("insert into sessions(id, user_id, expires) values (?, ?, ?)",
          (sid, u["id"], time.time() + config.SESSION_DAYS * 86400))
@@ -163,8 +173,16 @@ def create_job(request: Request, files: List[UploadFile] = File(...), project: s
         while name in names:
             k += 1
             name = f"{stem} ({k}){suf}"
+        size = 0
         with open(jd / "in" / name, "wb") as out:
-            shutil.copyfileobj(f.file, out)
+            while chunk := f.file.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_UPLOAD:
+                    break
+                out.write(chunk)
+        if size > MAX_UPLOAD:
+            shutil.rmtree(jd, ignore_errors=True)          # папка только что создана этим запросом
+            return RedirectResponse("/?m=too_big", status_code=303)
         names.append(name)
     spec = {"project": str(config.PROJECTS / project / "project.json"), "review": review}
     (jd / "job.json").write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")

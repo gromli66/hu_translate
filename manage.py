@@ -6,6 +6,7 @@
   python manage.py user passwd <логин> [--password …]
   python manage.py user disable <логин> | enable <логин>
   python manage.py user list
+  python manage.py backup                       — копия базы сейчас (сервис делает её и сам раз в сутки)
 Без --password пароль спрашивается с клавиатуры (так он не остаётся в истории команд)."""
 import sys
 import time
@@ -38,8 +39,13 @@ def main():
     for name in ("disable", "enable"):
         u.add_parser(name).add_argument("login")
     u.add_parser("list")
+    sub.add_parser("backup")
     args = ap.parse_args()
     db.init()
+    if args.what == "backup":
+        from server import maintenance
+        print(f"Копия базы: {maintenance.backup()}")
+        return
 
     if args.cmd == "list":
         for row in db.q("select login, name, role, active, token_enc is not null as tok from users order by login"):

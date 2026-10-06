@@ -92,3 +92,9 @@ table.expert td.actions button { margin: 0 0 .25rem; }
 .row select { width: auto; margin: 0; }
 .row input[type=search] { margin: 0; }
 table.expert td input[name=ru] { min-width: 16rem; }
+/* панель качества: полоса доли */
+.qbar { display: inline-block; width: 6rem; height: .6rem; background: var(--pico-muted-border-color);
+        border-radius: .3rem; overflow: hidden; vertical-align: middle; }
+.qbar > span { display: block; height: 100%; }
+.q-edited { background: #4caf50; } .q-susp { background: #ef8f2f; } .q-err { background: #d9534f; }
+table.quality td { white-space: nowrap; }

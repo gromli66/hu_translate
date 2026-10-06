@@ -43,7 +43,8 @@ create index if not exists glossary_layer on glossary(project, layer, status);
 """
 # колонки, добавленные после первого выката: (таблица, колонка, объявление)
 MIGRATIONS = [("jobs", "mode", "text not null default 'translate'"),
-              ("jobs", "glossary_version", "integer")]
+              ("jobs", "glossary_version", "integer"),
+              ("jobs", "summary_initial", "text")]          # сводка сразу после перевода, до правок — для качества
 
 
 @contextmanager

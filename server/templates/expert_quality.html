@@ -1,0 +1,29 @@
+{% extends "expert_base.html" %}
+{% macro bar(p, cls) %}<span class="qbar"><span class="{{ cls }}" style="width: {{ [p, 100]|min }}%"></span></span> {{ '%.1f'|format(p) }} %{% endmacro %}
+{% macro table(rows, head) %}
+<table class="expert quality">
+  <thead><tr><th>{{ head }}</th><th>Переводов</th><th>Строк</th>
+    <th title="Строки, исправленные человеком при вычитке">Правят редакторы</th>
+    <th title="Подозрение смысловой проверки сразу после перевода">Подозрения проверки</th>
+    <th title="Формальные замечания сразу после перевода">Формальные замечания</th></tr></thead>
+  <tbody>
+  {% for g in rows %}
+  <tr><td>{{ g.key }}</td><td>{{ g.jobs }}</td><td>{{ g.segments }}</td>
+    <td>{{ bar(g.p_edited, 'q-edited') }}</td><td>{{ bar(g.p_susp, 'q-susp') }}</td><td>{{ bar(g.p_issues, 'q-err') }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endmacro %}
+{% block expert %}
+<p class="muted">Переводчик улучшается, если от месяца к месяцу и от версии глоссария к версии падает доля строк, которые
+  правят редакторы. Подозрения и замечания считаются сразу после перевода, до правок. Свежие переводы ещё могут
+  не быть вычитаны — сравнивайте периоды, по которым вычитка закончена.</p>
+{% if not q.month %}
+<p class="muted">Пока нет завершённых переводов этого проекта.</p>
+{% else %}
+<h4>По месяцам</h4>
+{{ table(q.month, 'Месяц') }}
+<h4>По версиям глоссария</h4>
+{{ table(q.version, 'Версия') }}
+{% endif %}
+{% endblock %}

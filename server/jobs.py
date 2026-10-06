@@ -16,7 +16,7 @@ import threading
 import subprocess
 from pathlib import Path
 
-from server import config, db, security, glossary_db
+from server import config, db, security, glossary_db, maintenance
 
 RUNNER = [sys.executable, "-m", "server.runner"]
 log = logging.getLogger("hut.jobs")
@@ -70,6 +70,7 @@ def _collect_candidates(uid, mode):
 class Scheduler:
     def __init__(self):
         self.procs = {}                 # uid -> (Popen, owner, файл лога)
+        self.daily = maintenance.Daily()
         self.stop_ev = threading.Event()
         self.thread = None
 
@@ -94,6 +95,7 @@ class Scheduler:
         while not self.stop_ev.is_set():
             try:
                 self.tick()
+                self.daily.tick()
             except Exception:                   # поток очереди не должен умирать от одной сбойной задачи
                 log.exception("ошибка очереди задач")
             self.stop_ev.wait(1)
@@ -164,8 +166,9 @@ class Scheduler:
         if ok:
             _collect_candidates(uid, mode)
             summ = json.dumps(read_progress(uid).get("summary") or {}, ensure_ascii=False)
-            db.x("update jobs set status='done', mode='translate', finished=?, summary=?, error=null where uid=?",
-                 (now, summ, uid))
+            db.x("update jobs set status='done', mode='translate', finished=?, summary=?, error=null, "
+                 "summary_initial=coalesce(summary_initial, case when ?='translate' then ? end) where uid=?",
+                 (now, summ, mode, summ, uid))
         elif mode == "edits":
             db.x("update jobs set status='done', mode='translate', finished=?, error=? where uid=?",
                  (now, "Правки не применились: " + error if error else None, uid))
