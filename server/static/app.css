@@ -1,0 +1,31 @@
+/* Поверх Pico: цвета состояний (те же, что в таблице вычитки) и компактные таблицы. */
+:root {
+  --hut-ok: #2e7d32;
+  --hut-warn: #b54708;
+  --hut-error-bg: #ffe0e0;     /* формальная ошибка — красный, как в xlsx */
+  --hut-suspect-bg: #ffd8a8;   /* подозрение смысловой проверки — оранжевый */
+  --hut-auto-bg: #ddebf7;      /* изменено автоматически — голубой */
+  --hut-term-bg: #fff6d0;      /* не найден термин — жёлтый */
+}
+@media (prefers-color-scheme: dark) {
+  :root { --hut-ok: #81c784; --hut-warn: #ffb74d; }
+}
+.brand { font-weight: 600; }
+.muted { color: var(--pico-muted-color); }
+.ok { color: var(--hut-ok); }
+.warn { color: var(--hut-warn); }
+.msg { padding: .6rem .9rem; border-radius: var(--pico-border-radius); border: 1px solid var(--pico-muted-border-color); }
+.msg.ok { border-color: var(--hut-ok); }
+.msg.warn { border-color: var(--hut-warn); }
+.narrow { max-width: 26rem; margin: 2rem auto; }
+.inline { display: inline; margin: 0; }
+button.small, a[role=button].small { padding: .3rem .8rem; font-size: .875rem; margin: 0; }
+.row { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; }
+.row button { width: auto; margin: 0; }
+label.switch { display: flex; flex-direction: column; justify-content: center; gap: .2rem; }
+table.jobs td { vertical-align: middle; }
+table.jobs td.state { width: 40%; }
+table.jobs td.state progress { margin-bottom: .2rem; }
+table.jobs td.actions { width: 1%; white-space: nowrap; text-align: right; }
+.htmx-indicator { display: none; }
+.htmx-request .htmx-indicator, .htmx-request.htmx-indicator { display: inline; }

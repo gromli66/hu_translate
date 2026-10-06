@@ -148,14 +148,18 @@ def _ekey(w):
 def _candidates(toks, entries):
     """Индекс по ключу первого слова термина: с плотным глоссарием (~6200 записей) полный перебор на каждом
     сегменте занимал часы (02.10). Токен текста даёт ключи — сам токен и его префиксы длиной 2–4."""
-    ik = (id(entries), len(entries))
-    idx = _INDEX.get(ik)
-    if idx is None:
+    global _INDEX
+    # кэш узнаёт список по ссылке на сам объект, а не по id(): id удалённого временного списка Python выдаёт
+    # новому — индекс брался от чужого списка той же длины и термины молча терялись (тест, 06.10)
+    c = _INDEX
+    if c.get("ref") is entries and c.get("len") == len(entries):
+        idx = c["idx"]
+    else:
         idx = {}
         for pos, e in enumerate(entries):
             for seq in e.alts:
                 idx.setdefault(_ekey(seq[0]), set()).add(pos)
-        _INDEX.clear(); _INDEX[ik] = idx
+        _INDEX = {"ref": entries, "len": len(entries), "idx": idx}
     keys = set()
     for t in toks:
         lt = t.lower()

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Переводчик HU→RU{% endblock %}</title>
+  <link rel="stylesheet" href="/static/pico.min.css">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+  <header class="container">
+    <nav>
+      <ul><li><a href="/" class="brand">Переводчик HU→RU</a></li></ul>
+      {% if user %}
+      <ul>
+        <li><a href="/">Переводы</a></li>
+        <li><a href="/profile">Профиль</a></li>
+        <li><small class="muted">{{ user.name or user.login }} · {{ role_ru[user.role] }}</small></li>
+        <li><form method="post" action="/logout" class="inline"><button class="outline secondary small">Выйти</button></form></li>
+      </ul>
+      {% endif %}
+    </nav>
+  </header>
+  <main class="container">
+    {% if msg %}<p class="msg {{ msg[1] }}" role="status">{{ msg[0] }}</p>{% endif %}
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

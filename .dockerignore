@@ -1,0 +1,10 @@
+.git
+cache
+work
+data
+out
+projects
+**/__pycache__
+.pytest_cache
+.env
+docker/.env

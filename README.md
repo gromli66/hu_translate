@@ -14,6 +14,70 @@ go.ai-rosatom.ru (модель `privateLLM`). Перевод возвращае�
 3. Токен портала: файл `.env` в корне репозитория (он в `.gitignore`), строка `ROSATOM_AI_TOKEN=...`,
    или переменная окружения с тем же именем. Необязательные параметры: `ROSATOM_AI_BASE`, `ROSATOM_MODEL`, `HU_CACHE`.
 
+## Веб-сервис
+
+Тот же конвейер в браузере: вход по логину, личный токен портала в профиле, загрузка документов, очередь,
+настоящий процент с временем до готовности, скачивание архива с переводами и таблицами вычитки. План развития —
+[docs/PLAN_service.md](docs/PLAN_service.md).
+
+Локальный запуск:
+
+```bash
+python -m uvicorn server.app:app --port 8010
+```
+
+```bash
+python manage.py user add ivanov --name "Иванов И." --role admin
+```
+
+Сервис открывается по адресу `http://localhost:8010`. Данные лежат в `data/` (в git не попадает):
+- `hut.db` — пользователи, задачи;
+- `jobs/<uid>/` — исходники, рабочие файлы, результат, лог;
+- `cache/` — ответы портала;
+- `secret.key` — ключ шифрования токенов, если он не задан в окружении.
+
+Как устроено:
+- каждая задача выполняется отдельным процессом (`server/runner.py`), токен уходит ему через переменную окружения;
+- одновременно идёт не больше одной задачи на пользователя (два прогона на одном токене портал не держит)
+  и не больше `HUT_MAX_JOBS` всего;
+- после перезапуска сервера прерванные задачи продолжаются с места.
+
+Пользователи (`python manage.py user …`): `add`, `role`, `passwd`, `disable`, `enable`, `list`. Роли: `user`, `expert`, `admin`.
+Админ видит задачи всех пользователей.
+
+### Выкат на сервер (Docker)
+
+1. **На машине с интернетом** — собрать образ и сохранить его в архив:
+
+   ```bash
+   docker compose -f docker/docker-compose.yml build
+   ```
+
+   ```bash
+   docker save hut:latest | gzip > hut.tar.gz
+   ```
+
+2. **На сервере:**
+   - скопировать архив и загрузить образ: `docker load < hut.tar.gz`;
+   - разложить репозиторий без `data/`;
+   - положить глоссарии проекта в `projects/<имя>/data/`;
+   - `cp docker/.env.template docker/.env` и вписать `HUT_SECRET_KEY`.
+3. **Запуск** — из `docker/`:
+
+   ```bash
+   docker compose up -d
+   ```
+
+   Первого пользователя завести так:
+
+   ```bash
+   docker compose exec hut python manage.py user add ivanov --role admin
+   ```
+
+4. **Проверка:** `curl http://<сервер>:8010/health`, затем вход в браузере и пробный документ.
+
+Внутри сети сервис стоит закрыть HTTPS (обратный прокси) и выставить `HUT_COOKIE_SECURE=1`: через него проходят пароли и токены.
+
 ## Проект
 
 Проект — это папка `projects/<имя>/` с файлом `project.json` (пути указываются относительно него):
@@ -177,7 +241,10 @@ python translate_komplekt.py terms путь/к/документам --project �
 ## Устройство
 
 ```
-translate_komplekt.py   команда запуска
+translate_komplekt.py   команда запуска (CLI)
+manage.py               команды администратора веб-сервиса
+server/                 веб-сервис: app.py (страницы), jobs.py (очередь), runner.py (исполнитель задачи), db.py, security.py
+docker/                 Dockerfile, docker-compose.yml, .env.template
 src/pipeline.py         шаги конвейера: extract / translate / review / assemble / edits / terms
 src/segments.py         извлечение сегментов (DOCX, PDF, OCR)
 src/layout.py           раскладка PDF: блоки, линейки таблиц, свободные рамки

@@ -1,0 +1,40 @@
+{% if not jobs %}
+<p class="muted">Здесь появятся ваши переводы. Загрузите документы выше.</p>
+{% else %}
+<table class="jobs">
+  <tbody>
+  {% for j in jobs %}
+  <tr>
+    <td class="what">
+      <strong>{{ j.title }}</strong><br>
+      <small class="muted">{{ j.project }} · {{ j.created }}{% if j.owner %} · {{ j.owner }}{% endif %}</small>
+    </td>
+    <td class="state">
+      {% if j.status == 'running' %}
+        <progress value="{{ j.pct }}" max="100"></progress>
+        <small>{{ j.stage }} · {{ j.pct | round | int }} %{% if j.eta %} · {{ j.eta }}{% endif %}</small>
+      {% elif j.status == 'queued' %}
+        <small>В очереди: {{ j.pos }}-й. Начнётся, когда освободится место.</small>
+      {% elif j.status == 'cancelling' %}
+        <small>Отменяется…</small>
+      {% elif j.status == 'done' %}
+        <small class="ok">Готово · строк {{ j.segments }}{% if j.attention %} · просят внимания {{ j.attention }}{% endif %}</small>
+      {% elif j.status == 'failed' %}
+        <small class="warn">Не получилось: {{ j.error }}</small>
+      {% elif j.status == 'cancelled' %}
+        <small class="muted">Отменено</small>
+      {% endif %}
+    </td>
+    <td class="actions">
+      {% if j.status == 'done' %}
+        <a role="button" class="small" href="/jobs/{{ j.uid }}/download">Скачать</a>
+      {% elif j.status in ('running', 'queued') %}
+        <button class="outline secondary small" hx-post="/jobs/{{ j.uid }}/cancel" hx-target="#jobs"
+                hx-confirm="Отменить перевод? Уже полученные ответы портала сохранятся, повторный запуск будет быстрее.">Отменить</button>
+      {% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}

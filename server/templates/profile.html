@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Профиль — Переводчик HU→RU{% endblock %}
+{% block content %}
+<article>
+  <h3>Токен портала</h3>
+  <p class="muted">Переводы идут под вашим токеном go.ai-rosatom.ru. Он хранится на сервере в зашифрованном виде
+    и никому не показывается — даже вам.</p>
+  <p>{% if has_token %}<span class="ok">Токен сохранён.</span>{% else %}<span class="warn">Токена нет.</span>{% endif %}</p>
+  <form method="post" action="/profile/token">
+    <label>Новый токен
+      <input name="token" type="password" autocomplete="off" placeholder="вставьте токен из настроек портала">
+    </label>
+    <div class="row">
+      <button type="submit">Сохранить</button>
+      <button type="button" class="outline" hx-post="/profile/token/check" hx-include="[name=token]"
+              hx-target="#check" hx-indicator="#check-wait">Проверить</button>
+      <span id="check-wait" class="htmx-indicator muted">проверяю…</span>
+      <span id="check"></span>
+    </div>
+    <small class="muted">Пустое поле и «Сохранить» — удалить токен.</small>
+  </form>
+</article>
+<article>
+  <h3>Пароль</h3>
+  <form method="post" action="/profile/password">
+    <div class="grid">
+      <label>Текущий пароль <input name="old" type="password" autocomplete="current-password" required></label>
+      <label>Новый пароль <input name="new" type="password" autocomplete="new-password" minlength="8" required></label>
+    </div>
+    <button type="submit" class="outline">Сменить пароль</button>
+  </form>
+</article>
+{% endblock %}

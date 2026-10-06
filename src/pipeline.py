@@ -31,6 +31,10 @@ def log(msg):
     print(time.strftime("%H:%M:%S"), msg, flush=True)
 
 
+def _quiet(stage, done, total):
+    """Обратный вызов прогресса по умолчанию; веб-сервис передаёт свой: progress(шаг, сделано, всего)."""
+
+
 # ------------------------------------------------------------------ проект и состояние
 def load_project(path):
     """project.json: {"glossary": основной глоссарий заказчика (md), "terms": глоссарий комплекта (md, необяз.),
@@ -71,14 +75,15 @@ def set_vocab(tr, segs):
 
 
 # ------------------------------------------------------------------ 1. извлечение
-def extract(inputs, work):
+def extract(inputs, work, progress=_quiet):
     work = Path(work); (work / "json").mkdir(parents=True, exist_ok=True)
     S.OCR_DIR = work / "ocr"
     files = []
     for x in inputs:
         x = Path(x)
         files += sorted(p for p in (x.iterdir() if x.is_dir() else [x]) if p.suffix.lower() in (".docx", ".pdf"))
-    for f in files:
+    for i, f in enumerate(files):
+        progress("извлечение", i, len(files))
         jf = work / "json" / f"{f.stem}.json"
         if jf.exists():
             log(f"извлечение: {f.name} — уже есть"); continue
@@ -90,10 +95,11 @@ def extract(inputs, work):
         jf.write_text(json.dumps({"file": str(f.resolve()), "segs": segs, "res": {}, "info": info}, ensure_ascii=False),
                       encoding="utf-8")
         log(f"извлечение: {f.name} — сегментов {len(segs)}, OCR-страниц {len(info.get('ocr_pages', []))}, {time.time() - t0:.0f} с")
+    progress("извлечение", len(files), len(files))
 
 
 # ------------------------------------------------------------------ 2. перевод разделами
-def translate(work, prj, workers=4, redo=False):
+def translate(work, prj, workers=4, redo=False, progress=_quiet):
     """Переводит документы рабочей папки без перевода (redo — все заново). Уже переведённые документы комплекта
     засевают общую память: добавленный позже документ получает те же переводы тех же фраз."""
     docs_all = load_docs(work)
@@ -151,18 +157,26 @@ def translate(work, prj, workers=4, redo=False):
         if cur:
             streams.append((stem, cur))
     streams.sort(key=lambda j: -sum(len(s["text"]) for s in j[1]))      # длинные первыми
-    done, cnt, t0 = collections.defaultdict(dict), {"sec": 0}, time.time()
-    log(f"перевод: документов {len(docs)}, потоков {len(streams)}, по {workers} одновременно")
 
-    def run_stream(job):
-        stem, segs = job
-        res, ctx, secs, cur, size = {}, "", [], [], 0
+    def sections(segs):
+        secs, cur, size = [], [], 0
         for s in segs:
             if cur and size + len(s["text"]) > SEC_CHARS:
                 secs.append(cur); cur, size = [], 0
             cur.append(s); size += len(s["text"])
         if cur:
             secs.append(cur)
+        return secs
+
+    streams = [(stem, sections(segs)) for stem, segs in streams]
+    total = sum(len(secs) for _, secs in streams)
+    done, cnt, t0 = collections.defaultdict(dict), {"sec": 0}, time.time()
+    log(f"перевод: документов {len(docs)}, потоков {len(streams)}, разделов {total}, по {workers} одновременно")
+    progress("перевод", 0, total)
+
+    def run_stream(job):
+        stem, secs = job
+        res, ctx = {}, ""
         for sec in secs:
             units, by_text = [], {}
             for s in sec:
@@ -183,6 +197,7 @@ def translate(work, prj, workers=4, redo=False):
             ctx = "\n".join(f"{cl(s['text'])} → {cl(res[s['id']]['ru'])}" for s in sec if not res[s["id"]].get("copied"))
             with lock:
                 cnt["sec"] += 1
+                progress("перевод", cnt["sec"], total)
                 if cnt["sec"] % 20 == 0:
                     log(f"  разделов {cnt['sec']} за {time.time() - t0:.0f} с; запросов {STAT['calls']}")
         with lock:
@@ -213,14 +228,15 @@ NOTE_FIX = ("Независимая проверка смысла нашла в 
             "верный смысл. Остальное не меняй без необходимости: термины глоссария, коды, числа, регистр — как в оригинале.")
 
 
-def review(work, prj, workers=6, compact=True):
+def review(work, prj, workers=6, compact=True, progress=_quiet):
     import review_portal as RP
     RP.configure(terms=prj.get("terms"), conventions=prj.get("conventions"), glossary=prj["glossary"])
     tr = make_translator(prj)
     main = [e for e in tr.entries if id(e) in tr.main_ids]
     t0, cnt, lock = time.time(), {"n": 0}, threading.Lock()
+    plans = []
     for f in doc_files(work):
-        d = json.loads(f.read_text(encoding="utf-8")); set_vocab(tr, d["segs"])
+        d = json.loads(f.read_text(encoding="utf-8"))
         segs = [s for s in d["segs"] if (d["res"].get(str(s["id"])) or {}).get("ru")]
         ru = lambda s: cl(d["res"][str(s["id"])]["ru"])
         jobs, first = [], {}
@@ -236,6 +252,11 @@ def review(work, prj, workers=6, compact=True):
                        "next": [(cl(p["text"]), ru(p)) for p in segs[i + 1:i + 2]], "other": ""}
                 jobs.append((key, s, ctx))
         log(f"проверка: {f.stem} — к проверке {len(jobs)}")
+        plans.append((f, d, segs, jobs, first))
+    total = sum(len(p[3]) for p in plans)
+    progress("проверка", 0, total)
+    for f, d, segs, jobs, first in plans:
+        set_vocab(tr, d["segs"])
 
         def run(job):
             key, s, ctx = job
@@ -253,6 +274,7 @@ def review(work, prj, workers=6, compact=True):
                     fx = {"ru": cand, "issues": tr.full_check(s["text"], cand), "rv2": rv2}
             with lock:
                 cnt["n"] += 1
+                progress("проверка", cnt["n"], total)
                 if cnt["n"] % 200 == 0:
                     log(f"  проверено {cnt['n']} за {time.time() - t0:.0f} с; запросов {STAT['calls']}")
             return key, rv, fx
@@ -284,12 +306,15 @@ def review(work, prj, workers=6, compact=True):
 
 
 # ------------------------------------------------------------------ 4. сборка
-def assemble(work):
+def assemble(work, progress=_quiet):
     from assemble import assemble_all
-    for f in doc_files(work):
+    files = doc_files(work)
+    for i, f in enumerate(files):
+        progress("сборка", i, len(files))
         d = json.loads(f.read_text(encoding="utf-8"))
         info = assemble_all(f, d, Path(work) / "out")
         log(f"сборка: {f.stem} — {str(info)[:80]}")
+    progress("сборка", len(files), len(files))
 
 
 # ------------------------------------------------------------------ 5. правки редактора + RAG

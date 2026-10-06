@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block content %}
+{% if not has_token %}
+<p class="msg warn">Чтобы переводить, впишите <a href="/profile">токен портала</a> в профиле.</p>
+{% endif %}
+<article>
+  <form method="post" action="/jobs" enctype="multipart/form-data">
+    <label>Документы — DOCX или PDF, можно несколько
+      <input type="file" name="files" multiple accept=".docx,.pdf" required>
+    </label>
+    <div class="grid">
+      <label>Проект
+        <select name="project">
+          {% for p in projects %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+        </select>
+        <small class="muted">Проект задаёт глоссарии и память переводов.</small>
+      </label>
+      <label class="switch">
+        <input type="checkbox" name="review" value="true" role="switch" checked>
+        Смысловая проверка
+        <small class="muted">Ловит искажения смысла и исправляет их. Перевод идёт примерно вдвое дольше.</small>
+      </label>
+    </div>
+    <button type="submit">Перевести</button>
+  </form>
+</article>
+
+<h3>Ваши переводы</h3>
+<div id="jobs" hx-get="/jobs/list" hx-trigger="every 3s" hx-swap="innerHTML">
+  {% include "_jobs.html" %}
+</div>
+{% endblock %}
