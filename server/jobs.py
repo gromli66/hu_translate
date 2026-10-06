@@ -7,6 +7,7 @@
 Задача — отдельный процесс server/runner.py. После перезапуска сервера прерванные задачи снова встают в очередь:
 шаги конвейера продолжают с места, ответы портала в кэше."""
 import os
+import re
 import sys
 import json
 import time
@@ -32,12 +33,20 @@ def read_progress(uid):
         return {}
 
 
-def _tail(path, n=3):
+def _reason(path):
+    """Причина сбоя для пользователя: понятный текст для частых случаев, иначе последняя строка ошибки (не стек)."""
     try:
         lines = [ln.strip() for ln in Path(path).read_text(encoding="utf-8", errors="replace").splitlines() if ln.strip()]
     except OSError:
         return ""
-    return " | ".join(lines[-n:])[-400:]
+    text = "\n".join(lines[-40:])
+    if "HTTP 401" in text or "HTTP 403" in text:
+        return ("Портал не принял токен — возможно, он истёк. Обновите токен в профиле и нажмите «Повторить»: "
+                "уже полученные ответы портала сохранены, повтор будет быстрее.")
+    if any(f"HTTP {c}" in text for c in (429, 500, 502, 503, 504)) or "timed out" in text:
+        return "Портал перегружен или не отвечает. Нажмите «Повторить» позже — уже полученные ответы сохранены."
+    errs = [ln for ln in lines if re.match(r"^[A-Za-z_.]*(Error|Exception)\b", ln)]
+    return (errs[-1] if errs else lines[-1] if lines else "")[:300]
 
 
 def _collect_candidates(uid, mode):
@@ -144,7 +153,7 @@ class Scheduler:
         elif rc == 0:
             self._end(uid, j["mode"], True, "")
         else:
-            self._end(uid, j["mode"], False, _tail(job_dir(uid) / "log.txt") or f"процесс завершился с кодом {rc}")
+            self._end(uid, j["mode"], False, _reason(job_dir(uid) / "log.txt") or f"процесс завершился с кодом {rc}")
         log.info("задача %s (%s): %s, код %s", uid, j["mode"], j["status"], rc)
 
     @staticmethod

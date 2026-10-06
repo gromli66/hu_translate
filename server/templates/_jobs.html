@@ -30,6 +30,8 @@
       {% if j.status == 'done' %}
         <a role="button" class="small outline" href="/jobs/{{ j.uid }}/review">Вычитка</a>
         <a role="button" class="small" href="/jobs/{{ j.uid }}/download">Скачать</a>
+      {% elif j.status in ('failed', 'cancelled') %}
+        <button class="outline small" hx-post="/jobs/{{ j.uid }}/retry" hx-target="#jobs">Повторить</button>
       {% elif j.status in ('running', 'queued') %}
         <button class="outline secondary small" hx-post="/jobs/{{ j.uid }}/cancel" hx-target="#jobs"
                 hx-confirm="Отменить перевод? Уже полученные ответы портала сохранятся, повторный запуск будет быстрее.">Отменить</button>

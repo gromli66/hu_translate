@@ -299,6 +299,8 @@ class Translator:
             add = [e for e in G.load(extra)[1] if not any(tuple(w.lower() for w in seq) in main for seq in e.alts)]
             self.entries += add
             self.extra_n, self.extra_entries = len(add), add
+        # строгие термины комплекта — один и тот же список на все проверки (кэш индекса узнаёт список по объекту)
+        self.strict_entries = [e for e in self.extra_entries if "строгий" in (e.note or "")] or self.extra_entries
         self.abbrs = G.abbreviations(self.entries)
         self.allowed_latin = self._allowed_latin()
         # всё, что глоссарий переводит: аббревиатуры раздела + прописные венгерские ключи остальных записей
@@ -313,7 +315,7 @@ class Translator:
         """Обязательные термины глоссария комплекта, которых нет в переводе (по основам).
         Если в файле есть пометки «строгий» (плотный глоссарий агентов, тысячи записей) — обязательны только они,
         иначе синонимы и падежи гоняли бы лишние повторы; без пометок обязательны все (прежний режим)."""
-        strict = [e for e in self.extra_entries if "строгий" in (e.note or "")] or self.extra_entries
+        strict = self.strict_entries
         if not strict:
             return []
         miss = gloss_misses(TAG.sub("", src), ru, strict, outer=self.entries)

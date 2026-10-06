@@ -7,6 +7,7 @@
 (удлиняется в á/é перед суффиксом). Прописные аббревиатуры (SZBV, KU, ÜFK)
 ищутся с учётом регистра и границы: SZBV не находится внутри SZBVR."""
 import re
+import threading
 from functools import lru_cache
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -134,7 +135,8 @@ def _is_suffix_chain(tail, max_pieces=3):
     return best.get(len(tail), 99) <= max_pieces
 
 
-_INDEX = {}
+_INDEX = {}                                      # id(список) -> (список, длина, индекс)
+_INDEX_LOCK = threading.Lock()
 
 
 def _ekey(w):
@@ -148,18 +150,22 @@ def _ekey(w):
 def _candidates(toks, entries):
     """Индекс по ключу первого слова термина: с плотным глоссарием (~6200 записей) полный перебор на каждом
     сегменте занимал часы (02.10). Токен текста даёт ключи — сам токен и его префиксы длиной 2–4."""
-    global _INDEX
     # кэш узнаёт список по ссылке на сам объект, а не по id(): id удалённого временного списка Python выдаёт
-    # новому — индекс брался от чужого списка той же длины и термины молча терялись (тест, 06.10)
-    c = _INDEX
-    if c.get("ref") is entries and c.get("len") == len(entries):
-        idx = c["idx"]
-    else:
-        idx = {}
-        for pos, e in enumerate(entries):
-            for seq in e.alts:
-                idx.setdefault(_ekey(seq[0]), set()).add(pos)
-        _INDEX = {"ref": entries, "len": len(entries), "idx": idx}
+    # новому — индекс брался от чужого списка той же длины и термины молча терялись (тест, 06.10).
+    # Мест несколько: проверка строки ходит по двум спискам (весь глоссарий и строгие термины), с одним местом
+    # индекс на 7 тыс. записей строился заново на каждой строке — перевод из кэша шёл 105 с вместо секунд (06.10)
+    with _INDEX_LOCK:
+        c = _INDEX.get(id(entries))
+        if c and c[0] is entries and c[1] == len(entries):
+            idx = c[2]
+        else:
+            idx = {}
+            for pos, e in enumerate(entries):
+                for seq in e.alts:
+                    idx.setdefault(_ekey(seq[0]), set()).add(pos)
+            if len(_INDEX) >= 8:
+                _INDEX.pop(next(iter(_INDEX)))
+            _INDEX[id(entries)] = (entries, len(entries), idx)    # сильная ссылка: пока список в кэше, его id занят
     keys = set()
     for t in toks:
         lt = t.lower()

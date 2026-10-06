@@ -107,7 +107,19 @@ def test_failed_job_shows_reason(client):
     client.post("/profile/token", data={"token": SECRET})
     upload(client, "fail.docx")
     assert wait(last_uid(), "done", "failed") == "failed"
-    assert "Не получилось: работаю | RuntimeError: тестовый сбой" in client.get("/jobs/list").text
+    page = client.get("/jobs/list").text
+    assert "Не получилось: RuntimeError: тестовый сбой" in page and "Повторить" in page
+    uid = last_uid()
+    client.post(f"/jobs/{uid}/retry")
+    assert wait(uid, "failed", "queued", "running") in ("queued", "running", "failed")
+    assert db.one("select error from jobs where uid=?", (uid,))["error"] in (None, "RuntimeError: тестовый сбой")
+
+
+def test_failure_reason_for_rejected_token(tmp_path):
+    log = tmp_path / "log.txt"
+    log.write_text("Traceback ...\n  File \"/app/src/llm.py\", line 104, in chat\n"
+                   "RuntimeError: HTTP 401: {\"detail\":\"401 Unauthorized\"}\n", encoding="utf-8")
+    assert jobs._reason(log).startswith("Портал не принял токен")
 
 
 def test_other_user_cannot_touch_job(client):

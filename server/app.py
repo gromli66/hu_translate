@@ -188,6 +188,18 @@ def cancel_job(request: Request, uid: str):
     return page(request, "_jobs.html", u, jobs=job_views(u))
 
 
+@app.post("/jobs/{uid}/retry", response_class=HTMLResponse)
+def retry_job(request: Request, uid: str):
+    """Повтор упавшего или отменённого перевода: шаги продолжают с места, ответы портала — из кэша."""
+    u = need_user(request)
+    j = own_job(u, uid)
+    if not j:
+        return Response(status_code=404)
+    if j["status"] in ("failed", "cancelled"):
+        db.x("update jobs set status='queued', mode='translate', error=null, finished=null where uid=?", (uid,))
+    return page(request, "_jobs.html", u, jobs=job_views(u))
+
+
 @app.get("/jobs/{uid}/download")
 def download(request: Request, uid: str):
     u = need_user(request)
