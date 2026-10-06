@@ -1,0 +1,26 @@
+# Переводчик HU→RU. Запуск и обновление:  docker compose up -d --build
+# Порт и настройки — строками в файле .env рядом (например HUT_PORT=9000); без него — значения по умолчанию.
+services:
+  hut:
+    build: .
+    image: hut
+    container_name: hut
+    restart: unless-stopped
+    ports:
+      - "${HUT_PORT:-8010}:8010"
+    environment:
+      HUT_SECRET_KEY: ${HUT_SECRET_KEY:-}          # пусто — ключ создаётся сам в data/secret.key
+      HUT_MAX_JOBS: ${HUT_MAX_JOBS:-3}
+      HUT_MAX_UPLOAD_MB: ${HUT_MAX_UPLOAD_MB:-200}
+      HUT_BACKUP_KEEP: ${HUT_BACKUP_KEEP:-14}
+      HUT_KEEP_DAYS: ${HUT_KEEP_DAYS:-0}
+      HUT_CACHE_DAYS: ${HUT_CACHE_DAYS:-0}
+      HUT_COOKIE_SECURE: ${HUT_COOKIE_SECURE:-0}
+    volumes:
+      - ./data:/app/data             # база, переводы, копии базы — бэкапить эту папку
+      - ./projects:/app/projects     # глоссарии проектов
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -7,4 +7,6 @@ projects
 **/__pycache__
 .pytest_cache
 .env
-docker/.env
+docs
+tests
+dist

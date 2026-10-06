@@ -1,3 +1,2 @@
 *.sh text eol=lf
-docker/Dockerfile text eol=lf
-deploy/hut text eol=lf
+Dockerfile text eol=lf

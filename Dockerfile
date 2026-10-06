@@ -1,5 +1,4 @@
-# Образ веб-сервиса переводчика. Собирать там, где есть интернет (apt, pip);
-# на сервер — через docker save | gzip → scp → docker load (см. README, «Выкат на сервер»).
+# Образ веб-сервиса переводчика. Собирается командой docker compose up -d --build (см. README).
 FROM python:3.11-slim
 
 RUN apt-get update \

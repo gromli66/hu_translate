@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Команды администратора: новый проект с глоссарием заказчика (./hut project add → manage.py project add)."""
+"""Команды администратора: новый проект с глоссарием заказчика (manage.py project add)."""
 import json
 import subprocess
 import sys

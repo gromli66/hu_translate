@@ -28,7 +28,7 @@ hu_translate/
     templates/    HTML-шаблоны Jinja2 с атрибутами HTMX
     static/       htmx.min.js, pico.min.css, app.css; позже tabulator
   manage.py     команды админа: создать пользователя, сменить роль, сбросить пароль
-  docker/       Dockerfile, docker-compose.yml (один сервис), .env.template
+  Dockerfile, docker-compose.yml   один сервис, настройки — строки в .env
 ```
 
 ### Задачи и очередь

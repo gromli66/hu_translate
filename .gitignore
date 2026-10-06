@@ -5,8 +5,9 @@
 cache/
 work/
 out/
-# данные проектов (глоссарии заказчика, память переводов) — не в git
-projects/*/data/
+# проекты с глоссариями заказчика — не в git (передаются отдельно)
+projects/*
+!projects/.gitkeep
 __pycache__/
 *.pyc
 .pytest_cache/
