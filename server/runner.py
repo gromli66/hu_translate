@@ -76,7 +76,7 @@ def mine_terms(work, prj, out, pr):
         cands = [c for c in termx.candidates(texts, P.make_translator(prj).entries, TERMS_TOP * 3)
                  if len(c[0].split()) >= 2 or len(c[0]) >= 10][:TERMS_TOP]
         res = [{"hu": t["hu"], "ru": t["ru"], "count": t["count"], "example": t["example"]}
-               for t in termx.translate_terms(cands) if t["sure"]]
+               for t in termx.translate_terms(cands, progress=lambda d, t: pr("термины", d, t)) if t["sure"]]
         out.write_text(json.dumps(res, ensure_ascii=False), encoding="utf-8")
         print(f"кандидатов в термины: {len(res)} из {len(cands)}", flush=True)
     except Exception as e:                       # noqa: BLE001 — кандидаты необязательны, перевод уже готов

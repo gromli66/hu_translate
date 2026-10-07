@@ -93,13 +93,15 @@ def _free(rect, busy, own):
     return r
 
 
-def build_pdf(src, out, segs, res):
+def build_pdf(src, out, segs, res, progress=None):
     import fitz
     doc = fitz.open(src)
     pages = sorted({s["page"] for s in segs})
     shrink = []
     sub = fitz.open()
-    for pno in pages:
+    for k, pno in enumerate(pages):
+        if progress:
+            progress(k / len(pages))
         page = doc[pno]
         # координаты сегментов — как страница видна; заливка и вставка — в системе неповёрнутой страницы,
         # текст — с поворотом страницы (32RDGT: листы с /Rotate 270 получали перевод поперёк листа, 07.10)
@@ -214,7 +216,7 @@ def _merge_docx(paths, out):
     target.save(out)
 
 
-def docx_from_pdf(pdf, out):
+def docx_from_pdf(pdf, out, progress=None):
     """DOCX по переведённому PDF — конвертером pdf2docx: таблицы и разбивка по страницам как в PDF.
     Прежняя самодельная сборка по блокам страницы разваливала таблицы с колонками разной ширины (30RDGT feladat,
     06.10: 129 таблиц вместо одной на страницу, 32 страницы вместо 15).
@@ -237,6 +239,8 @@ def docx_from_pdf(pdf, out):
         with tempfile.TemporaryDirectory() as tmp:
             parts = []
             for pno in range(n):
+                if progress:
+                    progress(pno / n)
                 part = Path(tmp) / f"p{pno:04d}.docx"
                 # pdf2docx падает на некоторых таблицах («Failed to merge docx_cell», титул 30RDGT, 06.10) и
                 # молча отдаёт пустую страницу — тогда повтор без распознавания таблиц по тексту, потом совсем без таблиц
@@ -322,16 +326,18 @@ def source_path(d):
     return Path(d["file"])
 
 
-def assemble_all(jf, d, out_dir=None):
+def assemble_all(jf, d, out_dir=None, progress=None):
     """Перевод в исходном формате (DOCX на месте / PDF на месте + DOCX из переведённого PDF) и таблица вычитки.
-    out_dir — куда класть файлы (по умолчанию рядом с JSON)."""
+    out_dir — куда класть файлы (по умолчанию рядом с JSON). progress(доля 0..1) — ход по страницам PDF и DOCX."""
+    tick = progress or (lambda x: None)
     src = source_path(d)
     outd, stem = Path(out_dir or Path(jf).parent), Path(jf).stem
     outd.mkdir(parents=True, exist_ok=True)
     if src.suffix.lower() == ".docx":
         info = build_docx(src, outd / f"{stem}_RU.docx", d["segs"], d["res"])
     else:
-        info = build_pdf(src, outd / f"{stem}_RU.pdf", d["segs"], d["res"])
-        info["docx"] = docx_from_pdf(outd / f"{stem}_RU.pdf", outd / f"{stem}_RU.docx")
+        info = build_pdf(src, outd / f"{stem}_RU.pdf", d["segs"], d["res"], progress=lambda x: tick(0.4 * x))
+        info["docx"] = docx_from_pdf(outd / f"{stem}_RU.pdf", outd / f"{stem}_RU.docx",
+                                     progress=lambda x: tick(0.4 + 0.6 * x))
     review_xlsx(outd / f"{stem}_вычитка.xlsx", d["segs"], d["res"], stem)
     return info

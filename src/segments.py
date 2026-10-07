@@ -521,9 +521,11 @@ def page_rules(page, dpi=300):
     return hs + ih, vs + iv
 
 
-def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, ratio=0.85):
+def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, ratio=0.85, progress=None):
     """ocr: 'auto' — страница идёт через OCR, если в текстовом слое < ratio слов Tesseract и заметной доли
-    настоящих слов Tesseract в слое нет (missing_share > 20 %)."""
+    настоящих слов Tesseract в слое нет (missing_share > 20 %).
+    progress(доля 0..1) — ход по страницам: первая половина — Tesseract, вторая — чтение сканов порталом
+    (на 146 сканах это 10 минут, а процент стоял на нуле — «зависло», 07.10)."""
     import fitz
     from concurrent.futures import ThreadPoolExecutor
     from layout import frags_from_text, rules, rules_from_image, group, avail_rects, aligns
@@ -562,8 +564,21 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
         f.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
         return out
 
+    import threading
+    lock, cnt = threading.Lock(), {"t": 0, "p": 0}
+
+    def counted(fn, key, base, total):
+        def run(pno):
+            r = fn(pno)
+            with lock:                                  # и счётчик, и запись progress.json — по одному потоку
+                cnt[key] += 1
+                if progress:
+                    progress(base + 0.5 * cnt[key] / total)
+            return r
+        return run
+
     with ThreadPoolExecutor(4) as ex:
-        tpage = dict(zip(rng, ex.map(tess, rng)))
+        tpage = dict(zip(rng, ex.map(counted(tess, "t", 0.0, len(rng) or 1), rng)))
     tw = {p: tpage[p]["words"] for p in rng}
 
     def portal(pno):
@@ -579,7 +594,7 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
                                       and missing_share(doc[pno].get_text(), tw[pno]) > 0.2)
     ocr_pages = [p for p in rng if plan[p]]
     with ThreadPoolExecutor(4) as ex:
-        pr = dict(zip(ocr_pages, ex.map(portal, ocr_pages)))
+        pr = dict(zip(ocr_pages, ex.map(counted(portal, "p", 0.5, len(ocr_pages) or 1), ocr_pages)))
 
     segs, errors, lost = [], [], {}
     for pno in rng:

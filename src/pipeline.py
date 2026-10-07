@@ -154,7 +154,7 @@ def extract(inputs, work, progress=_quiet):
         if f.suffix.lower() == ".docx":
             segs, info = S.docx_segments(f), {}
         else:
-            segs, info = S.pdf_segments(f)
+            segs, info = S.pdf_segments(f, progress=lambda x: progress("извлечение", i + x, len(files)))
         jf.write_text(json.dumps({"file": str(f.resolve()), "segs": segs, "res": {}, "info": info}, ensure_ascii=False),
                       encoding="utf-8")
         log(f"извлечение: {f.name} — сегментов {len(segs)}, OCR-страниц {len(info.get('ocr_pages', []))}, {time.time() - t0:.0f} с")
@@ -375,7 +375,7 @@ def assemble(work, progress=_quiet):
     for i, f in enumerate(files):
         progress("сборка", i, len(files))
         d = json.loads(f.read_text(encoding="utf-8"))
-        info = assemble_all(f, d, Path(work) / "out")
+        info = assemble_all(f, d, Path(work) / "out", progress=lambda x: progress("сборка", i + x, len(files)))
         log(f"сборка: {f.stem} — {str(info)[:80]}")
     rebuild_portfolios(work, Path(work) / "out")
     progress("сборка", len(files), len(files))

@@ -86,9 +86,12 @@ def candidates(texts, entries, top=150):
     return keep[:top]
 
 
-def translate_terms(cands, batch=25):
+def translate_terms(cands, batch=25, progress=None):
+    """progress(сделано, всего) — перед каждым пакетом (пакет — один запрос к порталу с размышлением, ~1 мин)."""
     out = []
     for i in range(0, len(cands), batch):
+        if progress:
+            progress(i, len(cands))
         part = cands[i:i + batch]
         body = "\n".join(f'{k+1}. «{s}» — примеры: {ex}' for k, (s, c, ex) in enumerate(part))
         r = chat([{"role": "user", "content": PROMPT + body}], max_tokens=9000, think=True, tag="termx2")
