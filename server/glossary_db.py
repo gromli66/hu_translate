@@ -158,23 +158,26 @@ def entries_md(title, rules, entries):
 
 
 def snapshot(name):
-    """(версия, путь к project.json снимка). Снимок версии создаётся один раз и потом переиспользуется."""
+    """(версия, путь к project.json снимка). Глоссарий версии пишется один раз и потом переиспользуется; ссылки на
+    файлы проекта (соглашения, правила шлифовки, словари документов) — не часть версии, обновляются при каждом вызове."""
     ver = version(name)
     d = config.DATA / "glossary" / name / f"v{ver}"
     pj = d / "project.json"
     if pj.exists():
-        return ver, pj
-    d.mkdir(parents=True, exist_ok=True)
-    rules = db.one("select rules from projects where name=?", (name,))["rules"]
-    for layer, fname in (("customer", "customer.md"), ("expert", "terms.md")):
-        rows = db.q("select hu, ru, note, section, strict from glossary where project=? and layer=? and status='active' "
-                    "order by id", (name, layer))
-        (d / fname).write_text(_md(f"Глоссарий {name}: {layer}, версия {ver}", rules if layer == "customer" else "", rows),
-                               encoding="utf-8")
+        prj = json.loads(pj.read_text(encoding="utf-8"))
+    else:
+        d.mkdir(parents=True, exist_ok=True)
+        rules = db.one("select rules from projects where name=?", (name,))["rules"]
+        for layer, fname in (("customer", "customer.md"), ("expert", "terms.md")):
+            rows = db.q("select hu, ru, note, section, strict from glossary where project=? and layer=? and status='active' "
+                        "order by id", (name, layer))
+            (d / fname).write_text(_md(f"Глоссарий {name}: {layer}, версия {ver}", rules if layer == "customer" else "", rows),
+                                   encoding="utf-8")
+        prj = {"glossary": str(d / "customer.md"), "terms": str(d / "terms.md"), "tm": str(d / "tm_unused.json")}
     src = json.loads((config.PROJECTS / name / "project.json").read_text(encoding="utf-8"))
-    prj = {"glossary": str(d / "customer.md"), "terms": str(d / "terms.md"), "tm": str(d / "tm_unused.json")}
-    if src.get("conventions"):
-        prj["conventions"] = str((config.PROJECTS / name / src["conventions"]).resolve())
+    for k in ("conventions", "rules", "doc_terms"):
+        if src.get(k):
+            prj[k] = str((config.PROJECTS / name / src[k]).resolve())
     if src.get("domain"):
         prj["domain"] = src["domain"]
     pj.write_text(json.dumps(prj, ensure_ascii=False, indent=1), encoding="utf-8")
