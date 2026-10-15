@@ -158,14 +158,14 @@ def entries_md(title, rules, entries):
 
 
 def snapshot(name):
-    """(версия, путь к project.json снимка). Глоссарий версии пишется один раз и потом переиспользуется; ссылки на
-    файлы проекта (соглашения, правила шлифовки, словари документов) — не часть версии, обновляются при каждом вызове."""
+    """(версия, путь к project.json снимка). Глоссарий версии пишется один раз и потом переиспользуется. project.json
+    снимка пересобирается при каждом вызове: файлы глоссария — по именам рядом с ним (папку data делят хост и
+    контейнер, абсолютный путь одной среды в другой не открывается), файлы проекта (соглашения, правила шлифовки,
+    словари документов) — не часть версии, всегда текущие."""
     ver = version(name)
     d = config.DATA / "glossary" / name / f"v{ver}"
     pj = d / "project.json"
-    if pj.exists():
-        prj = json.loads(pj.read_text(encoding="utf-8"))
-    else:
+    if not pj.exists():
         d.mkdir(parents=True, exist_ok=True)
         rules = db.one("select rules from projects where name=?", (name,))["rules"]
         for layer, fname in (("customer", "customer.md"), ("expert", "terms.md")):
@@ -173,7 +173,7 @@ def snapshot(name):
                         "order by id", (name, layer))
             (d / fname).write_text(_md(f"Глоссарий {name}: {layer}, версия {ver}", rules if layer == "customer" else "", rows),
                                    encoding="utf-8")
-        prj = {"glossary": str(d / "customer.md"), "terms": str(d / "terms.md"), "tm": str(d / "tm_unused.json")}
+    prj = {"glossary": "customer.md", "terms": "terms.md", "tm": "tm_unused.json"}
     src = json.loads((config.PROJECTS / name / "project.json").read_text(encoding="utf-8"))
     for k in ("conventions", "rules", "doc_terms"):
         if src.get(k):

@@ -50,17 +50,17 @@ def test_snapshot_gives_engine_same_glossary(tmp_path, monkeypatch):
 @pytest.mark.skipif(not (REPO_PROJECTS / "paks" / "data" / "conventions.json").exists(), reason="нет данных проекта paks")
 def test_snapshot_carries_polish_rules_and_doc_terms(tmp_path, monkeypatch):
     """Задача сервиса идёт на снимке: без правил и словарей документов шлифовка молча ничего не правит.
-    Снимок, созданный до появления этих ключей, тоже должен их получить."""
+    Снимок, созданный раньше (без этих ключей, с путями другой среды — хоста вместо контейнера), тоже чинится."""
     monkeypatch.setattr(config, "DATA", tmp_path / "data")
     monkeypatch.setattr(config, "PROJECTS", REPO_PROJECTS)
     db.init()
     ver, pj = GD.snapshot("paks")
-    stale = json.loads(pj.read_text(encoding="utf-8"))
-    for k in ("rules", "doc_terms"):
-        stale.pop(k)
+    stale = {k: r"C:\elsewhere\data\glossary\paks\v1" + "\\" + Path(v).name
+             for k, v in json.loads(pj.read_text(encoding="utf-8")).items() if k in ("glossary", "terms", "tm")}
     pj.write_text(json.dumps(stale), encoding="utf-8")
     _, pj = GD.snapshot("paks")
     prj = P.load_project(pj)
+    assert Path(prj["glossary"]) == (pj.parent / "customer.md").resolve() and Path(prj["glossary"]).exists()
     assert Path(prj["rules"]).name == "conventions.json" and Path(prj["rules"]).exists()
     assert (Path(prj["doc_terms"]) / "000018J00073_UTS_UserManual_terms.json").exists()
 
