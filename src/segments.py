@@ -498,16 +498,46 @@ def _dehyphen(words):
     return out
 
 
-def missing_share(text_layer, tess_words):
-    """Доля настоящих слов Tesseract (от 4 букв, с тремя строчными подряд), которых нет в текстовом слое даже
-    в похожем написании. Число слов обманывает: кружки отметок Tesseract читает как «oO», рамки — «LL», коды дробит
-    и искажает («31RD315401») — страницы с полным текстовым слоем уходили в OCR (30RDGT feladat, стр. 4 и 9, 06.10).
-    Замер: где OCR нужен — 34–92 % слов нет в слое, ложные срабатывания — 0–11 %."""
-    tl = {w.lower() for w in re.findall(r"\w{4,}", text_layer)}
-    cand = [w["t"] for w in tess_words if re.fullmatch(r"\w{4,}", w["t"]) and re.search(r"[a-záéíóöőúüű]{3}", w["t"].lower())]
+def page_missing_share(page, tess_words):
+    """Доля настоящих слов Tesseract (от 4 букв, с тремя строчными подряд), которых в текстовом слое нет ни по месту,
+    ни по написанию (похожее написание засчитывается: коды Tesseract дробит и искажает — «31RD315401»; кружки отметок
+    читает как «oO», рамки — «LL»; 30RDGT feladat, 06.10).
+    - Надписи внутри картинок (скриншоты, логотипы) — не потеря слоя, если слой на странице есть: страницы руководства
+      со скриншотами и логотипом в колонтитуле уходили в OCR целиком и перерисовывались как сканы (UTS, 17 из 99, 15.10).
+    - Слово, место которого занято словом слоя, не потеряно: точки-заполнители оглавления Tesseract читает как
+      «eeeteenáááánázsái», «KEKE» — оглавление считалось сканом.
+    Замер по кэшу OCR 15 документов: родные страницы — 0,00; сканы и страницы с текстом кривыми — от 0,17;
+    3SZ19 стр. 80 (была текстовой) — 0,13.
+    - Невидимый текст (слой OCR поверх скана, текст под фоном) слово не «накрывает»: скан с невидимым слоем
+      иначе не уходил в OCR, а его текст отбрасывался как скрытый — страница пропадала (красная команда 15.10).
+    - Картинка от половины листа — скан (тело страницы, вклеенное в шаблон с текстовым колонтитулом), её слова
+      считаются.
+    Возвращает (доля, слова Tesseract вне картинок-скриншотов)."""
+    import fitz
+    from layout import hidden_text, _covered
+    rot = page.rotation_matrix
+    hidden = hidden_text(page)
+    visible = [w for w in page.get_text("words") if not (hidden and _covered(hidden, w[:4]))]
+    text = " ".join(w[4] for w in visible)
+    words = tess_words
+    if len(re.findall(r"\w{2,}", text)) >= 20:
+        area = page.rect.get_area()
+        imgs = [r for r in (fitz.Rect(i["bbox"]) * rot for i in page.get_image_info()) if r.get_area() < 0.5 * area]
+        centre = lambda w: fitz.Point((w["box"][0] + w["box"][2]) / 2, (w["box"][1] + w["box"][3]) / 2)
+        words = [w for w in words if not any(r.contains(centre(w)) for r in imgs)]
+    boxes = [fitz.Rect(w[:4]) * rot for w in visible]
+
+    def covered(w):
+        r = fitz.Rect(w["box"]); a = r.get_area() or 1
+        return any((r & b).get_area() > 0.3 * a for b in boxes if b.intersects(r))
+
+    cand = [w for w in words if re.fullmatch(r"\w{4,}", w["t"]) and re.search(r"[a-záéíóöőúüű]{3}", w["t"].lower())]
     if not cand:
-        return 0.0
-    return sum(1 for w in cand if w.lower() not in tl and not difflib.get_close_matches(w.lower(), tl, 1, 0.8)) / len(cand)
+        return 0.0, words
+    tl = {x.lower() for x in re.findall(r"\w{4,}", text)}
+    miss = sum(1 for w in cand if not covered(w) and w["t"].lower() not in tl
+               and not difflib.get_close_matches(w["t"].lower(), tl, 1, 0.8))
+    return miss / len(cand), words
 
 
 def page_rules(page, dpi=300):
@@ -521,11 +551,13 @@ def page_rules(page, dpi=300):
     return hs + ih, vs + iv
 
 
-def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, ratio=0.85, progress=None):
+def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, ratio=0.85, progress=None, shots=True):
     """ocr: 'auto' — страница идёт через OCR, если в текстовом слое < ratio слов Tesseract и заметной доли
-    настоящих слов Tesseract в слое нет (missing_share > 20 %).
+    настоящих слов Tesseract в слое нет (page_missing_share > 15 %).
     progress(доля 0..1) — ход по страницам: первая половина — Tesseract, вторая — чтение сканов порталом
-    (на 146 сканах это 10 минут, а процент стоял на нуле — «зависло», 07.10)."""
+    (на 146 сканах это 10 минут, а процент стоял на нуле — «зависло», 07.10).
+    shots — надписи скриншотов на страницах с текстовым слоем (shots.shot_segments): сегменты идут сразу после
+    текста своей страницы, номера сегментов — по порядку."""
     import fitz
     from concurrent.futures import ThreadPoolExecutor
     from layout import frags_from_text, rules, rules_from_image, group, avail_rects, aligns
@@ -586,12 +618,15 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
         png = fitz.open(path)[pno].get_pixmap(dpi=dpi_portal, colorspace=fitz.csGRAY).tobytes("png")
         return chat([{"role": "user", "content": OCR_PROMPT}], images=[img_b64(png)], max_tokens=8000, tag=f"ocr{pno}")
 
+    from layout import hidden_text, _covered
     plan = {}
     for pno in rng:
-        n_text = len(re.findall(r"\w{2,}", doc[pno].get_text()))
-        n_tess = len([w for w in tw[pno] if re.search(r"\w{2,}", w["t"])])
-        plan[pno] = (ocr is True) or (ocr == "auto" and n_tess >= 15 and n_text < ratio * n_tess
-                                      and missing_share(doc[pno].get_text(), tw[pno]) > 0.2)
+        hid = hidden_text(doc[pno])           # невидимый слой OCR поверх скана — не текст страницы
+        n_text = len([w for w in doc[pno].get_text("words") if re.search(r"\w{2,}", w[4])
+                      and not (hid and _covered(hid, w[:4]))])
+        share, outside = page_missing_share(doc[pno], tw[pno]) if ocr == "auto" else (0.0, tw[pno])
+        n_tess = len([w for w in outside if re.search(r"\w{2,}", w["t"])])
+        plan[pno] = (ocr is True) or (ocr == "auto" and n_tess >= 15 and n_text < ratio * n_tess and share > 0.15)
     ocr_pages = [p for p in rng if plan[p]]
     with ThreadPoolExecutor(4) as ex:
         pr = dict(zip(ocr_pages, ex.map(counted(portal, "p", 0.5, len(ocr_pages) or 1), ocr_pages)))
@@ -619,4 +654,15 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
                                  "frags": [[round(v, 2) for v in f["bbox"]] for f in p["frags"]],
                                  "size": p["size"], "bold": p["bold"], "family": p.get("family", "serif"),
                                  "ocr": plan[pno]}})
-    return segs, {"ocr_pages": ocr_pages, "errors": errors, "lost_words": {k: v for k, v in lost.items() if v}}
+    n_shots = 0
+    text_pages = {p for p in rng if not plan[p]}
+    if shots and text_pages:
+        import shots as SH
+        extra = SH.shot_segments(doc, work / "shots", len(segs), pages=text_pages)
+        n_shots = len(extra)
+        order = {p: i for i, p in enumerate(rng)}
+        segs = sorted(segs + extra, key=lambda x: (order[x["page"]], "shot" in x["loc"]))
+        for i, x in enumerate(segs):
+            x["id"] = i
+    return segs, {"ocr_pages": ocr_pages, "errors": errors, "lost_words": {k: v for k, v in lost.items() if v},
+                  "shot_labels": n_shots}

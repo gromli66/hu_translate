@@ -21,7 +21,9 @@ def apply(jf, xf, tm_path, out_dir=None):
     Возвращает список правок [(венгерский, утверждённый русский)] — для размножения по похожим фразам (rag)."""
     jf, xf = Path(jf), Path(xf)
     from openpyxl import load_workbook
-    ws = load_workbook(xf).active
+    wb = load_workbook(xf)
+    # лист по имени: рядом листы «шлифовка» и «нарушения», редактор мог сохранить книгу, стоя на них
+    ws = wb["вычитка"] if "вычитка" in wb.sheetnames else wb.active
     head = [c.value for c in ws[1]]
     ci, cf = head.index("№"), head.index("Исправление (редактор)")
     fixes = {}

@@ -3,6 +3,7 @@ python-docx>=1.1
 openpyxl>=3.1
 lxml>=5
 pdf2docx==0.5.13           # DOCX из переведённого PDF (тянет opencv-python-headless)
+pdfplumber==0.11.7         # дерево структуры размеченного PDF (docx_struct: DOCX по логике документа)
 # веб-сервис
 fastapi>=0.110
 uvicorn>=0.29

@@ -2,5 +2,7 @@
   "glossary": "data/glossary_FAT.md",
   "terms": "data/komplekt_terms.md",
   "conventions": "data/CONVENTIONS.md",
-  "tm": "data/tm.json"
+  "tm": "data/tm.json",
+  "rules": "data/conventions.json",
+  "doc_terms": "data/doc_terms"
 }

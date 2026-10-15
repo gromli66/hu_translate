@@ -16,8 +16,10 @@ sys.stdout.reconfigure(encoding="utf-8")
 import pipeline as P
 
 # доля шага в общей полосе прогресса, %
-W_REVIEW = {"извлечение": (0, 5), "перевод": (5, 50), "проверка": (50, 92), "сборка": (92, 96), "термины": (96, 100)}
-W_FAST = {"извлечение": (0, 5), "перевод": (5, 85), "сборка": (85, 92), "термины": (92, 100)}
+W_REVIEW = {"извлечение": (0, 5), "перевод": (5, 50), "структура": (50, 52), "проверка": (52, 89), "шлифовка": (89, 92),
+            "сборка": (92, 96), "термины": (96, 100)}
+W_FAST = {"извлечение": (0, 5), "перевод": (5, 80), "структура": (80, 82), "шлифовка": (82, 85), "сборка": (85, 92),
+          "термины": (92, 100)}
 W_EDITS = {"правки": (0, 70), "сборка": (70, 85), "термины": (85, 100)}
 TERMS_TOP = 100            # сколько частых сочетаний вне глоссария переводить в кандидаты за один перевод
 
@@ -119,8 +121,11 @@ def main(job_dir, mode="translate"):
     pr = Progress(jd / "progress.json", W_REVIEW if spec["review"] else W_FAST)
     P.extract([jd / "in"], work, pr)
     P.translate(work, prj, progress=pr)
+    P.struct_fill(work, prj, progress=pr)        # размеченный PDF: абзацы DOCX по разметке без пары в сегментах
     if spec["review"]:
         P.review(work, prj, progress=pr)
+    P.polish(work, prj, progress=pr)              # соглашения комплекта и словарь документа; листы в таблице вычитки
+    P.fit(work, prj)
     P.assemble(work, pr)
     mine_terms(work, prj, jd / "candidates.json", pr)
     pr.write({"stage": "готово", "pct": 100, "summary": summary(work)})

@@ -2,12 +2,14 @@
 """Перевод комплекта эксплуатационных документов HU→RU на портале go.ai-rosatom.ru.
 
   python translate_komplekt.py run <документы или папка> --project projects/paks/project.json --work work/paks
-      извлечение → перевод разделами → смысловая проверка с исправлением → DOCX/PDF + таблицы вычитки в <work>/out
+      извлечение → перевод разделами → смысловая проверка с исправлением → шлифовка по соглашениям →
+      DOCX/PDF + таблицы вычитки в <work>/out
   python translate_komplekt.py edits --project … --work …
       правки редактора (колонка G таблиц вычитки) → перевод, память переводов проекта, похожие фразы по образцу
   python translate_komplekt.py terms <документы> --project … --work … --out terms.md
       кандидаты в термины нового комплекта, переведённые порталом, — на проверку специалисту
-Шаги по отдельности: extract / translate / review / assemble. Ответы портала кэшируются: перезапуск после обрыва дешёвый."""
+Шаги по отдельности: extract / translate / review / polish / assemble. Ответы портала кэшируются: перезапуск после
+обрыва дешёвый."""
 import sys, argparse
 from pathlib import Path
 
@@ -19,7 +21,7 @@ import pipeline as P
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("run", "extract", "translate", "review", "assemble", "edits", "terms"):
+    for name in ("run", "extract", "translate", "review", "polish", "assemble", "edits", "terms"):
         sp = sub.add_parser(name)
         if name in ("run", "extract", "terms"):
             sp.add_argument("inputs", nargs="+", help="файлы DOCX/PDF или папки с ними")
@@ -38,8 +40,13 @@ def main():
         P.extract(a.inputs, a.work)
     if a.cmd in ("run", "translate"):
         P.translate(a.work, prj, a.workers, redo=a.redo)
+        P.struct_fill(a.work, prj)
     if a.cmd == "review" or (a.cmd == "run" and not a.no_review):
         P.review(a.work, prj, a.review_workers)
+    if a.cmd in ("run", "polish"):
+        P.polish(a.work, prj)
+    if a.cmd == "run":
+        P.fit(a.work, prj)
     if a.cmd in ("run", "assemble"):
         P.assemble(a.work)
     if a.cmd == "edits":

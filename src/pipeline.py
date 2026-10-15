@@ -5,8 +5,11 @@
   extract   документы (DOCX/PDF) → сегменты с разметкой; PDF: текстовый слой или OCR (Tesseract hun + портал по картинке)
   translate перевод разделами ≤6000 знаков, контекст — свой перевод предыдущего раздела; общая память комплекта
             (одна фраза — один перевод) и шаблоны «то же до чисел»; проверки кодом, повтор с замечаниями; постобработка
+            размеченный PDF (экспорт Word): абзацы разметки без пары в сегментах — своими сегментами (struct_fill)
   review    смысловая проверка агентом портала (насыщенный режим) + исправление + повторная проверка исправленного
-  assemble  DOCX/PDF «на месте» + таблица вычитки (G — правка редактора, H — смысловая проверка)
+  polish    шлифовка по языковым соглашениям комплекта и словарю документа: код, затем портал, не больше 3 проходов
+  assemble  DOCX/PDF «на месте» (размеченный PDF — DOCX по разметке и профилю оформления оригинала) + таблица
+            вычитки (G — правка редактора, H — смысловая проверка; листы «шлифовка» и «нарушения»)
   edits     правки редактора из колонки G → перевод, память переводов проекта, размножение на похожие фразы (RAG)
 
 Рабочая папка: <work>/ocr (кэш OCR), <work>/json/<док>.json (состояние), <work>/out (результаты).
@@ -39,10 +42,12 @@ def _quiet(stage, done, total):
 def load_project(path):
     """project.json: {"glossary": основной глоссарий заказчика (md), "terms": глоссарий комплекта (md, необяз.),
     "conventions": свод принятых соответствий (md, необяз.), "domain": первая фраза системного промпта (необяз.),
-    "tm": память переводов (json, необяз.; создаётся правками редактора)}. Пути — относительно project.json."""
+    "tm": память переводов (json, необяз.; создаётся правками редактора), "rules": языковые соглашения, машинно
+    проверяемые (json, необяз.; src/conventions.py), "doc_terms": папка словарей документов <документ>_terms.json
+    (необяз.; шлифовка)}. Пути — относительно project.json."""
     p = Path(path).resolve()
     prj = json.loads(p.read_text(encoding="utf-8"))
-    for k in ("glossary", "terms", "conventions", "tm"):
+    for k in ("glossary", "terms", "conventions", "tm", "rules", "doc_terms"):
         if prj.get(k):
             prj[k] = str((p.parent / prj[k]).resolve())
     prj.setdefault("tm", str(p.parent / "tm.json"))
@@ -155,8 +160,36 @@ def extract(inputs, work, progress=_quiet):
             segs, info = S.docx_segments(f), {}
         else:
             segs, info = S.pdf_segments(f, progress=lambda x: progress("извлечение", i + x, len(files)))
-        jf.write_text(json.dumps({"file": str(f.resolve()), "segs": segs, "res": {}, "info": info}, ensure_ascii=False),
-                      encoding="utf-8")
+        dplan = struct = None
+        if f.suffix.lower() == ".pdf" and not info.get("ocr_pages"):
+            # размеченный PDF (экспорт Word): DOCX — по дереву разметки и профилю оформления оригинала
+            # (struct_fill, assemble.build_struct_docx); неполная разметка потеряла бы текст — тогда как раньше
+            import docx_build
+            try:
+                cov = docx_build.coverage(f, segs)
+            except Exception as e:                      # noqa: BLE001 — разметку не прочли: DOCX прежним путём
+                cov = 0.0
+                log(f"извлечение: {f.name} — разметка PDF не прочитана ({type(e).__name__}: {e})"[:300])
+            if cov >= docx_build.STRUCT_COVER:
+                struct = {"coverage": round(cov, 3)}
+                log(f"извлечение: {f.name} — размеченный PDF, разметка покрывает {cov:.1%} текста: DOCX по разметке")
+            elif cov:
+                log(f"извлечение: {f.name} — разметка покрывает только {cov:.1%} текста: DOCX не по разметке")
+        if f.suffix.lower() == ".pdf" and not info.get("ocr_pages") and not struct:
+            # PDF с текстовым слоем: DOCX — из оригинала, его абзацы без пары в PDF переводятся своими сегментами
+            import docx_src
+            try:
+                extra, dplan = docx_src.plan(f, segs, work / "docx" / f"{f.stem}.docx", len(segs))
+            except Exception as e:                      # noqa: BLE001 — DOCX тогда прежним путём, перевод не страдает
+                extra, dplan = None, f"{type(e).__name__}: {e}"[:200]
+            if extra is None:
+                log(f"извлечение: {f.name} — DOCX из оригинала не собран ({dplan}); DOCX будет из переведённого PDF")
+                dplan = None
+            else:
+                segs += extra
+                info["docx_own"] = len(extra)
+        jf.write_text(json.dumps({"file": str(f.resolve()), "segs": segs, "res": {}, "info": info, "docx": dplan,
+                                  "struct": struct}, ensure_ascii=False), encoding="utf-8")
         log(f"извлечение: {f.name} — сегментов {len(segs)}, OCR-страниц {len(info.get('ocr_pages', []))}, {time.time() - t0:.0f} с")
     progress("извлечение", len(files), len(files))
 
@@ -237,13 +270,22 @@ def translate(work, prj, workers=4, redo=False, progress=_quiet):
     log(f"перевод: документов {len(docs)}, потоков {len(streams)}, разделов {total}, по {workers} одновременно")
     progress("перевод", 0, total)
 
+    # одиночное латинское сокращение без записи в глоссарии («GUI», «CTM» в списке сокращений) — как есть: модель
+    # раскрывала его в «графический пользовательский интерфейс», ячейка ужималась до 3 pt (UTS, 15.10); сокращения
+    # глоссария (RVR → УСБ) переводятся
+    # венгерское слово заглавными («HIBA», «VAGY», «NYITVA») — не сокращение: оно есть строчными в тексте
+    # комплекта (tr.vocab) или в HU_CAPS_WORDS (красная команда 15.10: 90 сегментов «HIBA» остались бы без перевода)
+    known = {e.hu.strip() for e in tr.entries}
+    keep_abbr = lambda t: (bool(re.fullmatch(r"[A-Z][A-Z0-9]{1,6}", t.strip())) and t.strip() not in known
+                           and t.strip().lower() not in tr.vocab and t.strip().lower() not in HU_CAPS_WORDS)
+
     def run_stream(job):
         stem, secs = job
         res, ctx = {}, ""
         for sec in secs:
             units, by_text = [], {}
             for s in sec:
-                if not S.needs_translation(s["text"]):
+                if not S.needs_translation(s["text"]) or keep_abbr(s["text"]):
                     res[s["id"]] = {"ru": s["text"], "issues": [], "tries": 0, "copied": True}; continue
                 m = from_memory(s["text"])
                 if m:
@@ -280,9 +322,70 @@ def translate(work, prj, workers=4, redo=False, progress=_quiet):
                 r["issues"] = tr.full_check(s["text"], r["ru"])
                 r["gloss_miss"] = gloss_misses(TAG.sub("", s["text"]), r["ru"], main, outer=tr.entries)
         d["res"] = {str(k): v for k, v in out.items()}
+        d.pop("polish", None)                       # перевод новый — шлифовка заново
         save_doc(work, stem, d)
         log(f"перевод: {stem} — на вычитку {sum(1 for r in d['res'].values() if r.get('issues'))}")
     log(f"перевод готов за {time.time() - t0:.0f} с; {STAT}")
+
+
+# ------------------------------------------------------------------ 2а. абзацы размеченного PDF без пары в сегментах
+def struct_fill(work, prj, progress=_quiet):
+    """Размеченный PDF (d["struct"], см. extract): тексты, которые сборка DOCX по разметке спросит у памяти, а среди
+    сегментов страниц их нет (абзац со ссылкой Word из нескольких элементов дерева, «FIGYELEM!» жирным + текст, пункт
+    с командой Consolas), — перевод порталом (сначала — память переводов проекта) своими сегментами (loc.struct_only,
+    после текста своей страницы). Дальше они идут как все: проверка, шлифовка, таблица вычитки, правки редактора.
+    Второй круг — то, что сборка спросит из-за первого: перевод с метками вернулся без меток — тот же абзац без них."""
+    import docx_build as B
+    files = doc_files(work)
+    for i, f in enumerate(files):
+        d = json.loads(f.read_text(encoding="utf-8"))
+        st = d.get("struct")
+        if not st or "filled" in st or not d.get("res"):
+            continue
+        progress("структура", i, len(files))
+        t0, tr, added = time.time(), None, 0
+        for _ in range(2):
+            try:
+                miss = B.missing(d["file"], d["segs"], d["res"])
+            except Exception as e:                  # noqa: BLE001 — сборка по разметке тогда откатится на прежний путь
+                st["error"] = f"{type(e).__name__}: {e}"[:200]
+                log(f"структура: {f.stem} — пробная сборка DOCX по разметке не удалась ({st['error']})")
+                break
+            if not miss:
+                break
+            if tr is None:
+                tr = make_translator(prj)
+                set_vocab(tr, d["segs"])
+                tm = {tmkey(k): v for k, v in (tr.tm or {}).items()}
+                main = [e for e in tr.entries if id(e) in tr.main_ids]
+            units = [t for t, _, _ in miss if tmkey(t) not in tm]
+            got = {}
+            for j in range(0, len(units), 12):
+                chunk = units[j:j + 12]
+                out = tr.run_batch({"units": [{"key": k, "text": t} for k, t in enumerate(chunk)], "first_abbr": [],
+                                    "context": ""})
+                got.update({t: out[k] for k, t in enumerate(chunk)})
+                progress("структура", i + 0.9 * (j + len(chunk)) / len(units), len(files))
+            for t, page, code in miss:
+                if tmkey(t) in tm:
+                    r = {"ru": tm[tmkey(t)], "issues": [], "tries": 0, "tm": True}
+                else:
+                    r = dict(got[t])
+                    if r["ru"]:
+                        # моноширинные части: команды — дословно, заполнитель <…> — в скобках (docx_build.code_part)
+                        r["ru"] = B.keep_code(t, fix_units(fix_caps(t, r["ru"])), code)
+                        r["issues"] = tr.full_check(t, r["ru"])
+                        r["gloss_miss"] = gloss_misses(TAG.sub("", t), r["ru"], main, outer=tr.entries)
+                sid = max(int(s["id"]) for s in d["segs"]) + 1
+                pos = next((k for k, s in enumerate(d["segs"]) if page is not None and s["page"] is not None
+                            and s["page"] > page), len(d["segs"]))
+                d["segs"].insert(pos, {"id": sid, "text": t, "src": t, "page": page, "loc": {"struct_only": True}})
+                d["res"][str(sid)] = r
+                added += 1
+        st["filled"] = added
+        save_doc(work, f.stem, d)
+        log(f"структура: {f.stem} — абзацев разметки без пары в сегментах {added}, {time.time() - t0:.0f} с")
+    progress("структура", len(files), len(files))
 
 
 # ------------------------------------------------------------------ 3. смысловая проверка + исправление
@@ -366,6 +469,134 @@ def review(work, prj, workers=6, compact=True, progress=_quiet):
         save_doc(work, f.stem, d)
         log(f"проверка: {f.stem} — отмечено {flagged}, исправлено {fixed}")
     log(f"проверка готова за {time.time() - t0:.0f} с; {STAT}")
+
+
+# ------------------------------------------------------------------ 3а. шлифовка по языковым соглашениям
+def polish(work, prj, progress=_quiet, chat=None):
+    """Шлифовка переводов по языковым соглашениям комплекта (prj["rules"], conventions.json) и словарю документа
+    (prj["doc_terms"]/<документ>_terms.json; нет словаря — только соглашения): правка кодом всего однозначного,
+    порталом — только формулировок, не больше 3 проходов (polish.run). Одинаковая пара «оригинал — перевод» шлифуется
+    один раз; правки редактора и память переводов проекта не трогаются. Журнал правок и оставшиеся нарушения —
+    в d["polish"] (листы «шлифовка» и «нарушения» таблицы вычитки), у сегмента — r["polish"] (колонка H)."""
+    import conventions as C
+    import polish as PL
+    if chat is None:
+        from llm import chat
+    files = doc_files(work)
+    tr = None
+    for i, f in enumerate(files):
+        d = json.loads(f.read_text(encoding="utf-8"))
+        if "polish" in d or not d.get("res"):
+            continue
+        progress("шлифовка", i, len(files))
+        terms = Path(prj["doc_terms"]) / f"{f.stem}_terms.json" if prj.get("doc_terms") else None
+        rules = C.load(prj.get("rules"), terms)
+        if terms and terms.exists():
+            log(f"шлифовка: {f.stem} — словарь документа {terms.name}, терминов {len(rules['terms'])}")
+        items, group = {}, {}
+        for s in d["segs"]:
+            r = d["res"].get(str(s["id"])) or {}
+            if not r.get("ru") or r.get("copied") or r.get("edited") or r.get("tm") or cl(r["ru"]) == cl(s["text"]):
+                continue
+            k = (s["text"], r["ru"])
+            if k not in group:
+                group[k] = []
+                items[str(s["id"])] = {"hu": s["text"], "ru": r["ru"], "kind": "shot" if s["loc"].get("shot") else "text",
+                                       "id": s["id"], "page": s["page"] + 1 if s["page"] is not None else None}
+            group[k].append(str(s["id"]))
+        before = {k: it["ru"] for k, it in items.items()}
+        edits, remaining = PL.run(items, rules, chat=chat, log=log,
+                                  progress=lambda x: progress("шлифовка", i + 0.95 * x, len(files)))
+        if tr is None:
+            tr = make_translator(prj)
+        set_vocab(tr, d["segs"])
+        main = [e for e in tr.entries if id(e) in tr.main_ids]
+        segs = {str(s["id"]): s for s in d["segs"]}
+        for k, it in items.items():
+            if it["ru"] == before[k]:
+                continue
+            mine = [e for e in edits if e["key"] == k]
+            note = {"before": before[k], "rules": ", ".join(dict.fromkeys(e["rule"] for e in mine)),
+                    "who": ", ".join(dict.fromkeys(e["who"] for e in mine)), "of": it["ru"]}
+            for sid in group[(it["hu"], before[k])]:
+                r, hu = d["res"][sid], segs[sid]["text"]
+                r.update(ru=it["ru"], polish=note, issues=tr.full_check(hu, it["ru"]),
+                         gloss_miss=gloss_misses(TAG.sub("", hu), it["ru"], main, outer=tr.entries))
+        d["polish"] = {"edits": edits, "remaining": remaining, "rules": rules}
+        save_doc(work, f.stem, d)
+        log(f"шлифовка: {f.stem} — правок {len(edits)} (код {sum(e['who'] == 'код' for e in edits)}, портал "
+            f"{sum(e['who'] == 'портал' for e in edits)}), нарушений осталось {len(remaining)}")
+    progress("шлифовка", len(files), len(files))
+
+
+# ------------------------------------------------------------------ 3б. сокращение под место в PDF
+FIT_PROMPT = ("Ниже — русский перевод фрагмента технической документации АЭС, который в PDF не помещается в своё место "
+              "(ячейка таблицы или строка списка). Сократи его до {n} знаков или короче, сохранив смысл.\n"
+              "- Термины, коды, обозначения, числа и латиница — без изменений, все до одного.\n"
+              "- Можно убрать повторы и служебные слова, заменить оборот короче, использовать общепринятые сокращения "
+              "(т. е., напр., см.).\n- Ничего не добавляй. Выведи только сокращённый текст.\n\n"
+              "Оригинал (венгерский): {hu}\nПеревод: {ru}")
+
+
+# короткая надпись (штамп, шапка таблицы): только сокращение тех же слов — портал менял слово на другое
+# («Проектировщик:» → «Проект:», штамп UTS, 15.10)
+FIT_PROMPT_SHORT = ("Надпись в тесной ячейке технического документа не помещается. Сократи её до {n} знаков или короче, "
+                    "сокращая сами слова с точкой (Проектировщик → Проектир., Обязательный → Обяз.), не заменяя их другими "
+                    "словами. Числа, коды и латиница — без изменений. Выведи только результат.\nНадпись: {ru}")
+
+
+def _abbr_of(short, ru, hu):
+    """Короткая надпись — те же слова или их сокращения с точкой (или исходное латинское сокращение)."""
+    if short.strip() == hu.strip():
+        return True
+    words = [w.strip(":;,()«»").lower() for w in ru.split()]
+    for w in short.split():
+        w = w.strip(":;,()«»").lower()
+        if not w or w in words:
+            continue
+        if not (w.endswith(".") and len(w) >= 4 and any(x.startswith(w[:-1]) for x in words)):
+            return False
+    return True
+
+
+def fit(work, prj=None, limit=0.7):
+    """Короткая формулировка для PDF там, где перевод ужимается мельче limit от исходного кегля (сборка «на месте»
+    не может раздвинуть ячейку или строку списка). Портал сокращает, код проверяет: коды и числа те же, текст
+    короче. Сокращённое — только в PDF (r["ru_pdf"]); в DOCX строка растёт, там полный перевод."""
+    import tempfile
+    from llm import chat
+    from translate import CODE
+    from assemble import build_pdf
+    for f in doc_files(work):
+        d = json.loads(f.read_text(encoding="utf-8"))
+        if not d["file"].lower().endswith(".pdf"):
+            continue
+        with tempfile.TemporaryDirectory() as tmp:
+            info = build_pdf(d["file"], Path(tmp) / "trial.pdf", d["segs"], d["res"])
+        by_id = {str(s["id"]): s for s in d["segs"]}
+        done = 0
+        for it in info.get("shrunk", []):
+            s, r = by_id[str(it["id"])], d["res"][str(it["id"])]
+            ru = cl(r["ru"])
+            # место под текст ~ квадрат кегля: до масштаба 0,75 — длина × (масштаб/0,75)², но не короче 60 %
+            # (сокращать вдвое — терять смысл)
+            n = max(8, int(len(ru) * max((it["scale"] / 0.75) ** 2, 0.6)))
+            label = len(ru.split()) <= 3
+            if r.get("ru_pdf") and r.get("ru_pdf_of") == r["ru"] and (not label or _abbr_of(r["ru_pdf"], ru, cl(s["text"]))):
+                continue
+            r.pop("ru_pdf", None); r.pop("ru_pdf_of", None)
+            if n >= len(ru):
+                continue
+            prompt = (FIT_PROMPT_SHORT.format(n=n, ru=ru) if label
+                      else FIT_PROMPT.format(n=n, hu=cl(s["text"]), ru=ru))
+            out = chat([{"role": "user", "content": prompt}], max_tokens=2000, tag=f"fit{it['id']}")
+            short = (out.get("text") or "").strip().strip("«»\"")
+            codes = lambda t: sorted(CODE.findall(t))
+            if short and len(short) < len(ru) and codes(short) == codes(ru) \
+                    and (not label or _abbr_of(short, ru, cl(s["text"]))):
+                r["ru_pdf"], r["ru_pdf_of"] = short, r["ru"]; done += 1
+        save_doc(work, f.stem, d)
+        log(f"сокращение: {f.stem} — ужато {len(info.get('shrunk', []))}, сокращено {done}")
 
 
 # ------------------------------------------------------------------ 4. сборка

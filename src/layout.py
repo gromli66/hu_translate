@@ -31,12 +31,69 @@ def _vrule_in(vs, xa, xb, y0, y1):
     return any(xa - 1 <= x <= xb + 1 and min(y1, ry1) - max(y0, ry0) > 0.5 * (y1 - y0) for ry0, ry1, x in vs)
 
 
+BULLET = re.compile(r"^[•▪◦·o\-–]$")
+
+
+def hidden_text(page):
+    """Рамки текста, которого не видно: невидимый слой (режим 3) и текст, нарисованный раньше картинки, которая его
+    целиком накрывает. Титул UTS (15.10): шапка и колонтитул лежат под фоном во весь лист — перевод печатался поверх
+    титула. Порядок отрисовки — по номеру записи get_bboxlog; невидимый слой там — «ignore-text».
+    get_texttrace не годится: в PyMuPDF 1.27 на сотне страниц роняет процесс (none_dealloc, 15.10).
+    Координаты — как у get_text.
+    Прячет только крупная (от половины листа) картинка без маски прозрачности; если «спрятанным» вышло больше 70 %
+    текста страницы — это водяной знак поверх всего, не фон: прозрачный знак, полупрозрачная печать и картинка,
+    обрезанная в Word, съедали текст молча (красная команда 15.10)."""
+    log = page.get_bboxlog()
+    area = page.rect.get_area()
+    info = page.get_image_info()
+
+    def opaque_big(r):
+        if r.get_area() < 0.5 * area:
+            return False
+        same = [ii for ii in info if abs(fitz.Rect(ii["bbox"]).x0 - r.x0) < 1 and abs(fitz.Rect(ii["bbox"]).y1 - r.y1) < 1]
+        return not any(ii.get("has-mask") for ii in same)
+
+    imgs = [(i, fitz.Rect(b)) for i, (k, b) in enumerate(log) if k == "fill-image" and opaque_big(fitz.Rect(b))]
+    texts = [(i, k, fitz.Rect(b)) for i, (k, b) in enumerate(log) if "text" in k]
+    under = [r for i, k, r in texts if k != "ignore-text" and any(j > i and ir.contains(r) for j, ir in imgs)]
+    shown = [r for i, k, r in texts if k != "ignore-text"]
+    if shown and len(under) > 0.7 * len(shown):
+        under = []
+    return [r for i, k, r in texts if k == "ignore-text"] + under
+
+
+def _covered(rects, bb, share=0.5):
+    r = fitz.Rect(bb); a = r.get_area() or 1
+    return sum((r & h).get_area() for h in rects if h.intersects(r)) >= share * a
+
+
+def _lead(t):
+    """Перед значком только маркер пункта или 1–3 знака («• ✓: minden…», «10.5 : még…»): строка рвётся на значке.
+    Значок посреди фразы («az indító (▶) gombbal») строку не рвёт: два куска одного абзаца с продолжениями
+    ложились друг на друга (UTS стр. 39, 15.10) — значок под переводом меньшее зло."""
+    t = t.strip()
+    return len(t) <= 3 or bool(BULLET.match(t))
+
+
+def _image_between(imgs, xa, xb, y0, y1):
+    """Значок (✓/✗) в разрыве строки рвёт строку: перевод не наезжает на значок."""
+    return any(r.x0 < xb + 1 and r.x1 > xa - 1 and min(y1, r.y1) - max(y0, r.y0) > 0.3 * (y1 - y0) for r in imgs)
+
+
 def frags_from_text(page, vs=()):
     """Фрагменты из текстового слоя: [{t, bbox, size, bold}]. vs — вертикальные линейки.
     Координаты — как страница видна (с учётом /Rotate), как у слов OCR с картинки: PyMuPDF отдаёт текст в системе
-    неповёрнутой страницы (32RDGT, листы регистрации с поворотом 270°, 07.10)."""
+    неповёрнутой страницы (32RDGT, листы регистрации с поворотом 270°, 07.10).
+    - Невидимый текст (hidden_text) пропускается.
+    - Маленькие картинки внутри строки (значки) рвут строку.
+    - Маркер пункта (•, o, –), отделённый от текста отступом, — свой фрагмент без перевода: перевод встаёт на место
+      текста пункта с висячим отступом (UTS, 15.10: перевод начинался с маркера, отступ терялся). Текст такого пункта
+      помечен item — к абзацу выше не приклеивается, как строка с маркером."""
     d = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_MEDIABOX_CLIP)
     rot = page.rotation_matrix
+    hidden = hidden_text(page)
+    area = page.rect.get_area()
+    icons = [fitz.Rect(i["bbox"]) * rot for i in page.get_image_info() if fitz.Rect(i["bbox"]).get_area() < 0.01 * area]
     out = []
     for b in d["blocks"]:
         if b.get("type") != 0:
@@ -47,13 +104,18 @@ def frags_from_text(page, vs=()):
             cur = None
             for s in ln["spans"]:
                 txt = s["text"]
+                if hidden and _covered(hidden, s["bbox"]):
+                    continue
                 if not txt.strip():
                     if cur is not None:
                         cur["t"] += txt
                     continue
                 bb = list(fitz.Rect(s["bbox"]) * rot)
                 bold = bool(s["flags"] & 16) or "Bold" in s["font"]
-                if cur is not None and bb[0] - cur["bbox"][2] <= GAP and                         not _vrule_in(vs, cur["bbox"][2], bb[0], bb[1], bb[3]):
+                marker = cur is not None and bool(BULLET.match(cur["t"].strip())) and bb[0] - cur["bbox"][2] > 3
+                if cur is not None and bb[0] - cur["bbox"][2] <= GAP and not marker \
+                        and not _vrule_in(vs, cur["bbox"][2], bb[0], bb[1], bb[3]) \
+                        and not (_lead(cur["t"]) and _image_between(icons, cur["bbox"][2], bb[0], bb[1], bb[3])):
                     cur["t"] += txt
                     cur["bbox"] = _union([cur["bbox"], bb])
                     cur["chars"].append((len(txt.strip()), s["size"], bold, family(s["font"])))
@@ -61,6 +123,8 @@ def frags_from_text(page, vs=()):
                     if cur is not None:
                         out.append(cur)
                     cur = {"t": txt, "bbox": bb, "chars": [(len(txt.strip()), s["size"], bold, family(s["font"]))]}
+                    if marker:
+                        cur["item"] = True
             if cur is not None:
                 out.append(cur)
     # выключенная строка: PyMuPDF отдаёт каждое слово отдельной «строкой» — склеить по базовой линии
@@ -68,10 +132,16 @@ def frags_from_text(page, vs=()):
     merged = []
     for f in out:
         m = merged[-1] if merged else None
-        if m is not None and abs(m["bbox"][1] - f["bbox"][1]) < 2.5 and abs(m["bbox"][3] - f["bbox"][3]) < 2.5                 and 0 <= f["bbox"][0] - m["bbox"][2] <= GAP and not _vrule_in(vs, m["bbox"][2], f["bbox"][0], f["bbox"][1], f["bbox"][3]):
+        if m is not None and abs(m["bbox"][1] - f["bbox"][1]) < 2.5 and abs(m["bbox"][3] - f["bbox"][3]) < 2.5 \
+                and 0 <= f["bbox"][0] - m["bbox"][2] <= GAP and not _vrule_in(vs, m["bbox"][2], f["bbox"][0], f["bbox"][1], f["bbox"][3]) \
+                and not (_lead(m["t"]) and _image_between(icons, m["bbox"][2], f["bbox"][0], f["bbox"][1], f["bbox"][3])) \
+                and not (BULLET.match(m["t"].strip()) and f["bbox"][0] - m["bbox"][2] > 3):
             m["t"] = m["t"].rstrip() + " " + f["t"].lstrip()
             m["bbox"] = _union([m["bbox"], f["bbox"]]); m["chars"] += f["chars"]
         else:
+            if m is not None and BULLET.match(m["t"].strip()) and abs(m["bbox"][3] - f["bbox"][3]) < 2.5 \
+                    and 3 < f["bbox"][0] - m["bbox"][2] <= 2 * GAP:
+                f["item"] = True                        # маркер и текст пункта — разные «строки» PyMuPDF
             merged.append(f)
     out = merged
     for f in out:
@@ -108,6 +178,8 @@ def rules(page):
                     elif abs(p.x - q.x) < 1 and abs(p.y - q.y) >= 8:
                         vs.append((min(p.y, q.y), max(p.y, q.y), p.x))
                 elif it[0] == "re":
+                    # залитый прямоугольник тоже даёт рамку: в формах 30RDGT заливка ячеек — единственный разделитель
+                    # («<= 2400» / «mm»); цена — шапка с заливкой по строкам рвётся («Fejlesztő / környezet», UTS)
                     rr = it[1] * rot
                     if rr.width >= 15 and rr.height > 2.5:     # рамка ячейки: четыре стороны
                         hs += [(rr.x0, rr.x1, rr.y0), (rr.x0, rr.x1, rr.y1)]
@@ -144,6 +216,13 @@ def _right_limit(frags, vs, bb, page_right):
     return lim
 
 
+def _partner(frags, vs, bb):
+    """Справа на той же линии есть другой фрагмент и линейки между ними нет (вторая колонка списка без таблицы)."""
+    x0, y0, x1, y1 = bb
+    return any(f["bbox"][0] >= x1 + 5 and min(y1, f["bbox"][3]) - max(y0, f["bbox"][1]) > 0.5 * (y1 - y0)
+               and not _vrule_in(vs, x1, f["bbox"][0], y0, y1) for f in frags)
+
+
 def group(frags, hs, vs=(), form=False):
     """form=True (скан формы): строка, кончающаяся двоеточием, — подпись поля, к ней не приклеивается следующая."""
     page_right = max((f["bbox"][2] for f in frags), default=0)
@@ -152,7 +231,7 @@ def group(frags, hs, vs=(), form=False):
     for f in frags:
         x0, y0, x1, y1 = f["bbox"]
         best = None
-        if not MARK.match(f["t"]):
+        if not MARK.match(f["t"]) and not f.get("item"):
             for p in reversed(pars[-12:]):
                 px0, py0, px1, py1 = p["bbox"]
                 last = p["frags"][-1]["bbox"]
@@ -168,10 +247,28 @@ def group(frags, hs, vs=(), form=False):
                     continue
                 if form and p["frags"][-1]["t"].rstrip().endswith(":"):
                     continue
-                # короткая строка (до преграды справа далеко) закрывает абзац
+                # короткая строка (до преграды справа далеко) закрывает абзац — если первое слово следующей строки
+                # в остаток влезло бы: в узкой ячейке строка коротка, потому что слово не поместилось
+                # («Teszt / szüneteltetése», таблица 1 UTS — ячейка переводилась по строкам, 15.10)
                 lim = _right_limit(frags, vs, last, page_right)
                 width = lim - px0
-                if width > 0 and lim - last[2] > 0.45 * width:
+                word = f["t"].split()[0] if f["t"].split() else ""
+                fits = (x1 - x0) * (len(word) + 1) / max(len(f["t"]), 1) + 2
+                # список «подпись — значение» без линеек (титул UTS: «RRP3 azonosító / EVP azonosító …» слипались):
+                # у обеих строк справа на той же линии есть значение — строка закрывается и при малом остатке
+                # (оценка ширины слова тут не годится: «EVP azonosító» — остаток 64,3 pt, «Dokumentum» — 64,4 pt);
+                # в двух колонках сплошного текста строка доходит до промежутка, остаток меньше 25 pt
+                pair = _partner(frags, vs, last) and _partner(frags, vs, f["bbox"])
+                if pair and lim - last[2] > 25:
+                    continue
+                # строка по центру ячейки: свободное место — с двух сторон («Fejlesztő / környezet» в шапке
+                # таблицы 1 UTS переводились порознь: «Разработчик / среда»)
+                room = lim - last[2]
+                left = max([x for ry0, ry1, x in vs if x <= last[0] + 1 and min(last[3], ry1) - max(last[1], ry0) > 0],
+                           default=None)
+                if left is not None and room > 3 and abs((last[0] - left) - room) < 4:
+                    room += last[0] - left
+                if width > 0 and room > fits and lim - last[2] > 0.45 * width:
                     continue
                 best = p
                 break

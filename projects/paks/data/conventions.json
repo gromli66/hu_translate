@@ -1,0 +1,26 @@
+{
+ "_": "Языковые соглашения комплекта «Пакш», машинно проверяемые (src/conventions.py). Утверждены Максимом 15.10.2026. CONVENTIONS.md — текст для промпта, этот файл — правила проверки и правки.",
+ "caption": {"figure": "Рисунок", "table": "Таблица", "format": "«Рисунок N. Название» / «Таблица N. Название»"},
+ "fig_ref": "рисунок N в нужном падеже (не «рис. N»)",
+ "sec_ref": "(см. раздел N); в предложении — «раздел N» в нужном падеже (не «глава N», не «см. N.N»)",
+ "quotes": {"outer": ["«", "»"], "inner": ["„", "“"]},
+ "latin": ["UTS", "OPC UA", "evopro", "Softing", "Profibus", "Ethernet", "VMware", "SUSE", "Linux", "Windows",
+           "Symantec", "ProfiSim", "VirtualBox", "TigerVNC", "OpenVMS", "Advantech", "SYS TEC", "PBpro", "ETH",
+           "Evince", "CPython", "SPIDER", "ZOTAC"],
+ "cyrillic_to_latin": {
+  "Эвопро Системс Инжиниринг ООО": "evopro systems engineering Kft.",
+  "Эвопро": "evopro",
+  "УТС": "UTS",
+  "Этернет": "Ethernet",
+  "Эзернет": "Ethernet",
+  "Профибус": "Profibus",
+  "Профибас": "Profibus",
+  "Профайбус": "Profibus",
+  "Софтинг": "Softing",
+  "ЭТХ": "ETH",
+  "ЭТН": "ETH"
+ },
+ "abbr": {"TU": "ИИ", "RVR": "УСБ", "BSZG": "ИВС", "BLÜGY": "НСБ", "LIP": "СП"},
+ "warning": {"hu": "FIGYELEM", "ru": "ВНИМАНИЕ!"},
+ "dates": "как в оригинале (числовые даты «2020.05.15.» не переписывать)"
+}
