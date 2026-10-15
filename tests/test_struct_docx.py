@@ -183,6 +183,38 @@ def test_polish_cycle_code_then_portal_and_log(tmp_path):
     assert wb["шлифовка"].max_row == 3 and wb["нарушения"]["B2"].value == "Я10"
 
 
+def test_polish_accepts_collapsing_expanded_name_rejects_cut_answer():
+    """Портал сворачивает раскрытое название в «UTS» — перевод короче в разы, это не обрыв (сервис 15.10: все 12 таких
+    правок отбрасывала проверка длины против старого перевода); обрыв ответа по-прежнему не принимается."""
+    hu, old = "Kapcsolja be az UTS számítógépet!", "Включите ЭВМ системы оперативной информации!"
+    assert PL._ok(old, "Включите ЭВМ UTS!", hu, RULES, "text")
+    assert PL._ok("3 Система оперативной информации", "3 Система UTS", "3 Az UTS rendszer", RULES, "text")
+    assert not PL._ok(old, "UTS", hu, RULES, "text")
+
+
+def test_vocab_skips_paths_and_abbreviation_written_once_lowercase():
+    """«uts» в путях и именах файлов и один раз строчными в тексте при сотнях «UTS» — не венгерское слово (иначе голое
+    «UTS» переводилось и не ловилась потерянная латиница, сервис 15.10); слова через косую и венгерское слово
+    прописными, которое встречается и строчными, остаются."""
+    import pipeline as P
+
+    class T:
+        entries = []
+    segs = [{"text": t} for t in ["Az UTS alkalmazás indítása"] * 12 + ["MINDEN JEL"] * 20 + [
+        "(/etc/uts/shellenv)", "az uts.ini fájl", "uts_<éééé>.tar.gz", "egyébként pedig az uts naplófájl",
+        "a fogyasztás kg/óra", "minden", "minden", "minden"]]
+    tr = T()
+    P.set_vocab(tr, segs)
+    assert "uts" not in tr.vocab and "ini" not in tr.vocab
+    assert {"kg", "óra", "minden", "alkalmazás", "naplófájl"} <= tr.vocab
+
+
+def test_item_number_as_text_but_not_initials():
+    import docx_profile as DP
+    assert DP.ITEM_NUM_TEXT.match("1. Включите ЭВМ") and DP.ITEM_NUM_TEXT.match("a) пункт")
+    assert not DP.ITEM_NUM_TEXT.match("Ф. И. О. оператора: имя пользователя UTS")
+
+
 # ---------------------------------------------------------------- в конвейере: извлечение → структура → шлифовка → сборка
 def tagged_pdf(path, pages, tagged=True):
     """PDF «как из Word»: pages — [[(тег, текст, x, y, кегль, жирный)]], каждая строка — свой элемент дерева разметки

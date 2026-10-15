@@ -201,6 +201,8 @@ def extract(path, blocks, L):
 
 # ---------------------------------------------------------------- проверка DOCX против профиля
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+# номер пункта ещё и текстом («1. …», «a) …»); инициалы «Ф. И. О. оператора» — не номер
+ITEM_NUM_TEXT = re.compile(r"^\s*(\d+|[A-Za-zА-Яа-я])[.)]\s(?![A-Za-zА-Яа-я][.)]\s)")
 
 
 def check(docx_path, P, blocks, L):
@@ -342,7 +344,7 @@ def check(docx_path, P, blocks, L):
     for p in paras:
         np_ = p.find(f"{W}pPr/{W}numPr/{W}numId")
         t = vt(p)
-        if np_ is not None and int(np_.get(qn("w:val"))) >= 1000 and re.match(r"^\s*(\d+|[A-Za-zА-Яа-я])[.)]\s", t):
+        if np_ is not None and int(np_.get(qn("w:val"))) >= 1000 and ITEM_NUM_TEXT.match(t):
             bad("Ф14", t[:50], "номер ещё и текстом", "только автонумерация")
         # значок между скобками — «(\0)»; пустые скобки без значка — значок уехал
         seq = "".join("\0" if e.tag == f"{W}drawing" else (e.text or "") for e in p.iter(f"{W}t", f"{W}drawing"))

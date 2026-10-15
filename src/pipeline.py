@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import glossary as G
 import segments as S
-from translate import Translator, TAG, NUM, HU_CAPS_WORDS, fix_caps, fix_units, gloss_misses, badness
+from translate import Translator, TAG, NUM, HU_CAPS_WORDS, LAT_ABBR, fix_caps, fix_units, gloss_misses, badness
 from llm import STAT
 
 SEC_CHARS, CTX_CHARS, STREAM_CHARS = 6000, 3000, 250000
@@ -73,8 +73,22 @@ def save_doc(work, stem, d):
     (Path(work) / "json" / f"{stem}.json").write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
 
 
+# путь, имя файла, адрес — не текст: «/etc/uts/», «uts.ini», «uts_<éééé>.tar.gz» вносили «uts» в словарь документа,
+# и сокращение UTS переводилось как венгерское слово прописными (UTS, сервис 15.10: 12 раскрытий)
+# (слова через косую — «Aláírás/Dátum», «kg/óra» — текст)
+CODE_TOKEN = re.compile(r"\S*(?:[_\\<>@]|://)\S*|(?<!\w)/\S+|\S+\.[a-z]{2,4}(?!\w)")
+
+
 def set_vocab(tr, segs):
-    tr.vocab = frozenset({w for s in segs for w in re.findall(r"[a-záéíóöőúüű]{2,}", TAG.sub(" ", s["text"]))} |
+    low, caps = collections.Counter(), collections.Counter()
+    for s in segs:
+        t = CODE_TOKEN.sub(" ", TAG.sub(" ", s["text"]))
+        low.update(re.findall(r"[a-záéíóöőúüű]{2,}", t))
+        caps.update(w.lower() for w in LAT_ABBR.findall(t))
+    # сокращение, раз-другой написанное строчными («az uts naplófájl» при 549 «UTS»), — не слово документа;
+    # венгерское слово прописными (KEZELÉSI, NAGYOBB, LETT) встречается строчными чаще или с диакритикой
+    words = {w for w, n in low.items() if not (n <= 2 and caps[w] >= 10 * n and re.fullmatch(r"[a-z]+", w))}
+    tr.vocab = frozenset(words |
                          {w.lower() for e in tr.entries for w in re.findall(r"[A-Za-záéíóöőúüűÁÉÍÓÖŐÚÜŰ]{2,}", e.hu)
                           if not G._is_abbr(w)} | HU_CAPS_WORDS)
 

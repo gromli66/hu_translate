@@ -42,12 +42,19 @@ def _numbers(t):
 
 
 def _ok(old, new, hu, rules, kind):
-    """Ответ портала принят: метки и числа те же, длина в разумных пределах, нарушений стало меньше и новых нет."""
+    """Ответ портала принят: метки и числа те же, длина в разумных пределах, нарушений стало меньше и новых нет.
+    Длина — против старого перевода; при Я5 — против оригинала, шире: сворачивание раскрытого названия укорачивает
+    перевод в разы («Включите ЭВМ системы оперативной информации!» → «Включите ЭВМ UTS!»)."""
     if not new or sorted(re.findall(r"</?f\d+>", old)) != sorted(re.findall(r"</?f\d+>", new)):
         return False
-    if _numbers(old) != _numbers(new) or not 0.6 < len(new) / max(1, len(old)) < 1.6:
+    before = C.check(hu, old, rules, kind)
+    if any(v[0] == "Я5" and not v[2] for v in before):
+        base, lo, hi = C.TAGS.sub("", hu), 0.4, 2.0
+    else:
+        base, lo, hi = old, 0.6, 1.6
+    if _numbers(old) != _numbers(new) or not lo < len(new) / max(1, len(base)) < hi:
         return False
-    before, after = C.check(hu, old, rules, kind), C.check(hu, new, rules, kind)
+    after = C.check(hu, new, rules, kind)
     return len([v for v in after if not v[2]]) < len([v for v in before if not v[2]]) and len(after) <= len(before)
 
 
