@@ -6,10 +6,12 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # PDF перевода печатается из готового DOCX (LibreOffice без окна, оглавление и поля — через UNO системного python3).
-# Шрифты: Tahoma — метрическая копия из fonts-wine, Times New Roman — Liberation Serif, Consolas/Verdana — DejaVu
+# Шрифты: Tahoma — метрическая копия из fonts-wine, Times New Roman — Liberation Serif, Consolas/Verdana — DejaVu,
+# Open Sans — свой (руководства OAH); прочие неустановленные — по классу (docker/fonts.conf)
 RUN apt-get update \
  && apt-get install -y --no-install-recommends libreoffice-writer-nogui python3-uno \
     fonts-wine fonts-liberation fonts-dejavu-core fonts-crosextra-carlito fonts-crosextra-caladea fonts-opensymbol \
+    fonts-open-sans \
  && rm -rf /var/lib/apt/lists/* \
  && mkdir -p /usr/share/fonts/truetype/wine \
  && ln -s /usr/share/wine/fonts/tahoma.ttf /usr/share/fonts/truetype/wine/
