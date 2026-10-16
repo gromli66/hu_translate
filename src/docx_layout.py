@@ -863,7 +863,7 @@ def layout(src, blocks, segs, info):
     head_bottom = max((s["loc"]["bbox"][3] for s in by_page.get(rep, []) if _zone(s, H) == "head"), default=36)
     foot_top = min((s["loc"]["bbox"][1] for s in footz), default=H - 36)
     return {"W": W, "H": H, "left": left, "right": max(right, 20), "top": max(top - 4, head_bottom + 6),
-            "bottom": max(H - bottom - 4, H - foot_top + 6), "header": 24, "footer": 18, "title_left": left,
+            "bottom": max(H - bottom - 4, H - foot_top + 6), "header": 24, "footer": 18,
             "head_imgs": [], "head_lines": [], "head_grid": head,
             "stamp": foot["rows"], "stamp_widths": foot["widths"], "stamp_aligns": foot["aligns"],
             "stamp_font": info.get("font") or "Times New Roman", "stamp_size": info.get("size"),

@@ -883,3 +883,83 @@ def test_text_from_next_page_nested_in_table_cell_goes_out():
     assert texts == ["Данные в табличном виде", "Рисунок 1 – Данные", "Назначение элементов"]
     inner = got[0]["rows"][0][0]["blocks"][0]["items"][0]
     assert [x["k"] for x in inner] == ["p"]                  # пустой вложенный список-обёртка убран
+
+
+def test_frameless_header_is_paragraphs_with_tabs_and_rule():
+    """Шапка без рамки (OAH: номер | лист/всего | версия строкой, название по центру второй строкой, линия снизу) —
+    абзацами с частями по местам и нижней границей, а не таблицей в рамке."""
+    def chars(text, x0, top, bold=False):
+        return [{"text": c, "x0": x0 + 5 * i, "x1": x0 + 5 * i + 5, "top": top, "bottom": top + 9, "doctop": top,
+                 "size": 9, "fontname": "OpenSans-Bold" if bold else "OpenSans", "upright": True}
+                for i, c in enumerate(text)]
+    ch = chars("4.22.sz.", 70, 40) + chars("9/47", 290, 40) + chars("2.Verzió", 486, 40) + \
+        chars("Szabványok", 270, 52, bold=True)
+    rule = [{"x0": 70.0, "x1": 526.0, "top": 72.0, "bottom": 72.5, "object_type": "rect"}]
+    zp = D._zone_paras(ch, rule, 70, 526, page_w=595)
+    assert zp is not None
+    assert [p[1] for p in zp["rows"][0]["parts"]] == ["left", "center", "right"]
+    assert zp["rows"][1]["bold"] and zp["rows"][1]["rule_below"]
+    box = rule + [{"x0": 70.0, "x1": 70.5, "top": 36.0, "bottom": 72.0, "object_type": "rect"}]
+    assert D._zone_paras(ch, box, 70, 526, page_w=595) is None          # с вертикалью — рамка, таблицей
+
+
+def test_font_table_gets_font_class(tmp_path):
+    """Неустановленный шрифт (Open Sans) — с классом в таблице шрифтов: LibreOffice заменял его шрифтом с засечками."""
+    from docx import Document
+    d = Document()
+    d.add_paragraph("x").runs[0].font.name = "Open Sans"
+    f = tmp_path / "f.docx"
+    d.save(f)
+    B.font_table(f, {"Open Sans": "swiss"})
+    import zipfile
+    ft = zipfile.ZipFile(f).read("word/fontTable.xml").decode("utf8")
+    assert re.search(r'<w:font w:name="Open Sans"><w:charset w:val="00"/><w:family w:val="swiss"/>', ft)
+
+
+def test_list_item_continued_on_next_page_joins_its_item():
+    """Продолжение пункта на следующем листе Word размечает пунктом без метки в новом списке «точками» (OAH N3a.35:
+    «d) … csak olyan csőelágazások vagy» | «csövek hegesztésénél…») — это тот же пункт; «e)» дальше — по порядку."""
+    d_item = [p("b) Csőcsonkok … csak olyan csőelágazások vagy", 19, 700)]
+    cont = [p("csövek hegesztésénél engedhetők meg.", 20, 100)]
+    e_item = [p("c) Különböző falvastagságú elemek.", 20, 130)]
+    got = D.relist([lst("LowerAlpha", [[p("a) Első.", 19, 600)], d_item]), lst("Disc", [cont, e_item])])
+    assert len(got) == 1 and got[0]["kind"] == "LowerAlpha" and len(got[0]["items"]) == 3
+    assert B.text_of(got[0]["items"][1][0]["runs"]).endswith("vagy csövek hegesztésénél engedhetők meg.")
+
+
+def test_symbol_font_dash_marker_makes_dash_list():
+    """Маркер шрифта Symbol знаком частной области («\\uf02d» — минус) — тире, а не «•» плюс квадратик."""
+    items = [[p("\uf02d a redundáns rendszerek ágainak függetlensége", 39, 600)],
+             [p("\uf02d a rendszerelemek függetlensége", 39, 640)]]
+    got = D.relist([lst("Disc", items)])
+    assert got[0]["kind"] == "Dash"
+    assert B.LEAD.match("\uf02d a redundáns")
+
+
+def test_justified_line_with_real_tab_keeps_tab():
+    """Строка «номер ⇥ название…», растянутая по ширине: равные промежутки — растяжка, больший — табуляция."""
+    def word(t, x0, top):
+        return [{"text": c, "x0": x0 + 5 * i, "x1": x0 + 5 * i + 5, "top": top, "size": 10, "fontname": "Arial",
+                 "page_number": 1} for i, c in enumerate(t)]
+    line1 = word("MSZ", 130, 100) + word("27003", 165, 100) + word("Nuk", 265, 100) + word("léte", 300, 100) + \
+        word("komp", 340, 100)
+    line2 = word("elemek", 260, 114)
+    runs = D._runs([{"ch": c} for c in line1 + line2])
+    t = B.text_of(runs)
+    assert t.count("\t") == 1 and t.index("\t") < t.index("Nuk")
+
+
+def test_size_styles_follow_body_size(tmp_path):
+    """Кегль 14 у тела по ГОСТ — «Обычный», а не стиль вводного листа (ИН-ЦАСУТП-1065: 632 абзаца без отступа первой
+    строки); у тела 10 pt кегль 14 — по-прежнему вводный."""
+    from docx import Document
+    def styles(body):
+        prof = dict(PROFILE, roles={**PROFILE["roles"], "body": {"font": "Times New Roman", "size": body, "b": False}})
+        blocks = [p("Текст тела кеглем четырнадцать пунктов.", 3, 200, x0=62.4), p("Конец.", 3, 230, x0=62.4)]
+        for b in blocks:
+            b["geom"]["size"] = 14
+        out = tmp_path / f"s{body}.docx"
+        B.Builder(B.Memory([]), lambda img: None, prof).build(blocks, str(out), dict(LAYOUT, first_is_body=True))
+        return [x.style.name for x in Document(out).paragraphs if x.text.startswith("Текст")]
+    assert styles(14) == ["Normal"]
+    assert styles(10) == ["Front UTS"]

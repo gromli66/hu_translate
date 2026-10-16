@@ -9,11 +9,11 @@ from collections import Counter
 from docx_struct import text_of, insert_imgs, PAGE_MARK
 
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
-BULLETS = {"Disc": ("", "Symbol"), "Circle": ("o", "Courier New"), "Square": ("", "Wingdings"),
+BULLETS = {"Disc": ("\uf0b7", "Symbol"), "Circle": ("o", "Courier New"), "Square": ("\uf0a7", "Wingdings"),
            "Dash": ("–", None)}                     # тире из текста пункта (ÜFK «– ha az …») — шрифтом абзаца
 NUMFMT = {"Decimal": "decimal", "LowerAlpha": "lowerLetter", "UpperAlpha": "upperLetter",
           "LowerRoman": "lowerRoman", "UpperRoman": "upperRoman"}
-LEAD = re.compile(r"^\s*[•▪◦·o\-–](?:\s+|$)")
+LEAD = re.compile(r"^\s*[•▪◦·o\-–\uf020-\uf0ff](?:\s+|$)")    # и маркер Symbol/Wingdings (частная область)
 CAPTION = re.compile(r"^\s*(\d+)\.\s*(ábra|táblázat)\s+(.*)$", re.S | re.I)
 CAP_RU = re.compile(r"^\s*(?:(?:Рисунок|Рис\.?|рис\.?|Таблица|Табл\.?|табл\.?)\s*\d+\s*[.:]?"
                     r"|\d+\s*\.?\s*(?:рис\.?|табл\.?|рисунок|таблица)\.?)\s*", re.I)
@@ -65,6 +65,41 @@ def is_code(runs):
             # body_mono — основной шрифт документа моноширинный (3SZ19 набран Courier): это не код (docx_layout)
             c[(r.get("font") or "").lower().startswith(("consolas", "courier")) and not r.get("body_mono")] += len(r["t"].strip())
     return c[True] > c[False]
+
+
+FONT_GUESS = [(r"mono|courier|consolas|menlo|lucida console", "modern"),
+              (r"sans|arial|helvetica|calibri|verdana|tahoma|segoe|trebuchet|franklin|futura|gill|myriad|roboto|"
+               r"lato|ubuntu|dejavu sans|liberation sans|pt sans|century gothic", "swiss"),
+              (r"times|georgia|cambria|garamond|book antiqua|palatino|serif|minion|bookman|century|baskerville", "roman")]
+
+
+def font_table(path, classes):
+    """Таблица шрифтов DOCX — класс каждого шрифта документа (рубленый / с засечками / моноширинный): Word и
+    LibreOffice подбирают по нему замену неустановленному шрифту. Класс — из PDF (docx_struct.font_classes), иначе
+    по имени."""
+    import zipfile
+    with zipfile.ZipFile(path) as z:
+        files = {n: z.read(n) for n in z.namelist()}
+    if "word/fontTable.xml" not in files:
+        return
+    used = set()
+    for n, b in files.items():
+        if re.match(r"word/(document|styles|header\d*|footer\d*|numbering)\.xml$", n):
+            used |= set(re.findall(r'w:(?:ascii|hAnsi|cs)="([^"]+)"', b.decode("utf8", "ignore")))
+    ft = files["word/fontTable.xml"].decode("utf8")
+    have = set(re.findall(r'<w:font w:name="([^"]+)"', ft))
+    add = []
+    for f in sorted(used - have):
+        k = classes.get(f) or next((c for rx, c in FONT_GUESS if re.search(rx, f, re.I)), None)
+        if k:
+            add.append(f'<w:font w:name="{f}"><w:charset w:val="00"/><w:family w:val="{k}"/>'
+                       f'<w:pitch w:val="{"fixed" if k == "modern" else "variable"}"/></w:font>')
+    if not add:
+        return
+    files["word/fontTable.xml"] = ft.replace("</w:fonts>", "".join(add) + "</w:fonts>").encode("utf8")
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        for n, b in files.items():
+            z.writestr(n, b)
 
 
 def merge_inline(blocks):
@@ -671,29 +706,51 @@ class Builder:
             style = "Label UTS"
         size = (b.get("geom") or {}).get("size")
         if style == "Normal" and size:
-            if size >= 17:
+            # пороги — от кегля тела, а не числом: у инструкций по ГОСТ тело 14 pt, и «от 13 pt — вводный лист»
+            # уводило все 632 абзаца ИН-ЦАСУТП-1065 в стиль без отступа первой строки (16.10)
+            bs = self._role("body")[1] or 10
+            if size >= max(17, 1.5 * bs):
                 style = "Title UTS"
-            elif size >= 13:
+            elif size >= max(13, bs + 2.5):
                 style = "Front UTS"
-            elif size <= 8:
+            elif size <= min(8, bs - 2):
                 style = "Small UTS"
         if style in ("Normal", "Code UTS") and tgt is self.doc and self.L and self._centered(b):
             style = "Center UTS" if style == "Normal" else "Code Center UTS"
         if style == "Normal" and b.get("indent"):
             style = self._indented(b["indent"])              # отступ оригинала — уровнем стиля (docx_layout)
+        elif style == "Normal" and tgt is self.doc and self.L and b.get("geom") and getattr(self, "left", None):
+            # абзац тела правее поля (OAH: тело сдвинуто от заголовков на 37 pt) — стилем отступа, шаг 3 pt;
+            # висячий (первая строка левее остальных: «номер ⇥ название» перечня стандартов) — стилем с висячим
+            g = b["geom"]
+            rest, fx = g.get("rest_x0"), g.get("first_x0")
+            if rest is not None and fx is not None and fx < rest - 5:
+                d, h = round((rest - self.left) / 3) * 3, round((rest - fx) / 3) * 3
+                if 0 < d < 0.6 * (self.L["W"] - self.L["left"] - self.L["right"]):
+                    style = self._indented(d, h)
+            else:
+                # сдвиг абзаца — по строкам после первой; у однострочного — за вычетом отступа первой строки стиля
+                # (МТ-ЦАСУТП-14: первая строка с 36 pt давала однострочным ещё 36 pt слева, 16.10)
+                x = rest if rest is not None else (fx if fx is not None else g.get("x0") or 0) - \
+                    ((self.P or {}).get("first_line") or 0)
+                d = round((x - self.left) / 3) * 3
+                if 6 <= d < 0.5 * (self.L["W"] - self.L["left"] - self.L["right"]):
+                    style = self._indented(d)
         par = tgt.add_paragraph(style=style)
         self._put_runs(par, runs, style_bold=style in ("Title UTS",))
         return par
 
-    def _indented(self, ind):
-        """Стиль абзаца с отступом слева ind pt (шаг 9 pt): отступ — стилем, а не прямым оформлением абзаца."""
+    def _indented(self, ind, hang=0):
+        """Стиль абзаца с отступом слева ind pt (и висячим hang pt): отступ — стилем, а не прямым оформлением абзаца."""
         from docx.enum.style import WD_STYLE_TYPE
         from docx.shared import Pt
-        name = f"Indent {int(ind)} UTS"
+        name = f"Indent {int(ind)} UTS" if not hang else f"Hanging {int(ind)} {int(hang)} UTS"
         if name not in [s.name for s in self.doc.styles]:
             s = self.doc.styles.add_style(name, WD_STYLE_TYPE.PARAGRAPH)
             s.base_style = self.doc.styles["Normal"]
             s.paragraph_format.left_indent = Pt(ind)
+            if hang:
+                s.paragraph_format.first_line_indent = Pt(-hang)
         return name
 
     def caption(self, m, tgt):
@@ -725,8 +782,9 @@ class Builder:
         return (g.get("page") or 0) >= 2 and centered(g, self.L)
 
     def heading(self, b):
+        fresh = getattr(self, "fresh", False)
         par = self._heading(b)
-        if b.get("break") and par is not None:           # разрыв листа оригинала (docx_struct.load)
+        if b.get("break") and par is not None and not fresh:     # разрыв листа оригинала (docx_struct.load)
             par.paragraph_format.page_break_before = True
 
     def _heading(self, b):
@@ -1076,10 +1134,14 @@ class Builder:
 
     def block(self, b):
         k = b["k"]
+        fresh, self.fresh = getattr(self, "fresh", False), False
         if k == "h":
             self.heading(b)
         elif k == "p":
-            self.paragraph(b)
+            par = self.paragraph(b)
+            # разрыв листа оригинала (docx_struct.load); первый абзац нового раздела и так с нового листа
+            if b.get("break") and par is not None and not fresh:
+                par.paragraph_format.page_break_before = True
         elif k == "list":
             self.list_(b, b.get("level", 0))                # уровень по отступу оригинала (docx_layout)
         elif k == "table":
@@ -1204,29 +1266,55 @@ class Builder:
         if mm:
             r = p.add_run(ru[:mm.start()]); r.bold = bold
             f = _field(p, "PAGE", tok); f.bold = bold
-            r = p.add_run(ru[mm.end():]); r.bold = bold
+            rest = ru[mm.end():]
+            m2 = re.match(r"(\s*/\s*)(\d+)", rest)            # «20/57» — и число листов полем
+            if m2:
+                r = p.add_run(m2.group(1)); r.bold = bold
+                f = _field(p, "NUMPAGES", m2.group(2)); f.bold = bold
+                rest = rest[m2.end():]
+            r = p.add_run(rest); r.bold = bold
         else:
             r = p.add_run(ru); r.bold = bold
 
-    def _zone_para(self, p, para, style, page_tok, page_marked):
-        """Колонтитул без рамки в одну строку (docx_struct._as_para) — абзацем: одна часть — выравниванием, несколько —
-        табуляциями по местам оригинала (по центру / у правого поля / слева)."""
+    def _zone_paras(self, part, zp, style, page_tok, page_marked):
+        """Колонтитул без рамки (docx_struct._zone_paras) — абзацами по строкам оригинала: одна часть — выравниванием,
+        несколько — табуляциями по местам (по центру / у правого поля / слева); линии — границами абзаца;
+        картинка (логотип) — своим абзацем по месту."""
         from docx.shared import Pt
         from docx.enum.text import WD_ALIGN_PARAGRAPH as AL, WD_TAB_ALIGNMENT as TA
-        p.style = self.doc.styles[style]
-        pf = p.paragraph_format
-        pf.left_indent = pf.first_line_indent = Pt(0)
-        parts = para["parts"]
-        if len(parts) == 1:
-            p.alignment = {"center": AL.CENTER, "right": AL.RIGHT}.get(parts[0][1], AL.LEFT)
-            self._zone_text(p, parts[0][0], para.get("bold"), page_tok, page_marked)
-            return
-        p.alignment = AL.LEFT
-        for i, (txt, kind, pos) in enumerate(parts):
-            if i or kind != "left" or pos > 6:
-                pf.tab_stops.add_tab_stop(Pt(pos), {"center": TA.CENTER, "right": TA.RIGHT}.get(kind, TA.LEFT))
-                p.add_run("\t")
-            self._zone_text(p, txt, para.get("bold"), page_tok, page_marked)
+        al = {"center": AL.CENTER, "right": AL.RIGHT}
+        for i, row in enumerate(zp["rows"]):
+            p = part.paragraphs[0] if i == 0 else part.add_paragraph()
+            p.style = self.doc.styles[style]
+            pf = p.paragraph_format
+            pf.left_indent = pf.first_line_indent = Pt(0)
+            pf.space_after = Pt(0)
+            if row.get("img"):
+                im = row["img"]
+                p.alignment = al.get(row["kind"], AL.LEFT)
+                data = self.image({"stream": type("S", (), {"objid": im["xref"]})(), **im})
+                if data:
+                    p.add_run().add_picture(io.BytesIO(data), width=Pt(im["x1"] - im["x0"]))
+            else:
+                parts = row["parts"]
+                if len(parts) == 1 and not (parts[0][1] == "left" and parts[0][2] > 6):
+                    p.alignment = al.get(parts[0][1], AL.LEFT)
+                    self._zone_text(p, parts[0][0], row.get("bold"), page_tok, page_marked)
+                else:
+                    p.alignment = AL.LEFT
+                    for j, (txt, kind, pos) in enumerate(parts):
+                        if j or kind != "left" or pos > 6:
+                            pf.tab_stops.add_tab_stop(Pt(pos), {"center": TA.CENTER, "right": TA.RIGHT}.get(kind, TA.LEFT))
+                            p.add_run("\t")
+                        self._zone_text(p, txt, row.get("bold"), page_tok, page_marked)
+            for key, side in (("rule_above", "top"), ("rule_below", "bottom")):
+                if row.get(key):
+                    ppr = p._p.get_or_add_pPr()
+                    bdr = ppr.find(W + "pBdr")
+                    if bdr is None:
+                        bdr = _el("w:pBdr")
+                        ppr.insert_element_before(bdr, *PPR_AFTER_PBDR)
+                    bdr.append(_el(f"w:{side}", w__val="single", w__sz=4, w__space=1, w__color="000000"))
 
     def _header(self, sec, L, logos_only=False):
         """Шапка: логотипы по краям, строки по центру (название и номер документа), линия снизу; шапка без логотипов
@@ -1237,10 +1325,12 @@ class Builder:
         hdr.is_linked_to_previous = True                     # новый раздел копирует ссылку на шапку титула —
         hdr.is_linked_to_previous = False                    # своя часть, иначе обе шапки пишутся в одну
         grid = L.get("head_grid")
+        if grid and grid.get("paras"):
+            if not logos_only:
+                self._zone_paras(hdr, grid["paras"], "Header UTS", L.get("page_tok"), L.get("page_marked"))
+            return
         if grid and grid.get("rows"):
-            if not logos_only and grid.get("para"):
-                self._zone_para(hdr.paragraphs[0], grid["para"], "Header UTS", L.get("page_tok"), L.get("page_marked"))
-            elif not logos_only:
+            if not logos_only:
                 t = self._zone_table(hdr, grid, "Header UTS", L.get("page_tok"), L.get("page_marked"))
                 hdr.paragraphs[0]._p.addprevious(t._tbl)
                 hdr.paragraphs[0].paragraph_format.space_after = Pt(0)
@@ -1286,10 +1376,10 @@ class Builder:
         ftr = sec.footer
         ftr.is_linked_to_previous = True
         ftr.is_linked_to_previous = False
-        if not L["stamp"]:
+        if L.get("stamp_paras"):
+            self._zone_paras(ftr, L["stamp_paras"], "Stamp UTS", L.get("page_tok"), L.get("page_marked"))
             return
-        if L.get("stamp_para"):
-            self._zone_para(ftr.paragraphs[0], L["stamp_para"], "Stamp UTS", L.get("page_tok"), L.get("page_marked"))
+        if not L["stamp"]:
             return
         self._zone_table(ftr, {"rows": L["stamp"], "widths": L["stamp_widths"], "aligns": L.get("stamp_aligns"),
                                "inner": L.get("stamp_inner", True), "box": L.get("stamp_box", True),
@@ -1342,17 +1432,28 @@ class Builder:
         if hg.get("font"):
             self._font(self.doc.styles["Header UTS"], hg["font"], hg.get("size") or 10)
         first = self.doc.sections[0]
-        prev_bottom = 40                        # от верхнего поля титула: название ÜFK стоит с середины листа
+        prev_bottom = L["top"]                  # от верхнего поля: название ÜFK стоит с середины листа
         # первый лист с колонтитулами тела (3SZ19 начинается оглавлением с шапкой) — не титул (docx_layout)
         in_title = had_title = not L.get("first_is_body")
-        if in_title:
-            self._page(first, L, L["title_left"], 20, 40, 30)
-            self.left = L["title_left"]
-        else:
-            self._page(first, L, L["left"], L["right"], L["top"], L["bottom"])
-            self.left = L["left"]
+        # поля титула — как у тела, места строк — отступами и центром от них: поле по самому частому краю строк
+        # титула (центрованных) сжимало название OAH в столбец в полстраницы (16.10)
+        self._page(first, L, L["left"], L["right"], L["top"], L["bottom"])
+        self.left = L["left"]
+        if not in_title:
             self._header(first, L)
             self._footer(first, L)
+            if L.get("first"):                  # особый первый лист (ONS: без подвала) — «особый колонтитул» Word
+                first.different_first_page_header_footer = True
+                fp = type("First", (), {"header": first.first_page_header, "footer": first.first_page_footer})()
+                self._header(fp, dict(L, **L["first"]))
+                self._footer(fp, dict(L, **L["first"]))
+        # логотипы титула — те же, что в шапке тела (UTS), — шапкой титула; иные картинки титула — на листе (OAH)
+        head_x = {i["xref"] for i in L.get("head_imgs") or []}
+        logos_head = False
+        blocks = merge_inline(blocks)
+        if in_title:                            # титул — сверху вниз по листу (логотип OAH в дереве — после названия)
+            n1 = next((i for i, b in enumerate(blocks) if ((b.get("geom") or {}).get("page") or 1) >= 2), len(blocks))
+            blocks = sorted(blocks[:n1], key=lambda b: (b.get("geom") or {}).get("top") or 0) + blocks[n1:]
         # вводная часть (оглавление, лист изменений) — свой подвал без номера; тело — нумерация с числа оригинала
         front, ns = L.get("front"), L.get("num_start")
         Lf = dict(L, **{k: v for k, v in (front or {}).items() if k != "to"}, page_tok=None) if front else None
@@ -1360,12 +1461,13 @@ class Builder:
         if not in_title and ns:
             self._num_start(first, ns["value"])
         title_foot = []
-        for b in merge_inline(blocks):
+        for b in blocks:
             g = b.get("geom") or {}
             page = g.get("page")
             if in_title and page is not None and page >= 2:
                 in_title = False
                 sec = self.doc.add_section(WD_SECTION.NEW_PAGE)
+                self.fresh = True
                 self._page(sec, L, L["left"], L["right"], L["top"], L["bottom"])
                 self.left = L["left"]
                 in_front = bool(front) and page <= front["to"]
@@ -1376,33 +1478,46 @@ class Builder:
             if in_front and page is not None and page > front["to"]:
                 in_front = False
                 sec = self.doc.add_section(WD_SECTION.NEW_PAGE)
+                self.fresh = True
                 self._page(sec, L, L["left"], L["right"], L["top"], L["bottom"])
                 self._header(sec, L)
                 self._footer(sec, L)
                 if ns:
                     self._num_start(sec, ns["value"])
-            if in_title and b["k"] == "p" and _figure(b) is False and all("img" in r for r in b["runs"]):
+            # логотипы обложки — те же, что в шапке тела, или стоящие в полосе шапки (выше поля тела; «atom erőmű» UTS
+            # уезжал за правый край), — шапкой титула из логотипов тела
+            if in_title and b["k"] == "p" and b["runs"] and all("img" in r for r in b["runs"]) and head_x and (all(
+                    getattr(r["img"].get("stream"), "objid", None) in head_x for r in b["runs"])
+                    or (g.get("bottom") or 999) <= L["top"] + 20):
                 prev_bottom = max(prev_bottom, g.get("bottom") or 0)   # отступ текста титула — от низа логотипов
-                continue                                     # логотипы титула — в шапку титула
-            if in_title and b["k"] == "p" and all("img" in r for r in b["runs"]):
-                if g and g.get("top", 999) < 110:
-                    prev_bottom = max(prev_bottom, g.get("bottom") or 0)
-                    continue
+                logos_head = True
+                continue
+            if in_title and b["k"] == "p" and b["runs"] and all("img" in r for r in b["runs"]) and g.get("x1") \
+                    and (g["x1"] - g["x0"]) * ((g.get("bottom") or g["top"]) - g["top"]) > 0.4 * L["W"] * L["H"]:
+                continue                                     # фон обложки (UTS) — не картинкой в потоке
             if in_title and b["k"] == "p" and g.get("top", 0) > 0.8 * L["H"]:
                 title_foot.append(b)                         # юридический текст внизу титула — в подвал титула
                 continue
             self.block(b)
-            if in_title and b["k"] == "p" and g and self.doc.paragraphs:
+            # повёрнутый текст (вдоль края титула JPDS) — абзацем без места: центр по его середине у края листа давал
+            # правый отступ 450 pt и столбик по букве (16.10)
+            if in_title and b["k"] == "p" and g and self.doc.paragraphs and not g.get("rotated"):
                 par = self.doc.paragraphs[-1]
                 if par.alignment == 1 or (par.style.paragraph_format.alignment or 0) == 1:
-                    # по центру — центр там же, где в оригинале (поля титула несимметричны)
-                    a = 2 * (g["x0"] + g["x1"]) / 2 - L["title_left"] - (L["W"] - 20)
+                    # по центру — центр там же, где в оригинале
+                    a = 2 * (g["x0"] + g["x1"]) / 2 - L["left"] - (L["W"] - L["right"])
                     if a > 3:
                         par.paragraph_format.left_indent = Pt(a)
                     elif a < -3:
                         par.paragraph_format.right_indent = Pt(-a)
+                elif all("img" in r for r in b["runs"]):            # картинка титула — по месту
+                    if abs((g["x0"] + g["x1"]) / 2 - L["W"] / 2) < 15 or abs(
+                            2 * (g["x0"] + g["x1"]) / 2 - L["left"] - (L["W"] - L["right"])) < 15:
+                        par.alignment = 1
+                    else:
+                        par.paragraph_format.left_indent = Pt(max(0, g["x0"] - L["left"]))
                 else:
-                    dx = g["x0"] - L["title_left"]
+                    dx = g["x0"] - L["left"]
                     if abs(dx) > 3:
                         par.paragraph_format.left_indent = Pt(dx)
                 # большие пустоты титула (название посреди листа, юридический текст внизу) — как в оригинале
@@ -1411,19 +1526,30 @@ class Builder:
                 prev_bottom = g.get("bottom") or prev_bottom
         # после add_section объект первого раздела указывает на последний (sectPr тела документа) — шапку титула
         # ставить разделу [0], иначе шапки менялись местами
-        if had_title:
+        # колонтитулы обложки — как у тела, но спрятаны под фоном (UTS): шапка титула — логотипы тела
+        if had_title and (logos_head or not L.get("first") and L.get("head_imgs")):
             self._header(self.doc.sections[0], L, logos_only=True)
+        elif had_title and L.get("first"):      # свои колонтитулы титула (NSU: шапка с названием вуза)
+            self._header(self.doc.sections[0], dict(L, **L["first"]))
+            self._footer(self.doc.sections[0], dict(L, **L["first"]))
         if title_foot:
             foot = self.doc.sections[0].footer
             foot.is_linked_to_previous = False
-            first_p = foot.paragraphs[0] if foot.paragraphs and not foot.paragraphs[0].text else None
+            # пустой первый абзац подвала — прочь, но не абзац с логотипом (подвал титула OAH, 16.10)
+            first_p = foot.paragraphs[0] if foot.paragraphs and not foot.paragraphs[0].text \
+                and not foot.paragraphs[0]._p.findall(".//" + W + "drawing") else None
             for b in title_foot:
-                self.paragraph(b, tgt=foot)
+                par = self.paragraph(b, tgt=foot)
+                g = b.get("geom") or {}
+                if par is not None and g.get("x1") and abs(2 * (g["x0"] + g["x1"]) / 2 - L["left"]
+                                                           - (L["W"] - L["right"])) < 15:
+                    par.alignment = 1                        # по центру — как в оригинале («2015. szeptember»)
             if first_p is not None:
                 first_p._p.getparent().remove(first_p._p)
         self._tab_groups()
         self.doc.settings.element.append(_el("w:updateFields", w__val="true"))
         self.doc.save(out)
+        font_table(out, (L or {}).get("font_class") or {})
 
     def _tab_groups(self):
         """Пары «подпись ⇥ значение» подряд с одной табуляцией (титул: «Műszaki változás száma⇥10776»): позиция —
@@ -1469,6 +1595,11 @@ class Builder:
 STRUCT_COVER = 0.9
 
 
+PPR_AFTER_PBDR = tuple("w:" + t for t in (
+    "shd", "tabs", "suppressAutoHyphens", "kinsoku", "wordWrap", "overflowPunct", "topLinePunct", "autoSpaceDE",
+    "autoSpaceDN", "bidi", "adjustRightInd", "snapToGrid", "spacing", "ind", "contextualSpacing", "mirrorIndents",
+    "suppressOverlap", "jc", "textDirection", "textAlignment", "textboxTightWrap", "outlineLvl", "divId", "cnfStyle",
+    "rPr", "sectPr", "pPrChange"))                        # что идёт в pPr после pBdr (порядок схемы)
 TBLPR = ["tblStyle", "tblpPr", "tblOverlap", "bidiVisual", "tblStyleRowBandSize", "tblStyleColBandSize", "tblW", "jc",
          "tblCellSpacing", "tblInd", "tblBorders", "shd", "tblLayout", "tblCellMar", "tblLook", "tblCaption",
          "tblDescription"]

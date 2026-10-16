@@ -31,6 +31,12 @@ BOLD_W = r"Bold|Black|Heavy|Semibold|Demibold|félkövér|Fett|полужирн�
 ITAL_W = r"Italic|Oblique|dőlt|Kursiv|курсив|Italique|Cursiva|Corsivo"
 
 
+def _upright(c):
+    """Знак не повёрнут — по матрице (у повёрнутого на 90° текста JPDS pdfplumber даёт upright=True)."""
+    m = c.get("matrix")
+    return abs(float(m[0])) >= abs(float(m[1])) if m else c.get("upright", True)
+
+
 def _fmt(ch):
     name = ch["fontname"].split("+")[-1]
     fam = re.split(r"[-,]", name)[0]
@@ -120,8 +126,11 @@ def _justified_gaps(chars):
             continue
         gaps = [(float(b["x0"]) - float(a["x1"]), b) for a, b in zip(ln, ln[1:])
                 if float(b["x0"]) - float(a["x1"]) > 0.15 * float(a["size"])]
-        if gaps and max(g for g, _ in gaps) - min(g for g, _ in gaps) < 1.0:
-            out |= {id(b) for g, b in gaps if g > 1.8 * float(b["size"])}
+        # растяжка — промежутки, равные медиане строки; заметно больший — настоящая табуляция («MSZ 27003-0:2013 ⇥
+        # Nukleáris létesítmények…» перечня OAH: одна табуляция ломала прежнее «все равны», и растяжка шла
+        # табуляциями, 16.10)
+        med = sorted(g for g, _ in gaps)[len(gaps) // 2] if gaps else 0
+        out |= {id(b) for g, b in gaps if g > 1.8 * float(b["size"]) and abs(g - med) < 1.0}
     return out
 
 
@@ -589,6 +598,31 @@ def _nest(seq, pos, depth):
     return lists, pos
 
 
+def _continued(flat):
+    """Пункт, перенесённый на следующий лист: Word размечает продолжение отдельным пунктом без метки (часто в новом
+    списке «точками»: «csövek hegesztésénél…» на листе 20 после «d) … csak olyan csőelágazások vagy», OAH 16.10) —
+    в DOCX выходил лишний пункт с «•», и нумерация дальше сбивалась. Пункт без метки, начатый строчной, на более
+    позднем листе, чем недописанный (без знака конца фразы) пункт того же уровня перед ним, — его продолжение."""
+    out = []
+    for it in flat:
+        prev = out[-1] if out else None
+        p0 = next((x for x in it["body"] if x["k"] == "p"), None)
+        last = next((x for x in reversed(prev["body"]) if x["k"] == "p"), None) if prev else None
+        t0 = text_of(p0["runs"]).lstrip() if p0 and p0["runs"] else ""
+        tl = text_of(last["runs"]).rstrip() if last and last["runs"] else ""
+        pg = lambda x: (x.get("geom") or {}).get("page") or 0
+        if prev and prev["depth"] == it["depth"] and not it["lbl"] and not it.get("label") and t0[:1].islower() \
+                and tl and not re.search(r"[.!?:;]$", tl) and pg(p0) > pg(last) \
+                and "t" in last["runs"][-1] and "t" in p0["runs"][0]:
+            runs = list(last["runs"]) + [dict(r) for r in p0["runs"]]
+            runs[len(last["runs"])]["t"] = " " + runs[len(last["runs"])]["t"].lstrip()
+            body = [dict(x, runs=runs) if x is last else x for x in prev["body"]]
+            prev["body"] = body + [x for x in it["body"] if x is not p0]
+            continue
+        out.append(it)
+    return out
+
+
 def relist(bs):
     """Списки — по месту пунктов на листе и номерам из текста. Дерево Word на стыке страниц путает вложенность:
     подпункты п. 3–6 лежали в подсписке п. 2, а сами п. 3–6 — отдельным списком следом (UTS, стр. 44–45: «e. a. …»)."""
@@ -617,15 +651,18 @@ def relist(bs):
             # пунктов «•» прямо в тексте, без метки — вид пункта по нему, смена вида открывает новый список
             # (синтетика, 16.10); сам маркер из текста снимает сборка (docx_build.LEAD)
             p0 = next((x for x in it["body"] if x["k"] == "p"), None)
-            m = re.match(r"\s*([•▪◦·–-])\s", text_of(p0["runs"])) if p0 and p0["runs"] else None
-            if it["kind"] in NUMBERED and m:
-                it["kind"] = "Dash" if m.group(1) in "–-" else "Disc"
-            # и наоборот: маркированный, следом нумерованный — у нумерованных номер («8.») в тексте
+            # маркер шрифта Symbol/Wingdings в тексте — знаком частной области («\uf02d» — минус Symbol, OAH):
+            # маркер или тире, из текста его снимает сборка (LEAD)
+            m = re.match(r"\s*([•▪◦·–\-\uf020-\uf0ff])\s", text_of(p0["runs"])) if p0 and p0["runs"] else None
+            dash = m and (m.group(1) in "–-" or "\uf020" <= m.group(1) <= "\uf0ff" and chr(ord(m.group(1)) - 0xF000) in "-–")
+            if m and (it["kind"] in NUMBERED or it["kind"] == "Disc" and dash):
+                it["kind"] = "Dash" if dash else "Disc"
+            # и наоборот: маркированный, следом нумерованный — у нумерованных номер («8.», «e)») в тексте
             ml = LABEL.match(text_of(p0["runs"])) if p0 and p0["runs"] else None
             if it["kind"] not in NUMBERED and ml and (ml.group(1).isdigit() or ml.group(2) in (")", ".)")):
                 it["kind"] = _label_kind(ml.group(1))
-                if ml.group(2) == ".)":
-                    it["suffix"] = ".)"
+                if ml.group(2) in (")", ".)"):
+                    it["suffix"] = ml.group(2)
             if it["kind"] in NUMBERED:
                 p = next((x for x in it["body"] if x["k"] == "p"), None)
                 it["label"] = (_strip_label(p) if p else None) or \
@@ -633,7 +670,7 @@ def relist(bs):
             for x in it["body"]:
                 if x["k"] == "table":
                     x["rows"] = [[dict(c, blocks=relist(c["blocks"])) for c in r] for r in x["rows"]]
-        out += _nest(flat, 0, 0)[0]
+        out += _nest(_continued(flat), 0, 0)[0]
     return out
 
 
@@ -684,9 +721,13 @@ def load(path):
             return {"x0": float(im["x0"]), "x1": float(im["x1"]), "first_x0": float(im["x0"]),
                     "page": im["page_number"], "top": float(im["top"]), "bottom": float(im["bottom"]), "size": 10}
         first = [c for c in chs if c["page_number"] == chs[0]["page_number"]]
+        # левый край строк после первой (висячий отступ: «MSZ EN 1593:2000 ⇥ Roncsolásmentes…», OAH 16.10)
+        rest = [c for c in first if c["top"] > chs[0]["top"] + 0.6 * c["size"]]
         return {"x0": min(c["x0"] for c in chs), "x1": max(c["x1"] for c in chs),
                 "first_x0": chs[0]["x0"], "page": chs[0]["page_number"], "top": chs[0]["top"],
                 "bottom": max(c["bottom"] for c in first), "lines": len({round(c["top"]) for c in first}),
+                "rest_x0": min(c["x0"] for c in rest) if rest else None,
+                "rotated": sum(1 for c in chs if not _upright(c)) > len(chs) / 2,
                 "size": Counter(round(c["size"]) for c in chs).most_common(1)[0][0]}
 
     def borders(g):
@@ -925,12 +966,26 @@ def load(path):
         ys += [(float(i["top"]), float(i["bottom"])) for i in pg.images if i.get("mcid") is not None]
         if ys:
             tops[pg.page_number], bots[pg.page_number] = min(y[0] for y in ys), max(y[1] for y in ys)
-    low = max(bots.values(), default=0)
-    for b in blocks:
+    # низ листа — обычный (80-й процентиль по листам), не самый низкий: текст у края одного листа (UTS ~790 pt при
+    # обычных ~720) делал «пустым» всякий лист и ставил ложные разрывы
+    bl_ = sorted(bots.values())
+    low = bl_[len(bl_) * 4 // 5] if bl_ else 0
+    img_only = lambda b: b["k"] == "p" and all("img" in r for r in b.get("runs") or [{"img": 1}])
+    for i, b in enumerate(blocks):
         g = b.get("geom") or {}
         pn = g.get("page")
-        if b["k"] == "h" and pn and pn - 1 in bots and pn in tops and abs(g["top"] - tops[pn]) < 2 \
-                and low - bots[pn - 1] > 72:
+        # и абзац («FŐIGAZGATÓI ELŐSZÓ» OAH — абзац, не заголовок); картинка — нет: её сдвигает нехватка места
+        if not ((b["k"] == "h" or b["k"] == "p" and not img_only(b))
+                and pn and pn - 1 in bots and pn in tops and abs(g["top"] - tops[pn]) < 2):
+            continue
+        gap = low - bots[pn - 1]
+        # перенос сам собой: рисунок или таблица в начале листа вместе с абзацами перед ними (Word держит их вместе)
+        # не влезали в остаток прошлого листа — не разрыв (UTS: «см. рисунок» + снимок экрана, 60 ложных разрывов)
+        chain = next((x for x in blocks[i:i + 4] if (x.get("geom") or {}).get("page") == pn
+                      and (x["k"] == "table" or img_only(x))), None)
+        if chain is not None and (chain["geom"].get("bottom") or 0) - tops[pn] > gap:
+            continue
+        if gap > 72:
             b["break"] = True
     info = {"width": float(page.width), "height": float(page.height), "pages": len(pdf.pages),
             "artifacts": artifacts}
@@ -1005,10 +1060,13 @@ def layout(path, blocks):
                 yield b
     body = [b["geom"] for b in flat(blocks) if b.get("geom") and b["geom"]["page"] and b["geom"]["page"] > 2
             and b["k"] in ("p", "h")]
-    left = median(sorted(g["x0"] for g in body)[: max(1, len(body) // 2)]) if body else 62
+    # левое поле — самый левый край, повторяющийся у трёх и больше блоков (заголовки у поля), а не медиана: у OAH тело
+    # сдвинуто от заголовков на 37 pt, поле выходило внутри сдвига, и центр шапки и логотипа не узнавался (16.10);
+    # сдвиг тела — отступом абзаца (docx_build.paragraph)
+    xs = Counter(round(g["x0"]) for g in body)
+    rep = sorted(x for x, n in xs.items() if n >= 3)
+    left = float(rep[0]) if rep else median(sorted(g["x0"] for g in body)[: max(1, len(body) // 2)]) if body else 62
     right = W - max((g["x1"] for g in body), default=W - 59)
-    title = [b["geom"] for b in flat(blocks) if b.get("geom") and b["geom"]["page"] == 1 and b["k"] == "p"
-             and any("t" in r and r["t"].strip() for r in b["runs"])]
     # верх тела — по первому блоку листов, 20-й процентиль, а не минимум: надпись у края одного листа (МТ-ЦАСУТП-14,
     # лист 19: 3 pt) давала верхнее поле −0.9 pt, и шапка (знаки выше верха тела) терялась целиком (16.10)
     firsts = {}
@@ -1017,7 +1075,7 @@ def layout(path, blocks):
     tops_ = sorted(firsts.values())
     body_top = tops_[len(tops_) // 5] if tops_ else 110
     page, page_tok, page_off, tok_boxes = _typical_page(pdf, body_top, H)
-    arts = [c for c in page.chars if c.get("mcid") is None]
+    arts = [c for c in page.chars if c.get("mcid") is None and _upright(c)]
     head_chars = [c for c in arts if c["top"] < body_top]
     ftop = _foot_top(arts, page.rects + page.lines, H)
     foot_chars = [c for c in arts if c["top"] >= ftop]
@@ -1036,23 +1094,31 @@ def layout(path, blocks):
     mark = lambda chars: [dict(c, text=PAGE_MARK) if c["text"].isdigit() and any(
         abs(float(c["top"]) - bx["top"]) < 2 and bx["x0"] - 0.5 <= float(c["x0"]) and float(c["x1"]) <= bx["x1"] + 0.5
         for bx in tok_boxes) else c for c in chars]
-    foot = _rule_grid(mark(foot_chars), frects) or _zone_grid(mark(foot_chars), frects)
-    # шапка-таблица по линиям (с логотипом в своей ячейке); без внутренних линий и логотипов (ÜFK: строка-таблица
-    # «Üzemeltetési Feltételek … | 1.2. változat») — сеткой по разрывам между словами
+    # картинки подвала (логотип OAH на каждом листе) — артефакты ниже тела
+    fz = min(ftop, H * 0.8)
+    img_of = lambda i: {"xref": i["stream"].objid, "x0": float(i["x0"]), "x1": float(i["x1"]), "top": float(i["top"]),
+                        "bottom": float(i["bottom"])}
+    foot_imgs = [img_of(i) for i in page.images if i.get("mcid") is None and float(i["top"]) >= fz]
+    foot = _rule_grid(mark(foot_chars), frects)
+    foot_paras = None if foot else _zone_paras(mark(foot_chars), frects, left, W - right, foot_imgs, W)
+    foot = foot or _zone_grid(mark(foot_chars), frects)
+    # шапка-таблица по линиям (с логотипом в своей ячейке); без рамки — абзацами (_zone_paras); в рамке без
+    # внутренних линий (ÜFK: строка-рамка «Üzemeltetési Feltételek … | 1.2. változat») — сеткой по разрывам
     hrects = _head_rects(page, body_top)
-    head = _rule_grid(mark(head_chars), hrects, head_imgs) or \
-        (_zone_grid(mark(head_chars), hrects) if head_chars and not head_imgs else None)
-    if head:
-        head["para"] = _as_para(head, left, W - right)
+    head = _rule_grid(mark(head_chars), hrects, head_imgs)
+    if not head and not (head_imgs and head_chars):        # логотипы по краям и строки по центру — прежним путём (UTS)
+        hp = _zone_paras(mark(head_chars), hrects, left, W - right, head_imgs, W)
+        head = {"rows": [], "paras": hp, "font": hp["font"], "size": hp["size"]} if hp else \
+            (_zone_grid(mark(head_chars), hrects) if head_chars else None)
     # подвала нет — низ тела по последнему блоку листов (80-й процентиль): поле по умолчанию (100 pt) отнимало у
     # каждого листа МТ-ЦАСУТП-14 три строки (60 листов → 69, 16.10)
     lasts = {}
     for g in body:
         lasts[g["page"]] = max(lasts.get(g["page"], 0), g.get("bottom") or g["top"])
     bots_ = sorted(lasts.values())
-    foot_top = min((float(c["top"]) for c in foot_chars),
+    foot_top = min([float(c["top"]) for c in foot_chars] + [i["top"] for i in foot_imgs],
                    default=bots_[len(bots_) * 4 // 5] + 14 if bots_ else H - 100)
-    foot_bottom = max((float(c["bottom"]) for c in foot_chars), default=H - 40)
+    foot_bottom = max([float(c["bottom"]) for c in foot_chars] + [i["bottom"] for i in foot_imgs], default=H - 40)
     # шапки нет — пустой абзац шапки (её расстояние + строка) должен уместиться в верхнее поле: при поле 24 pt и
     # расстоянии 36 pt тело уезжало на каждом листе вниз на 2–3 строки (ТЭ357: 66 листов → 85, 16.10)
     head_top = min([i["top"] for i in head_imgs] + [float(c["top"]) for c in head_chars] or
@@ -1061,44 +1127,101 @@ def layout(path, blocks):
     body_sig = sig(foot_chars)
     out = {"W": W, "H": H, "left": left, "right": max(right, 20), "top": body_top - 4,
            "bottom": H - foot_top + 12, "header": head_top, "footer": max(H - foot_bottom - 6, 18),
-           "title_left": Counter(round(g["x0"]) for g in title).most_common(1)[0][0] if title else left,
            "head_imgs": head_imgs, "head_lines": head_lines, "head_grid": head,
            "stamp": foot["rows"], "stamp_widths": foot["widths"], "stamp_aligns": foot["aligns"],
            "stamp_font": foot["font"] or "Times New Roman", "stamp_size": foot["size"], "stamp_box": foot["box"],
            "stamp_inner": foot["inner"], "stamp_merge": foot.get("merge"), "page_tok": page_tok,
            "page_marked": any(c["text"] == PAGE_MARK for c in mark(foot_chars + head_chars)),
-           "stamp_para": _as_para(foot, left, W - right)}
-    # первый лист — титул, только если его колонтитулы не такие, как у тела: документ, начатый прямо с текста под
-    # той же шапкой и штампом, иначе получал «титул» без колонтитулов (синтетика, 16.10)
-    p1 = pdf.pages[0]
-    a1 = [c for c in p1.chars if c.get("mcid") is None]
-    f1 = [c for c in a1 if c["top"] >= _foot_top(a1, p1.rects + p1.lines, H)]
-    out["first_is_body"] = bool(body_sig) and sig(f1) == body_sig
+           "stamp_paras": foot_paras}
     # вводная часть: листы после титула со своим подвалом (ÜFK: оглавление и лист изменений — «Tartalomjegyzék» без
     # номера) — своим разделом; нумерация тела — с числа на первом его листе («1. oldal» на 7-м листе, 16.10)
+    # лист отличается колонтитулами — по шапке, подвалу и картинкам в них (у OAH вводные листы без шапки, а подвал —
+    # тот же логотип без текста: по одному подвалу вводная часть не находилась, 16.10)
+    def zone(pg):
+        # повёрнутый текст на поле (JPDS: «Собственность… Запрещается…» вдоль края титула) — не колонтитул: абзацем
+        # он рисовался столбиком по букве и растягивал титул на три листа (16.10)
+        art = [c for c in pg.chars if c.get("mcid") is None and _upright(c)]
+        ft = _foot_top(art, pg.rects + pg.lines, H)
+        hc, fc = [c for c in art if c["top"] < body_top], [c for c in art if c["top"] >= ft]
+        him = [img_of(i) for i in pg.images if i.get("mcid") is None and float(i["top"]) < body_top]
+        fim = [img_of(i) for i in pg.images if i.get("mcid") is None and float(i["top"]) >= min(ft, H * 0.8)]
+        return (sig(hc), sig(fc), len(him), len(fim)), hc, fc, ft, him, fim
+    body_key = (sig(head_chars), body_sig, len(head_imgs), len(foot_imgs))
+
+    def zone_layout(pg, hc, fc, ft, him, fim):
+        """Колонтитулы отдельного листа (вводной части, первого листа): абзацами без рамки или сеткой."""
+        frr = [r for r in pg.rects + pg.lines if float(r["top"]) >= ft]
+        fg = _zone_grid(fc, frr)
+        z = {"stamp": fg["rows"], "stamp_widths": fg["widths"], "stamp_aligns": fg["aligns"], "stamp_box": fg["box"],
+             "stamp_inner": fg["inner"], "stamp_merge": None, "stamp_paras": _zone_paras(fc, frr, left, W - right, fim, W)}
+        hr = _head_rects(pg, body_top)
+        hp = _zone_paras(hc, hr, left, W - right, him, W)
+        z["head_grid"] = {"rows": [], "paras": hp} if hp else (_zone_grid(hc, hr) if hc else None)
+        z["head_lines"], z["head_imgs"] = [], []                   # не шапка тела прежним путём
+        return z
+
+    # первый лист — титул, если он по виду титул: текста меньше 40 % обычного листа или крупный шрифт при неполном
+    # листе; одностраничный документ титула не имеет. Прежде титулом считался всякий первый лист с колонтитулами не
+    # как у тела — и документ без колонтитулов (HSE, RS) или с особым первым листом (ONS) получал «титул» с полями
+    # 20 pt и без выключки (16.10)
+    ink = {pg.page_number: [c for c in pg.chars if c.get("mcid") is not None and c["text"].strip()]
+           for pg in pdf.pages[:40]}
+    counts = sorted(len(v) for k, v in ink.items() if k > 1)
+    med = counts[len(counts) // 2] if counts else 0
+    sizes = sorted(float(c["size"]) for v in ink.values() for c in v)
+    msize = sizes[len(sizes) // 2] if sizes else 10
+    t1 = ink.get(1, [])
+    big = max((float(c["size"]) for c in t1), default=0) >= 1.5 * msize
+    key1, hc1, fc1, ft1, him1, fim1 = zone(pdf.pages[0])
+    # и лист со своими колонтитулами, отличными от тела (обложка UTS: текста много, но без шапки и штампа тела);
+    # поля титула — как у тела, так что это то же, что «особый колонтитул первой страницы»
+    # и обложка с фоном во весь лист: у UTS шапка и штамп тела нарисованы и на обложке, но под фоновой картинкой —
+    # по колонтитулам лист 1 не отличался, обложка шла листом тела с шапкой и картинкой в потоке (16.10)
+    p1 = pdf.pages[0]
+    bg = any((float(i["x1"]) - float(i["x0"])) * (float(i["bottom"]) - float(i["top"])) > 0.5 * W * H for i in p1.images)
+    cover = len(pdf.pages) > 1 and (med > 0 and (len(t1) < 0.4 * med or big and len(t1) < 0.7 * med)
+                                    or any(body_key) and key1 != body_key or bg)
+    out["first_is_body"] = not cover
+    if key1 != body_key:                    # свои колонтитулы первого листа (титул NSU — шапка с названием вуза)
+        out["first"] = zone_layout(pdf.pages[0], hc1, fc1, ft1, him1, fim1)
     front = []
     for pg in pdf.pages[1:]:
-        art = [c for c in pg.chars if c.get("mcid") is None]
-        ft = _foot_top(art, pg.rects + pg.lines, H)
-        fc = [c for c in art if c["top"] >= ft]
-        if not body_sig or sig(fc) == body_sig:
+        key, hc, fc, ft, him, fim = zone(pg)
+        if not any(body_key) or key == body_key:
             break
-        front.append((pg, fc, ft, [c for c in art if c["top"] < body_top]))
+        front.append((pg, fc, ft, hc, him, fim))
     # вводная часть короткая: подвал, меняющийся по главам (название главы), иначе съел бы листы тела
     if front and len(front) <= max(3, 0.15 * len(pdf.pages)):
-        pg, fc, ft, hc = front[0]
-        fg = _zone_grid(fc, [r for r in pg.rects + pg.lines if float(r["top"]) >= ft])
-        out["front"] = {"to": front[-1][0].page_number, "stamp": fg["rows"], "stamp_widths": fg["widths"],
-                        "stamp_aligns": fg["aligns"], "stamp_box": fg["box"], "stamp_inner": fg["inner"],
-                        "stamp_merge": None, "stamp_para": _as_para(fg, left, W - right)}
-        if sig(hc) != sig(head_chars):
-            hg = _zone_grid(hc, _head_rects(pg, body_top))
-            hg["para"] = _as_para(hg, left, W - right)
-            out["front"]["head_grid"] = hg
+        pg, fc, ft, hc, him, fim = front[0]
+        z = zone_layout(pg, hc, fc, ft, him, fim)
+        if (sig(hc), len(him)) == (sig(head_chars), len(head_imgs)):
+            for k in ("head_grid", "head_lines", "head_imgs"):              # шапка — как у тела
+                z.pop(k)
+        out["front"] = dict(z, to=front[-1][0].page_number)
     if page_tok is not None:
         first = (out["front"]["to"] + 1) if "front" in out else 1 if out["first_is_body"] else 2   # 1-й лист тела
         out["num_start"] = {"page": first, "value": first - 1 + page_off}
+    out["font_class"] = font_classes(path)
     return out
+
+
+def font_classes(path, pages=12):
+    """Класс шрифтов оригинала — по флагам шрифта PDF (с засечками, моноширинный), имя — как в DOCX (_fmt):
+    {"Open Sans": "swiss", "Times New Roman": "roman", "Courier New": "modern"}. Без класса в таблице шрифтов DOCX
+    неустановленный шрифт LibreOffice заменял шрифтом с засечками (руководства OAH набраны Open Sans, 16.10)."""
+    import fitz
+    votes = {}
+    with fitz.open(path) as d:
+        for pg in list(d)[:pages]:
+            for bl in pg.get_text("dict")["blocks"]:
+                for ln in bl.get("lines", []):
+                    for sp in ln["spans"]:
+                        if not sp["text"].strip():
+                            continue
+                        fam = _fmt({"fontname": sp["font"], "size": sp["size"]})["font"]
+                        k = "modern" if sp["flags"] & 8 else "roman" if sp["flags"] & 4 else "swiss"
+                        votes.setdefault(fam, Counter())[k] += len(sp["text"])
+    return {f: c.most_common(1)[0][0] for f, c in votes.items()}
 
 
 def _head_rects(page, body_top):
@@ -1109,21 +1232,59 @@ def _head_rects(page, body_top):
     return [r for r in page.rects + page.lines if float(r["bottom"]) < lim]
 
 
-def _as_para(g, x_left, x_right):
-    """Колонтитул без рамки в одну строку — абзацем, а не таблицей: части — по листу (по центру, у правого поля,
-    слева) табуляциями. {"parts": [(текст, вид, позиция от левого поля)], "align"}; None — таблицей."""
-    if not g or g.get("box") or g.get("rules") or len(g.get("rows") or []) != 1:
+def _zone_paras(chars, rects, x_left, x_right, imgs=(), page_w=None):
+    """Колонтитул без рамки (нет вертикалей и обведённых прямоугольников) — абзацами по строкам оригинала, а не
+    таблицей: части строки (группы слов с разрывом больше 18 pt) — по листу (по центру / у правого поля / слева);
+    горизонтальная линия — граница абзаца над ней; картинка (логотип) — своим абзацем по месту. Шапка OAH (номер,
+    лист/всего, версия — строкой, название — второй строкой, линия снизу) собиралась таблицей в рамке со
+    смешанными частями, логотип в подвале терялся (16.10). → {"rows": [{"parts": [(текст, вид, позиция от левого
+    поля)], "bold"} | {"img", "kind"}], "font", "size"} или None — колонтитул в рамке (таблицей)."""
+    import pdfplumber
+    vs = [r for r in rects if float(r["x1"]) - float(r["x0"]) < 3 and float(r["bottom"]) - float(r["top"]) > 5]
+    boxed = [r for r in rects if r.get("object_type") == "rect" and r.get("stroke")
+             and float(r["x1"]) - float(r["x0"]) >= 3 and float(r["bottom"]) - float(r["top"]) >= 3]
+    if vs or boxed:
         return None
-    parts = [(t, sp) for t, sp in zip(g["rows"][0]["cells"], g.get("spans") or []) if isinstance(t, str) and t and sp]
-    if not parts:
+    words = pdfplumber.utils.extract_words(chars, x_tolerance=2.5, y_tolerance=2) if chars else []
+    if not words and not imgs:
         return None
     mid = (x_left + x_right) / 2
-    kind = lambda a, b: "center" if abs((a + b) / 2 - mid) < 10 else "right" if abs(b - x_right) < 10 else "left"
-    out = []
-    for t, (a, b) in parts:
-        k = kind(a, b)
-        out.append((t, k, round(b - x_left if k == "right" else (a + b) / 2 - x_left if k == "center" else a - x_left, 1)))
-    return {"parts": out, "bold": g["rows"][0].get("bold", False)}
+    # по центру — полосы набора или листа (логотип OAH стоит по середине листа, 16.10)
+    kind = lambda a, b: "center" if min(abs((a + b) / 2 - mid), abs((a + b) / 2 - page_w / 2) if page_w else 99) < 10 \
+        else "right" if abs(b - x_right) < 10 else "left"
+    pos = lambda k, a, b: round(b - x_left if k == "right" else mid - x_left if k == "center" else a - x_left, 1)
+    lines = {}
+    for w in words:
+        lines.setdefault(round(float(w["top"]) / 3), []).append(w)
+    rows = []
+    for _, ws in sorted(lines.items()):
+        ws = sorted(ws, key=lambda w: float(w["x0"]))
+        groups, cur = [], [ws[0]]
+        for w in ws[1:]:
+            if float(w["x0"]) - float(cur[-1]["x1"]) > 18:
+                groups.append(cur)
+                cur = [w]
+            else:
+                cur.append(w)
+        groups.append(cur)
+        parts = []
+        for g in groups:
+            a, b = float(g[0]["x0"]), float(g[-1]["x1"])
+            k = kind(a, b)
+            parts.append((" ".join(w["text"] for w in g), k, pos(k, a, b)))
+        top, bot = min(float(w["top"]) for w in ws), max(float(w["bottom"]) for w in ws)
+        ink = [c for c in chars if top - 1 <= float(c["top"]) <= bot and c["text"].strip()]
+        rows.append({"parts": parts, "bold": bool(ink) and all(_fmt(c)["b"] for c in ink), "top": top, "bottom": bot})
+    for im in imgs:
+        rows.append({"img": im, "kind": kind(im["x0"], im["x1"]), "top": im["top"], "bottom": im["bottom"]})
+    rows.sort(key=lambda r: r["top"])
+    for r in rects:
+        if float(r["bottom"]) - float(r["top"]) < 3 and float(r["x1"]) - float(r["x0"]) > 0.5 * (x_right - x_left):
+            y = (float(r["top"]) + float(r["bottom"])) / 2
+            above = [row for row in rows if row["bottom"] <= y + 2]
+            (above[-1] if above else rows[0])["rule_below" if above else "rule_above"] = True
+    f = Counter((_fmt(c)["font"], _fmt(c)["size"]) for c in chars if c["text"].strip()).most_common(1)
+    return {"rows": rows, "font": f[0][0][0] if f else None, "size": f[0][0][1] if f else None}
 
 
 def _typical_page(pdf, body_top, H, sample=15):
@@ -1136,10 +1297,10 @@ def _typical_page(pdf, body_top, H, sample=15):
     # выборка — по всему документу, и 1-й лист: титул со своими колонтитулами в общую группу не попадёт, а короткий
     # документ без титула (два листа) иначе не давал номера листа — в штампе застывала цифра (синтетика, 16.10)
     idx = sorted({round(k * (n - 1) / max(sample - 1, 1)) for k in range(sample)})
-    sig, words = {}, {}
+    sig, words, arts_of = {}, {}, {}
     for i in idx:
         pg = pdf.pages[i]
-        art = [c for c in pg.chars if c.get("mcid") is None]
+        art = arts_of[i] = [c for c in pg.chars if c.get("mcid") is None]
         ftop = _foot_top(art, pg.rects + pg.lines, H)
         arts = [c for c in art if c["top"] < body_top or c["top"] >= ftop]
         sig[i] = re.sub(r"\d+", "#", "".join(c["text"] for c in arts))
@@ -1151,12 +1312,20 @@ def _typical_page(pdf, body_top, H, sample=15):
     tok, off, boxes = None, 0, []
     if len(same) >= 2 and len({len(words[i]) for i in same}) == 1:
         for j, w in enumerate(words[rep]):
-            vals = [re.fullmatch(r"(\d+)\.?", words[i][j]["text"]) for i in same]
+            # «13.», «13» и «13/57» (лист/всего листов, OAH): номер — первая часть
+            vals = [re.fullmatch(r"(\d+)(?:\.|/\d+)?", words[i][j]["text"]) for i in same]
+            t = w["text"].split("/")[0]
             if all(vals) and len({int(v[1]) - i for v, i in zip(vals, same)}) == 1 \
-                    and (tok is None or int(vals[0][1]) - same[0] == off and w["text"] == tok):
+                    and (tok is None or int(vals[0][1]) - same[0] == off and t == tok):
                 if tok is None:
-                    tok, off = w["text"], int(vals[0][1]) - same[0]      # номер листа = индекс (от 0) + off
-                boxes.append({k: float(w[k]) for k in ("x0", "x1", "top")})
+                    tok, off = t, int(vals[0][1]) - same[0]      # номер листа = индекс (от 0) + off
+                bx = {k: float(w[k]) for k in ("x0", "x1", "top")}
+                if "/" in w["text"]:                             # метка — только цифры до «/»
+                    sl = [c for c in arts_of[rep] if c["text"] == "/" and abs(float(c["top"]) - bx["top"]) < 2
+                          and bx["x0"] - 0.5 <= float(c["x0"]) <= bx["x1"]]
+                    if sl:
+                        bx["x1"] = float(sl[0]["x0"])
+                boxes.append(bx)
     return pdf.pages[rep], tok, off, boxes
 
 
