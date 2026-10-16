@@ -543,6 +543,52 @@ def score_one(src, out):
     return S
 
 
+def lo_print(folder):
+    """Пересборки → PDF LibreOffice в контейнере hut (как печатает сервис): X.rebuilt.docx → X.rebuilt.pdf."""
+    import subprocess
+    for out in sorted(Path(folder).glob("*.rebuilt.docx")):
+        tmp = f"/tmp/bench_{out.stem}"
+        subprocess.run(["docker", "cp", str(out), f"hut:{tmp}.docx"], check=True, capture_output=True)
+        r = subprocess.run(["docker", "exec", "hut", "/usr/bin/python3", "/app/src/lo_pdf.py", f"{tmp}.docx", f"{tmp}.pdf"],
+                           capture_output=True, text=True)
+        if r.returncode == 0:
+            subprocess.run(["docker", "cp", f"hut:{tmp}.pdf", str(out.with_suffix(".pdf"))], check=True, capture_output=True)
+        print("ok" if r.returncode == 0 else "ОШИБКА " + r.stderr[-200:], out.name, flush=True)
+        subprocess.run(["docker", "exec", "hut", "rm", "-f", f"{tmp}.docx", f"{tmp}.pdf"], capture_output=True)
+
+
+def _hf_orig(pdf, n=3):
+    """Колонтитулы первых листов оригинала (Word, PDF с тегами) — знаки-артефакты: шапка выше середины листа,
+    подвал ниже; текст без пробелов."""
+    import pdfplumber
+    out = []
+    with pdfplumber.open(pdf) as d:
+        for pg in d.pages[:n]:
+            art = [c for c in pg.chars if c.get("mcid") is None and c["text"].strip()]
+            top = "".join(c["text"] for c in sorted(art, key=lambda c: (round(c["top"]), c["x0"])) if c["top"] < pg.height / 2)
+            bot = "".join(c["text"] for c in sorted(art, key=lambda c: (round(c["top"]), c["x0"])) if c["top"] >= pg.height / 2)
+            out.append((top.lower(), bot.lower()))
+    return out
+
+
+def _hf_built(pdf, docx_path, n=3):
+    """Колонтитулы первых листов пересборки (LibreOffice, без тегов) — знаки в полях листа по разделам DOCX:
+    1-й лист — 1-й раздел, дальше — следующий (титул отдельным разделом) или тот же."""
+    import pdfplumber
+    from docx import Document
+    secs = Document(docx_path).sections
+    out = []
+    with pdfplumber.open(pdf) as d:
+        for i, pg in enumerate(d.pages[:n]):
+            sec = secs[0] if i == 0 or len(secs) == 1 else secs[1]
+            t, bm = sec.top_margin.pt, sec.bottom_margin.pt
+            ch = sorted((c for c in pg.chars if c["text"].strip()), key=lambda c: (round(c["top"]), c["x0"]))
+            top = "".join(c["text"] for c in ch if c["bottom"] <= t + 1)
+            bot = "".join(c["text"] for c in ch if c["top"] >= pg.height - bm - 1)
+            out.append((top.lower(), bot.lower()))
+    return out
+
+
 def score(folder):
     folder = Path(folder)
     rows = {}
@@ -555,10 +601,18 @@ def score(folder):
             continue
         try:
             rows[src.stem] = {"build": 1.0, **score_one(src, out)}
+            # по отрисовке: шапка и подвал (с номерами) первых трёх листов — как у оригинала (Word) в печати сервиса
+            # (LibreOffice): титул «особым первым колонтитулом» и титул отдельным разделом выглядят одинаково
+            a_pdf, b_pdf = src.with_suffix(".pdf"), out.with_suffix(".pdf")
+            if a_pdf.exists() and b_pdf.exists():
+                ha, hb = _hf_orig(a_pdf), _hf_built(b_pdf, out)
+                pairs = [(x, y) for pa, pb in zip(ha, hb) for x, y in zip(pa, pb)]
+                rows[src.stem]["hf_pages"] = sum(x == y for x, y in pairs) / len(pairs) if pairs else None
         except Exception as e:                      # noqa: BLE001
             rows[src.stem] = {"build": 0.0, "error": f"{type(e).__name__}: {e}"[:200]}
     keys = ["build", "text", "order", "cells", "headings", "lists", "labels", "toc", "tables_count", "tables_shape",
-            "tables_merge", "tables_lines", "header", "footer", "sections", "num_start", "first_line", "justify"]
+            "tables_merge", "tables_lines", "header", "footer", "sections", "num_start", "hf_pages", "first_line",
+            "justify"]
     agg = {}
     for k in keys:
         v = [r[k] for r in rows.values() if r.get(k) is not None]
@@ -589,5 +643,7 @@ if __name__ == "__main__":
         to_pdf(folder)
     elif cmd == "build":
         build(folder)
+    elif cmd == "lo":
+        lo_print(folder)
     elif cmd == "score":
         score(folder)
