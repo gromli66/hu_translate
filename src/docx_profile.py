@@ -74,7 +74,8 @@ def centered(g, L):
         return False
     left, right = L["left"], L["W"] - L["right"]
     mid = (g["x0"] + g["x1"]) / 2
-    return abs(mid - (left + right) / 2) < 8 and g["x0"] - left > 24
+    # и заметно короче полной строки: строка абзаца с отступом во всю ширину — не по центру (3PR42, OCR, 16.10)
+    return abs(mid - (left + right) / 2) < 8 and g["x0"] - left > 24 and g["x1"] - g["x0"] < 0.85 * (right - left)
 
 
 def extract(path, blocks, L):

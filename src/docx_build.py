@@ -53,7 +53,8 @@ def is_code(runs):
     c = Counter()
     for r in runs:
         if "t" in r and r["t"].strip():
-            c[(r.get("font") or "").lower().startswith(("consolas", "courier"))] += len(r["t"].strip())
+            # body_mono — основной шрифт документа моноширинный (3SZ19 набран Courier): это не код (docx_layout)
+            c[(r.get("font") or "").lower().startswith(("consolas", "courier")) and not r.get("body_mono")] += len(r["t"].strip())
     return c[True] > c[False]
 
 
@@ -71,7 +72,8 @@ def merge_inline(blocks):
         prev = out[-1] if out else None
         g, pg = b.get("geom") or {}, (prev or {}).get("geom") or {}
         # ссылка рядом с абзацем (Link/Span) — часть абзаца; хвост после неё на той же строке — тоже
-        joins = prev is not None and prev["k"] == "p" and b["k"] == "p" and not _figure(prev) and not _figure(b) and (
+        joins = prev is not None and prev["k"] == "p" and b["k"] == "p" and not _figure(prev) and not _figure(b) \
+            and not b.get("seg") and not prev.get("seg") and (      # абзацы по сегментам листа уже собраны (docx_layout)
             b.get("inline")
             or (prev.get("tail_inline") and g and g.get("page") == pg.get("page")
                 and abs(g["top"] - (prev.get("last_top") or 0)) < 6)
@@ -608,6 +610,11 @@ class Builder:
         for x in sorted({round(x) for r in runs for x in r.get("tabs", [])}):
             if x - self.left > 6:
                 par.paragraph_format.tab_stops.add_tab_stop(Pt(x - self.left))
+        if self.L and any(r.get("rtab") for r in runs):
+            # номер листа в конце строки оглавления — к правому полю: русское название длиннее, и номер
+            # по позиции оригинала перескакивал на следующую строку (3SZ19, 16.10)
+            from docx.enum.text import WD_TAB_ALIGNMENT
+            par.paragraph_format.tab_stops.add_tab_stop(Pt(self.L["W"] - self.L["right"] - self.left), WD_TAB_ALIGNMENT.RIGHT)
 
     # ---------------------------------------------------------------- блоки
     def paragraph(self, b, style="Normal", tgt=None):
@@ -634,9 +641,22 @@ class Builder:
                 style = "Small UTS"
         if style in ("Normal", "Code UTS") and tgt is self.doc and self.L and self._centered(b):
             style = "Center UTS" if style == "Normal" else "Code Center UTS"
+        if style == "Normal" and b.get("indent"):
+            style = self._indented(b["indent"])              # отступ оригинала — уровнем стиля (docx_layout)
         par = tgt.add_paragraph(style=style)
         self._put_runs(par, runs, style_bold=style in ("Title UTS",))
         return par
+
+    def _indented(self, ind):
+        """Стиль абзаца с отступом слева ind pt (шаг 9 pt): отступ — стилем, а не прямым оформлением абзаца."""
+        from docx.enum.style import WD_STYLE_TYPE
+        from docx.shared import Pt
+        name = f"Indent {int(ind)} UTS"
+        if name not in [s.name for s in self.doc.styles]:
+            s = self.doc.styles.add_style(name, WD_STYLE_TYPE.PARAGRAPH)
+            s.base_style = self.doc.styles["Normal"]
+            s.paragraph_format.left_indent = Pt(ind)
+        return name
 
     def caption(self, m, tgt):
         """Подпись в одном формате: «Рисунок N. Название» / «Таблица N. Название», номер — полем SEQ
@@ -1010,7 +1030,7 @@ class Builder:
             t.autofit = False
             for gc, w in zip(t._tbl.tblGrid.findall(W + "gridCol"), widths):
                 gc.set(W + "w", str(round(w * 20)))
-        al_of = {"right": AL.RIGHT, "center": AL.CENTER}
+        al_of = {"right": AL.RIGHT, "center": AL.CENTER, "left": AL.LEFT}   # «влево» — явно: стиль шапки по центру
         for ri, row in enumerate(rows):
             for ci, txt in enumerate(row["cells"]):
                 p = t.cell(ri, ci).paragraphs[0]
@@ -1132,9 +1152,16 @@ class Builder:
             self._font(self.doc.styles["Header UTS"], hg["font"], hg.get("size") or 10)
         first = self.doc.sections[0]
         prev_bottom = 40                        # от верхнего поля титула: название ÜFK стоит с середины листа
-        self._page(first, L, L["title_left"], 20, 40, 30)
-        self.left = L["title_left"]
-        in_title = True
+        # первый лист с колонтитулами тела (3SZ19 начинается оглавлением с шапкой) — не титул (docx_layout)
+        in_title = had_title = not L.get("first_is_body")
+        if in_title:
+            self._page(first, L, L["title_left"], 20, 40, 30)
+            self.left = L["title_left"]
+        else:
+            self._page(first, L, L["left"], L["right"], L["top"], L["bottom"])
+            self.left = L["left"]
+            self._header(first, L)
+            self._footer(first, L)
         title_foot = []
         for b in merge_inline(blocks):
             g = b.get("geom") or {}
@@ -1176,7 +1203,8 @@ class Builder:
                 prev_bottom = g.get("bottom") or prev_bottom
         # после add_section объект первого раздела указывает на последний (sectPr тела документа) — шапку титула
         # ставить разделу [0], иначе шапки менялись местами
-        self._header(self.doc.sections[0], L, logos_only=True)
+        if had_title:
+            self._header(self.doc.sections[0], L, logos_only=True)
         if title_foot:
             foot = self.doc.sections[0].footer
             foot.is_linked_to_previous = False

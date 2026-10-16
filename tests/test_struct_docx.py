@@ -473,3 +473,70 @@ def test_runner_weights_cover_new_steps():
     for st in ("извлечение", "перевод", "структура", "шлифовка", "сборка", "термины"):
         assert st in W_REVIEW and st in W_FAST
     assert "проверка" in W_REVIEW
+
+
+# ---------------------------------------------------------------- без зашивок под UTS (ÜFK, 16.10) и распознанный PDF
+def test_spans_autonum_text_labels_and_continuation_note():
+    """Шапка над «A. | текст» — по столбцам; автонумерация — только если повторяет номера оригинала; номера и тире
+    в тексте пунктов — вид списка; пометка о переносе между частями таблицы — прочь."""
+    row = [{"geom": {"x0": 110, "x1": 174}}, {"geom": {"x0": 291, "x1": 398}}, {"geom": {"x0": 471, "x1": 531}}]
+    assert B._span_starts(row, [58, 80, 231, 267, 464, 537], 5) == [0, 2, 4]
+    h = lambda t, lv: {"k": "h", "level": lv, "runs": [{"t": t}]}
+    assert B._autonum_ok([h("1 Bevezetés", 1), h("1.1 Cél", 2), h("2 Rendszer", 1)])
+    assert not B._autonum_ok([h("1. Bevezetés", 1), h("DF 1.1. Cél", 2), h("DF 1.2. Más", 2)])
+    assert not B._autonum_ok([h("Bevezetés", 1)])                      # номеров нет — автонумерация их не добавит
+    item = lambda t: [p(t)]
+    alpha = {"k": "list", "kind": "Disc", "items": [item("a. első"), item("b. második"), item("c. harmadik")]}
+    dash = {"k": "list", "kind": "Disc", "items": [item("– ha az első"), item("– ha a második")]}
+    D.text_labels([alpha, dash])
+    assert (alpha["kind"], alpha["suffix"], dash["kind"]) == ("LowerAlpha", ".", "Dash")
+    cell = lambda th: {"blocks": [], "th": th}
+    t1 = {"k": "table", "rows": [[cell(True)] * 2, [cell(False)] * 2], "geom": {"page": 90}}
+    note = {"k": "p", "runs": [{"t": "Folytatás a következő oldalon."}], "geom": {"page": 90}}
+    t2 = {"k": "table", "rows": [[cell(False)] * 2], "geom": {"page": 91}}
+    got = D.join_tables([t1, note, t2])
+    assert len(got) == 1 and len(got[0]["rows"]) == 3
+
+
+def ocr_doc(tmp_path, pages=8):
+    """Распознанный PDF: текст — в сегментах OCR, в текстовом слое — только тире пунктов (как «Печать в PDF» 3SZ19)."""
+    doc = fitz.open()
+    segs = []
+    sid = 0
+
+    def seg(pno, text, x0, y0, x1, align="left", bold=False):
+        nonlocal sid
+        segs.append({"id": sid, "page": pno, "text": text,
+                     "loc": {"bbox": [x0, y0, x1, y0 + 9], "frags": [[x0, y0, x1, y0 + 9]], "size": 8.3 + (sid % 3) / 10,
+                             "bold": bold, "align": align, "family": "monospace", "ocr": True}})
+        sid += 1
+    for pno in range(pages):
+        page = doc.new_page(width=595, height=842)
+        seg(pno, "Azonosító: 3SZ19", 77, 35, 170)
+        seg(pno, f"Oldalszám: {pno + 2}", 460, 48, 530)
+        title = ["1. A turbina üzemzavarai"] * 3 + ["2. Szekunderköri berendezések"] * 3 + ["3. Egyéb"] * 2
+        seg(pno, title[pno], 250, 86, 395, "center", True)     # бегущее название раздела — на листах раздела
+        page.insert_text((100, 140 + 7), "-", fontsize=9)
+        seg(pno, f"Ellenőrizni a turbinát {pno}.", 112, 140, 400)
+        seg(pno, "1.4.", 100, 200, 120)
+        seg(pno, "Tengelyelmozdulás megnövekedése", 160, 200, 330)
+        seg(pno, "13", 500, 200, 512)
+    doc.save(tmp_path / "ocr.pdf")
+    return str(tmp_path / "ocr.pdf"), segs
+
+
+def test_ocr_pdf_blocks_header_page_number_dash_items_toc_line(tmp_path):
+    import docx_layout as DL
+    src, segs = ocr_doc(tmp_path)
+    blocks, info = DL.load(src, segs)
+    assert info["font"] == "Courier New" and info["size"] == 8.5             # один кегль на документ, не оценка OCR
+    heads = [b for b in blocks if b["k"] == "h"]
+    assert len(heads) == 3                                                   # название раздела — один раз
+    lists = [b for b in blocks if b["k"] == "list"]
+    assert lists and all(b["kind"] == "Dash" for b in lists)
+    toc = next(b for b in blocks if b["k"] == "p" and "Tengely" in "".join(r["t"] for r in b["runs"]))
+    assert [r["t"] for r in toc["runs"]] == ["1.4.\t", "Tengelyelmozdulás megnövekedése\t", "13"]
+    assert toc["runs"][1].get("rtab") and toc.get("seg")
+    L = DL.layout(src, blocks, segs, info)
+    assert L["page_tok"] and L["head_grid"]["rows"][0]["cells"][0] == "Azonosító: 3SZ19"
+    assert L["first_is_body"] and not any("Azonosító" in "".join(r["t"] for r in b.get("runs", [])) for b in blocks)

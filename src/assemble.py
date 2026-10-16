@@ -395,7 +395,7 @@ def _p2d_child(pdf, out):
         print(" ".join(f"ERR {type(e).__name__}: {e}"[:200].split()), flush=True)
 
 
-def build_struct_docx(src, out, segs, res, rules=None, progress=None):
+def build_struct_docx(src, out, segs, res, rules=None, progress=None, mode="struct"):
     """DOCX размеченного PDF (экспорт Word со StructTreeRoot, pipeline.extract → d["struct"]): блоки — по дереву
     разметки (docx_struct), оформление — профилем оригинала (docx_profile), сборка — docx_build.Builder; перевод — из
     сегментов задачи (после проверки, шлифовки и правок редактора), скриншоты — переведённые (shots.render).
@@ -410,8 +410,13 @@ def build_struct_docx(src, out, segs, res, rules=None, progress=None):
     from docx import Document
     from docx.text.paragraph import Paragraph
     tick = progress or (lambda x: None)
-    blocks, _ = D.load(str(src))
-    L = D.layout(str(src), blocks)
+    if mode == "layout":                # распознанный PDF без разметки: блоки — по сегментам листа (docx_layout)
+        import docx_layout as DL
+        blocks, info = DL.load(str(src), segs)
+        L = DL.layout(str(src), blocks, segs, info)
+    else:
+        blocks, _ = D.load(str(src))
+        L = D.layout(str(src), blocks)
     prof = F.extract(str(src), blocks, L)
     tick(0.4)
     mem = B.job_memory(segs, res)
@@ -459,7 +464,8 @@ def build_struct_docx(src, out, segs, res, rules=None, progress=None):
     rows = [("", v["rule"], f"оформление: {v['where']} — {v['was']} (нужно: {v['need']})", "") for v in viol] \
         + [("", r, f"в DOCX: {why}", t) for r, why, t in lang]
     tick(1.0)
-    return {"converter": "разметка PDF", "missed": len(set(mem.missing)), "format": len(viol), "lang": len(lang)}, rows
+    return {"converter": "разметка PDF" if mode != "layout" else "сегменты листа", "missed": len(set(mem.missing)),
+            "format": len(viol), "lang": len(lang)}, rows
 
 
 def _h_note(r):
@@ -615,7 +621,24 @@ def assemble_all(jf, d, out_dir=None, progress=None):
                 shots_pdf.unlink(missing_ok=True)
         else:
             info = build_pdf(src, outd / f"{stem}_RU.pdf", d["segs"], d["res"], progress=lambda x: tick(0.4 * x))
-            info["docx"] = docx_from_pdf(outd / f"{stem}_RU.pdf", outd / f"{stem}_RU.docx",
-                                         progress=lambda x: tick(0.4 + 0.6 * x))
+            ocr = len((d.get("info") or {}).get("ocr_pages") or [])
+            try:
+                if not ocr or ocr * 2 < max(1, info.get("pages") or 1):
+                    raise ValueError("не распознанный PDF")
+                # распознанный PDF (текст листа — контурами): DOCX по сегментам листа (docx_layout) — один кегль, стили,
+                # пункты, колонтитулы; PDF — из него. Раньше DOCX был из переведённого PDF: строки резались, налезали
+                info["docx"], rows = build_struct_docx(src, outd / f"{stem}_RU.docx", d["segs"], d["res"],
+                                                       (d.get("polish") or {}).get("rules"),
+                                                       progress=lambda x: tick(0.4 + 0.6 * x), mode="layout")
+                import subprocess
+                try:
+                    info["pdf"] = pdf_from_docx(outd / f"{stem}_RU.docx", outd / f"{stem}_RU.pdf")
+                except (OSError, RuntimeError, subprocess.SubprocessError) as e:
+                    info["pdf"] = {"from": "вёрстка оригинала", "reason": f"{type(e).__name__}: {e}"[:200]}
+            except Exception as e:                      # noqa: BLE001 — DOCX прежним путём, причина — в отчёт сборки
+                info["docx"] = docx_from_pdf(outd / f"{stem}_RU.pdf", outd / f"{stem}_RU.docx",
+                                             progress=lambda x: tick(0.4 + 0.6 * x))
+                if not isinstance(e, ValueError):
+                    info["docx"]["fallback"] = f"{type(e).__name__}: {e}"[:200]
     review_xlsx(outd / f"{stem}_вычитка.xlsx", d["segs"], d["res"], stem, polish=d.get("polish"), extra_rows=rows)
     return info
