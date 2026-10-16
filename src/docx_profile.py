@@ -35,7 +35,7 @@ def _flat(blocks, ctx="body", depth=0):
                 yield "cap_" + ("fig" if B.CAPTION.match(t).group(2).lower() == "ábra" else "tab"), b, depth
             elif t:
                 code = B.is_code(b["runs"]) and ctx in ("body", "list")
-                yield ("code" if code else ctx), b, depth
+                yield ("code" if code else "label" if ctx == "body" and B.is_label(b) else ctx), b, depth
         elif k == "list":
             for it in b["items"]:
                 yield from _flat(it, "list", depth + 1)
@@ -97,16 +97,24 @@ def extract(path, blocks, L):
     # правое поле листа (у таблиц рамка выступает за поле на поле ячейки, по ним поле не мерить)
     body = P["roles"].get("body", {"size": 10})
     s0 = body["size"]
-    body_top = L["top"] + 4
+    # край меряется по строкам самих абзацев тела и списков (кроме последней строки абзаца — она короче и при
+    # выключке по ширине) с любого листа, кроме титула: строк ровно от поля с 3-го листа в коротком документе меньше
+    # десятка, а пункт списка с отступом 18 pt не считался ни телом, ни списком — выходило «влево» (синтетика, 16.10)
     x1s = {"body": [], "list": []}
+    tl, width = {}, L["W"] - L["left"] - L["right"]
+    for role, b, _ in items:
+        g = b.get("geom") or {}
+        if role not in x1s or not g.get("page") or (g.get("lines") or 1) < 2 \
+                or g["page"] == 1 and not L.get("first_is_body"):
+            continue
+        if g["page"] not in tl:
+            tl[g["page"]] = pdf.pages[g["page"] - 1].extract_text_lines()
+        own = sorted((ln for ln in tl[g["page"]] if g["top"] - 2 <= float(ln["top"]) <= g["bottom"]
+                      and float(ln["x0"]) >= g["x0"] - 2 and float(ln["x1"]) <= g["x1"] + 2), key=lambda ln: float(ln["top"]))
+        x1s[role] += [round(float(ln["x1"])) for ln in own[:-1] if float(ln["x1"]) - float(ln["x0"]) > 0.6 * width]
     step = []
     for pg in pdf.pages[2:]:
         lines = [ln for ln in pg.extract_text_lines() if L["top"] < float(ln["top"]) < L["H"] - L["bottom"]]
-        for ln in lines:
-            dx = float(ln["x0"]) - L["left"]
-            role = "body" if abs(dx) < 3 else "list" if dx > 20 else None
-            if role and float(ln["x1"]) - float(ln["x0"]) > 0.6 * (L["W"] - L["left"] - L["right"]):
-                x1s[role].append(round(float(ln["x1"])))
         for a, b2 in zip(lines, lines[1:]):
             d = float(b2["top"]) - float(a["top"])
             if 1.1 * s0 < d < 1.6 * s0:
@@ -116,14 +124,15 @@ def extract(path, blocks, L):
         c = Counter(v)
         edge, n = c.most_common(1)[0] if c else (None, 0)
         near = sum(k for x, k in c.items() if edge is not None and abs(x - edge) <= 1)
-        P["align"][role] = "both" if len(v) > 10 and near > 0.5 * len(v) else "left"
+        P["align"][role] = "both" if len(v) >= 4 and near > 0.5 * len(v) else "left"
         if role == "body" and P["align"][role] == "both":
             P["page"]["right"] = round(L["W"] - edge, 1)
     P["line"] = Counter(step).most_common(1)[0][0] if step else round(s0 * 1.39, 1)
     # интервалы: зазор между соседними абзацами минус межстрочный зазор
     lead = P["line"] - body["size"]
-    gaps = {"body": [], "list": [], **{f"H{i}_before": [] for i in range(1, 6)}, **{f"H{i}_after": [] for i in range(1, 6)}}
-    seq = [(r, b) for r, b, _ in items if r in ("body", "list") or r.startswith("H")]
+    gaps = {"body": [], "list": [], "label_before": [], "label_after": [],
+            **{f"H{i}_before": [] for i in range(1, 6)}, **{f"H{i}_after": [] for i in range(1, 6)}}
+    seq = [(r, b) for r, b, _ in items if r in ("body", "list", "label") or r.startswith("H")]
     for (r1, a), (r2, b2) in zip(seq, seq[1:]):
         ga, gb = a.get("geom") or {}, b2.get("geom") or {}
         if not ga.get("bottom") or not gb.get("top") or ga.get("page") != gb.get("page"):
@@ -137,10 +146,29 @@ def extract(path, blocks, L):
             gaps[r2 + "_before"].append(gap)
         if r1.startswith("H") and r2 in ("body", "list"):
             gaps[r1 + "_after"].append(gap)
+        if r2 == "label" and r1 in ("body", "list"):
+            gaps["label_before"].append(gap)
+        if r1 == "label" and r2 in ("body", "list"):
+            gaps["label_after"].append(gap)
     P["space"] = {k: round(max(0.0, median(v)), 1) for k, v in gaps.items() if len(v) >= 3}
+    # отступ первой строки: у большинства многострочных абзацев тела первая строка правее остальных (методика
+    # МТ-ЦАСУТП-14: 36 pt) — абзацным отступом стиля, иначе он пропадал; хватает четырёх таких абзацев (в коротком
+    # документе их восемь — при пороге в десять отступ терялся, синтетика 16.10), а двух-трёх — если отступ у всех
+    offs = [b["geom"]["first_x0"] - b["geom"]["x0"] for r, b, _ in items if r == "body" and b.get("geom")
+            and (b["geom"].get("lines") or 1) >= 2 and b["geom"].get("first_x0") is not None]
+    pos = [o for o in offs if o > 5]
+    if len(offs) >= 4 and len(pos) > 0.5 * len(offs) or len(offs) >= 2 and len(pos) == len(offs):
+        P["first_line"] = round(median(pos), 1)
     # заголовки: с новой страницы, расстояние номер → текст
     P["heads"] = {}
     words = {}
+    # «с нового листа» — заголовок, первый на своём листе (а не в 24 pt от верха тела: «2.1.» в 20 pt под «2.» на
+    # том же листе считался первым, и весь уровень получал разрыв листа, ÜFK 16.10)
+    page_first = {}
+    for _, b, _ in items:
+        g = b.get("geom") or {}
+        if g.get("page") and g.get("top") is not None:
+            page_first[g["page"]] = min(page_first.get(g["page"], g["top"]), g["top"])
     for lv in range(1, 6):
         hs = [b for r, b, _ in items if r == f"H{lv}" and b.get("geom") and b["geom"].get("page")]
         if not hs:
@@ -153,7 +181,7 @@ def extract(path, blocks, L):
             ws = sorted((w for w in words[g["page"]] if abs(float(w["top"]) - g["top"]) < 3), key=lambda w: w["x0"])
             if len(ws) >= 2 and re.fullmatch(r"\d+(\.\d+)*\.?", ws[0]["text"]):
                 tabs.append(float(ws[1]["x0"]) - float(ws[0]["x0"]))
-        first = sum(1 for b in hs if abs(b["geom"]["top"] - body_top) < 24)
+        first = sum(1 for b in hs if abs(b["geom"]["top"] - page_first.get(b["geom"]["page"], -99)) < 2)
         tab = round(median(tabs), 1) if tabs else None
         # самый длинный номер уровня («13.2» кеглем 14 — 27 pt при табуляции 28,8): текст не ближе 4 pt к номеру,
         # иначе в Word «13.2SYS TEC» читается слитно (в оригинале зазор 1,5 pt)

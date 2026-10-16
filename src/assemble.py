@@ -430,6 +430,8 @@ def build_struct_docx(src, out, segs, res, rules=None, progress=None, mode="stru
     cache = {}
 
     def image(img):
+        if img.get("png"):                  # рисунок распознанного листа — уже снимок (docx_layout)
+            return img["png"]
         x = img["stream"].objid
         if x in cache:
             return cache[x]
@@ -594,7 +596,8 @@ def assemble_all(jf, d, out_dir=None, progress=None):
             try:
                 info["docx"], rows = build_struct_docx(src, outd / f"{stem}_RU.docx", d["segs"], d["res"],
                                                        (d.get("polish") or {}).get("rules"),
-                                                       progress=lambda x: tick(0.4 + 0.6 * x))
+                                                       progress=lambda x: tick(0.4 + 0.6 * x),
+                                                       mode=d["struct"].get("mode") or "struct")
                 import subprocess
                 try:                                    # PDF — из этого DOCX; без LibreOffice — в вёрстке оригинала
                     info["pdf"] = pdf_from_docx(outd / f"{stem}_RU.docx", outd / f"{stem}_RU.pdf")
@@ -621,10 +624,10 @@ def assemble_all(jf, d, out_dir=None, progress=None):
                 shots_pdf.unlink(missing_ok=True)
         else:
             info = build_pdf(src, outd / f"{stem}_RU.pdf", d["segs"], d["res"], progress=lambda x: tick(0.4 * x))
-            ocr = len((d.get("info") or {}).get("ocr_pages") or [])
             try:
-                if not ocr or ocr * 2 < max(1, info.get("pages") or 1):
-                    raise ValueError("не распознанный PDF")
+                import docx_layout as DL
+                if not DL.suits(src, (d.get("info") or {}).get("ocr_pages")):
+                    raise ValueError("не распознанный PDF или скан")
                 # распознанный PDF (текст листа — контурами): DOCX по сегментам листа (docx_layout) — один кегль, стили,
                 # пункты, колонтитулы; PDF — из него. Раньше DOCX был из переведённого PDF: строки резались, налезали
                 info["docx"], rows = build_struct_docx(src, outd / f"{stem}_RU.docx", d["segs"], d["res"],

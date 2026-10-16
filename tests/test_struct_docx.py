@@ -244,6 +244,19 @@ def test_icon_in_line_goes_to_its_place_not_paragraph_end(tmp_path):
     assert seq.lstrip().startswith("\0") and seq.rstrip().endswith("подключено")
 
 
+def test_table_continued_with_repeated_header_is_joined():
+    """Продолжение таблицы на новом листе, начатое повтором шапки («Повторять как заголовок»), — та же таблица, повтор
+    прочь; другая таблица с другой шапкой — своя (синтетика, 16.10)."""
+    cell = lambda th, t: {"blocks": [p(t)], "th": th}
+    head = lambda: [cell(True, "№"), cell(True, "Параметр")]
+    t1 = {"k": "table", "rows": [head(), [cell(False, "1"), cell(False, "a")]], "geom": {"page": 4}}
+    t2 = {"k": "table", "rows": [head(), [cell(False, "2"), cell(False, "b")]], "geom": {"page": 5}}
+    t3 = {"k": "table", "rows": [[cell(True, "Код"), cell(True, "Имя")], [cell(False, "x"), cell(False, "y")]],
+          "geom": {"page": 6}}
+    got = D.join_tables([t1, t2, t3])
+    assert [len(t["rows"]) for t in got] == [3, 2]
+
+
 def test_table_cut_by_pages_is_joined():
     """Word при экспорте режет таблицу по листам: продолжение — таблица без шапки сразу за ней (UTS стр. 75–78)."""
     cell = lambda th: {"blocks": [], "th": th}
@@ -540,3 +553,333 @@ def test_ocr_pdf_blocks_header_page_number_dash_items_toc_line(tmp_path):
     L = DL.layout(src, blocks, segs, info)
     assert L["page_tok"] and L["head_grid"]["rows"][0]["cells"][0] == "Azonosító: 3SZ19"
     assert L["first_is_body"] and not any("Azonosító" in "".join(r["t"] for r in b.get("runs", [])) for b in blocks)
+
+
+# ---------------------------------------------------------------- 16.10, вечер: разделы, линии таблиц, распознанные PDF
+def test_front_matter_section_and_page_numbers_restart(tmp_path):
+    """Вводная часть ÜFK (оглавление и лист изменений, подвал «Tartalomjegyzék» без номера) — своим разделом;
+    нумерация тела — с числа оригинала («1. oldal» на 7-м листе)."""
+    blocks = [p("ÜZEMELTETÉSI FELTÉTELEK", 1, 300), p("Módosítás Nyilvántartás", 2, 100), p("Bevezetés", 3, 100)]
+    mem = B.Memory([("ÜZEMELTETÉSI FELTÉTELEK", "ПРЕДЕЛЫ"), ("Módosítás Nyilvántartás", "Лист изменений"),
+                    ("Bevezetés", "Введение"), ("Tartalomjegyzék", "Содержание"), ("85. oldal", "Страница 85")])
+    L = dict(LAYOUT, stamp=[{"cells": ["85. oldal"], "bold": False}], stamp_widths=[400], stamp_aligns=["right"],
+             page_tok="85.", num_start={"page": 3, "value": 1},
+             front={"to": 2, "stamp": [{"cells": ["Tartalomjegyzék"], "bold": False}], "stamp_widths": [400],
+                    "stamp_aligns": ["center"], "stamp_box": True, "stamp_inner": False})
+    out = tmp_path / "f.docx"
+    B.Builder(mem, lambda img: png(), PROFILE).build(blocks, str(out), L)
+    doc = Document(str(out))
+    assert len(doc.sections) == 3
+    front, body = doc.sections[1], doc.sections[2]
+    assert "Содержание" in front.footer._element.xml and "PAGE" not in front.footer._element.xml
+    assert "PAGE" in body.footer._element.xml
+    assert body._sectPr.find(W + "pgNumType").get(W + "start") == "1"
+    assert front._sectPr.find(W + "pgNumType") is None
+
+
+def test_toc_split_by_pages_is_one_and_headings_outside_it_have_no_level(tmp_path):
+    """Оглавление, размеченное по листам, — одно поле (было четыре: 556 пунктов вместо 206); заголовок, которого в
+    оглавлении оригинала нет, — без уровня структуры (регистр не важен: «1.1. BEVEZETÉS» / «1.1. Bevezetés»)."""
+    toc = lambda keys, lv: {"k": "toc", "info": {"levels": lv, "keys": keys, "extra": [], "bold": [True] * lv,
+                                                 "indent": [0] * lv, "figures": False, "page": 2},
+                            "geom": {"page": 2}}
+    got = D.join_tocs([toc(["1.1.BEVEZETÉS"], 2), toc(["4.1.1.Areaktor"], 3)])
+    assert len(got) == 1 and got[0]["info"]["levels"] == 3 and len(got[0]["info"]["keys"]) == 2
+    h = lambda t, lv: {"k": "h", "level": lv, "runs": [{"t": t, "font": "Tahoma", "size": 12, "b": True}],
+                       "geom": {"page": 3, "top": 100}}
+    mem = B.Memory([("1.1. Bevezetés", "1.1. Введение"), ("1.1.1. Megjegyzés", "1.1.1. Примечание"),
+                    ("A reaktor", "Реактор")])
+    heads = [h("1.1. Bevezetés", 2), h("A reaktor", 3), h("1.1.1. Megjegyzés", 3)]   # «A reaktor» — номер у автонумерации
+    out = tmp_path / "t.docx"
+    B.Builder(mem, lambda img: png(), PROFILE).build(got + heads, str(out), LAYOUT)
+    doc = Document(str(out))
+    styles = {x.text.split()[-1]: x.style.name for x in doc.paragraphs if x.text}
+    assert styles["Введение"] == "Heading 2" and styles["Реактор"] == "Heading 3"
+    assert styles["Примечание"] == "Heading 3 NoTOC"
+    assert doc.element.body.xml.count("TOC \\o") == 1
+    # пунктов оглавления среди заголовков нашлось меньше 60 % — сверка выключена: поле TOC не пустеет
+    B.Builder(mem, lambda img: png(), PROFILE).build(got + [h("1.1.1. Megjegyzés", 3)], str(out), LAYOUT)
+    assert not any(x.style.name.endswith("NoTOC") for x in Document(str(out)).paragraphs)
+    # а лишние заголовки (абзацы стилем заголовка, ИН-АСУТП-1172) сверку не выключают
+    many = heads + [h(f"Abszatz {i} szövege", 2) for i in range(6)]
+    B.Builder(mem, lambda img: png(), PROFILE).build(got + many, str(out), LAYOUT)
+    styles = [x.style.name for x in Document(str(out)).paragraphs if x.text.startswith("Abszatz")]
+    assert styles and all(st.endswith("NoTOC") for st in styles)
+
+
+def test_cell_edges_follow_original_rules_and_builder_draws_them(tmp_path):
+    """Линии вокруг ячеек — как в оригинале: у ÜFK нет внешних вертикалей и линии между «E.1.» и текстом; Word
+    рисовал полную сетку."""
+    g = lambda x0, x1, top: {"page": 5, "x0": x0, "x1": x1, "top": top, "bottom": top + 10, "first_x0": x0,
+                             "size": 10, "lines": 1}
+    rows = [[{"blocks": [p("Ellenőrzés", 5, 100, 150)], "th": True, "geom": g(150, 230, 100)},
+             {"blocks": [p("Ciklusidő", 5, 100, 420)], "th": True, "geom": g(420, 500, 100)}],
+            [{"blocks": [p("E.1.", 5, 120, 80)], "th": False, "geom": g(80, 100, 120)},
+             {"blocks": [p("Ellenőrizni kell", 5, 120, 120)], "th": False, "geom": g(120, 300, 120)},
+             {"blocks": [p("8 óra", 5, 120, 420)], "th": False, "geom": g(420, 450, 120)}]]
+    hs = [(96, 75, 520), (116, 75, 520), (135, 75, 520)]                  # над шапкой, между строками, под таблицей
+    vs = [(410, 96, 135)]                                                  # одна внутренняя вертикаль
+    D.cell_edges(rows, lambda pn: (hs, vs))
+    e = rows[1]
+    assert e[0]["edges"] == {"top": True, "bottom": True, "left": False, "right": False}
+    assert e[1]["edges"]["right"] and e[2]["edges"]["left"] and not e[2]["edges"]["right"]
+    mem = B.Memory([("Ellenőrzés", "Контроль"), ("Ciklusidő", "Периодичность"), ("E.1.", "E.1."),
+                    ("Ellenőrizni kell", "Необходимо проверить"), ("8 óra", "8 ч")])
+    rows[0][0]["span"], rows[0][1]["span"] = 2, 1
+    for c in rows[1]:
+        c["span"] = 1
+    tbl = {"k": "table", "rows": rows, "geom": {"page": 5, "top": 100}, "borders": True,
+           "frame": {"xs": [75, 110, 410, 520]}}
+    out = tmp_path / "e.docx"
+    B.Builder(mem, lambda img: png(), PROFILE).build([p("x", 5, 80), tbl], str(out), LAYOUT)
+    xml = Document(str(out)).tables[0]._tbl.xml
+    assert '<w:left w:val="nil"/>' in xml and "w:tcBorders" in xml and '<w:insideV w:val="nil"/>' in xml
+
+
+def test_ocr_lines_reordered_and_wrapped_toc_number_joined():
+    """Строка листа — слева направо, хоть OCR отдал «Turbina…» раньше «1.1.»; номер листа у перенесённого названия —
+    на его второй строке — в той же строке оглавления."""
+    import docx_layout as DL
+
+    def s(i, t, x0, y0, x1, frags=None):
+        frags = frags or [[x0, y0, x1, y0 + 7]]
+        return {"id": i, "page": 0, "text": t, "loc": {"bbox": [x0, y0, x1, frags[-1][3]], "frags": frags}}
+    segs = [s(11, "Turbina üzemzavari leállítása", 145, 214, 388), s(12, "1.1.", 93, 215, 112),
+            s(13, "5", 500, 215, 504), s(17, "1.3.", 93, 238, 112),
+            s(18, "Generátor teherledobás üresjáratig", 145, 238, 398, [[145, 238, 398, 245], [145, 250, 230, 257]]),
+            s(19, "11", 500, 250, 509)]
+    got = [[x["text"] for x in g] for g in DL._lines(segs)]
+    assert got == [["1.1.", "Turbina üzemzavari leállítása", "5"], ["1.3.", "Generátor teherledobás üresjáratig", "11"]]
+
+
+def ocr_page_doc(tmp_path):
+    """Лист распознанного PDF: обычный и полужирный набор и курсив (текст тут шрифтом, но сегменты — как от OCR),
+    таблица линиями, график — рамкой и кривой с «мусором» OCR."""
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    segs, y = [], 100
+    lines = [[("Check the oil pump and ", "cour"), ("START", "cobo"), (" it then.", "cour")]] + \
+        [[(f"Plain words written here as usual {i}.", "cour")] for i in range(12)] + \
+        [[("Megjegyzes: ", "cobo"), ("the reactor will be slanted text here", "coit")]]
+    for i, parts in enumerate(lines):
+        x = 90
+        for t, f in parts:
+            page.insert_text((x, y + 8), t, fontname=f, fontsize=9)
+            x += fitz.get_text_length(t, fontname=f, fontsize=9)
+        segs.append({"id": i, "page": 0, "text": "".join(t for t, _ in parts),
+                     "loc": {"bbox": [90, y, x, y + 10], "frags": [[90, y, x, y + 10]], "size": 9, "family": "monospace"}})
+        y += 14
+    for yy in (330, 350, 370):                                             # таблица 2×2
+        page.draw_line((90, yy), (400, yy), width=0.7)
+    for xx in (90, 250, 400):
+        page.draw_line((xx, 330), (xx, 370), width=0.7)
+    for i, (t, x0, y0) in enumerate((("Alfa", 100, 336), ("Beta", 260, 336), ("Gamma", 100, 356), ("Delta |", 260, 356))):
+        page.insert_text((x0, y0 + 8), t, fontname="cour", fontsize=9)
+        segs.append({"id": 100 + i, "page": 0, "text": t,
+                     "loc": {"bbox": [x0, y0, x0 + 40, y0 + 10], "frags": [[x0, y0, x0 + 40, y0 + 10]], "size": 9,
+                             "family": "monospace"}})
+    page.draw_rect(fitz.Rect(150, 420, 450, 700), width=0.8)               # график
+    page.draw_polyline([fitz.Point(160 + i * 5, 690 - (i * i) % 250) for i in range(58)], width=1.5)
+    segs.append({"id": 200, "page": 0, "text": "oO", "loc": {"bbox": [440, 430, 447, 436], "frags": [[440, 430, 447, 436]],
+                                                             "size": 5, "family": "monospace"}})
+    doc.save(tmp_path / "o.pdf")
+    return str(tmp_path / "o.pdf"), segs
+
+
+def test_ocr_bold_italic_table_and_figure_from_page(tmp_path):
+    """Распознанный лист: полужирное и курсив — по штриху на картинке (текстовый слой у 3SZ19 неполный), таблица — по
+    линиям, ячейки — по сетке («|» вертикали прочь), график — картинкой, «мусор» OCR внутри него — не абзац."""
+    import docx_layout as DL
+    src, segs = ocr_page_doc(tmp_path)
+    st = DL._pixel_style(fitz.open(src), segs)
+    assert [(t.strip(), b) for t, b, _ in st[0]] == [("Check the oil pump and", False), ("START", True), ("it then.", False)]
+    assert st[13][0][1] and not st[13][0][2] and st[13][-1][2] and not st[13][-1][1]
+    assert 1 not in st                                                      # обычная строка — без выделения
+    blocks, info = DL.load(src, segs)
+    tables = [b for b in blocks if b["k"] == "table"]
+    assert len(tables) == 1 and [[c["blocks"][0]["runs"][0]["t"] for c in r] for r in tables[0]["rows"]] == \
+        [["Alfa", "Beta"], ["Gamma", "Delta"]]
+    figs = [b for b in blocks if b.get("figure")]
+    assert len(figs) == 1 and figs[0]["runs"][0]["img"]["png"] and figs[0]["geom"]["top"] <= 421
+    assert not any("oO" in B.text_of(b.get("runs", [])) for b in blocks)
+
+
+def test_label_paragraphs_become_list():
+    """Абзацы «a.)», «b.)» подряд (дерево Word — простые абзацы) — список с той же меткой; продолжение пункта с
+    отступом — в пункт; один «a.)» с отступом под «Korlátozó feltétel:» — тоже список; «f.)» после «a.)–e.)» — в него."""
+    bs = [p("Korlátozó feltétel:", 9, 100, 57), p("a.) A fűtőelem tartaléka", 9, 120, 85),
+          p("folytatás a pont alatt", 9, 135, 110), p("b.) A kazetták tartaléka", 9, 150, 85), p("Más szöveg", 9, 170, 57),
+          p("Korlátozó feltétel:", 10, 100, 57), p("a.) Egyetlen pont", 10, 120, 85)]
+    got = D.para_lists(bs)
+    assert [b["k"] for b in got] == ["p", "list", "p", "p", "list"]
+    assert got[1]["kind"] == "LowerAlpha" and got[1]["suffix"] == ".)" and len(got[1]["items"]) == 2
+    assert len(got[1]["items"][0]) == 2                                     # продолжение — в пункте
+    lst = {"k": "list", "kind": "LowerAlpha", "suffix": ".)", "items": [[p(f"{c}.) x")] for c in "abcde"]}
+    got = D.para_lists([lst, p("f.) Az állapot", 14, 300, 57)])
+    assert len(got) == 1 and len(got[0]["items"]) == 6
+
+
+def test_roman_text_labels_make_roman_list():
+    """«• i. …», «• ii. …» — двойной маркер: пункты с римскими метками в тексте — римский список (ÜFK I, EF 2.2.2)."""
+    b = lst("Disc", [[p(f"{x}. ellenőrzés")] for x in ("i", "ii", "iii", "iv", "v")])
+    D.text_labels([b])
+    assert (b["kind"], b["suffix"]) == ("LowerRoman", ".")
+    b = lst("Disc", [[p("h. első")], [p("i. második")], [p("j. harmadik")]])
+    D.text_labels([b])
+    assert b["kind"] == "LowerAlpha"
+
+
+def test_ocr_line_split_paragraph_is_joined():
+    """OCR разрезал абзац по строкам — один абзац: тот же край, вплотную ниже, без точки в конце, со строчной буквы;
+    после точки или с заглавной — новый абзац."""
+    import docx_layout as DL
+    prev = {"k": "p", "runs": [{"t": "célja, hogy a Duna vízhőmérséklete ne", "b": False, "i": False}],
+            "geom": {"page": 145, "x0": 127.4, "x1": 547, "top": 274.6, "bottom": 285.6, "lines": 1}, "seg": True}
+    seg = lambda t, y: {"id": 1, "page": 144, "text": t, "loc": {"bbox": [127.4, y, 446, y + 11]}}
+    assert DL._continues(prev, seg("haladja meg a 29,5 °C-ot", 286.6), 11)
+    assert not DL._continues(prev, seg("Haladja meg", 286.6), 11)
+    assert not DL._continues(prev, seg("haladja meg", 320), 11)            # не вплотную
+    assert DL._continues(prev, seg("2.2 és 2.3 pontok figyelembe vétele mellett:", 286.6), 11)
+    assert not DL._continues(prev, seg("2.2. Ha a terhelés", 286.6), 11)    # номер пункта — новый абзац
+    DL._join(prev, [{"t": "haladja meg a 29,5 °C-ot", "b": False, "i": False}], {"bottom": 297.6, "x1": 446, "lines": 1})
+    assert prev["runs"][0]["t"] == "célja, hogy a Duna vízhőmérséklete ne haladja meg a 29,5 °C-ot"
+    assert prev["geom"]["lines"] == 2 and prev["geom"]["bottom"] == 297.6
+
+
+def test_table_without_cell_padding_in_profile(tmp_path):
+    """Профиль без полей ячеек (у документа нет таблиц с текстом в рамке: 3PR42) — таблица собирается, поля обычные."""
+    prof = dict(PROFILE, table={"pad_left": None, "pad_top": None, "pad_bottom": None})
+    rows = [[{"blocks": [p("Mért érték", 5, 100, 130)], "th": True, "geom": None, "span": 1,
+              "edges": {"top": True, "bottom": True, "left": True, "right": True}},
+             {"blocks": [p("80 MW", 5, 100, 260)], "th": True, "geom": None, "span": 1,
+              "edges": {"top": True, "bottom": True, "left": True, "right": True}}]]
+    tbl = {"k": "table", "rows": rows, "geom": {"page": 5, "top": 100}, "borders": True, "frame": {"xs": [120, 250, 400]}}
+    out = tmp_path / "t.docx"
+    B.Builder(B.Memory([("Mért érték", "Измеренное значение"), ("80 MW", "80 МВт")]), lambda img: png(), prof).build(
+        [p("x", 5, 80), tbl], str(out), LAYOUT)
+    assert "Измеренное значение" in Document(str(out)).tables[0]._tbl.xml
+
+
+def test_grid_table_without_full_row_and_courier_body_is_not_code(tmp_path):
+    """Сетка, где ни в одной строке нет всех столбцов (разрез в 1-й строке на 200, во 2-й на 250), — столбцов по сетке,
+    не падает; основной шрифт Courier (3SZ19) — не «код»: перевод с метками берётся целиком, без Consolas."""
+    cell = lambda t, span: {"blocks": [p(t, 5, 100, 100)], "th": False, "geom": None, "span": span,
+                            "edges": {"top": True, "bottom": True, "left": True, "right": True}}
+    tbl = {"k": "table", "rows": [[cell("Egy", 1), cell("Kettő", 2)], [cell("Három", 2), cell("Négy", 1)]],
+           "geom": {"page": 5, "top": 100}, "borders": True, "frame": {"xs": [90, 200, 250, 400]}}
+    mono = lambda t, b=False: {"t": t, "font": "Courier New", "size": 9, "b": b, "i": False, "color": "000000",
+                               "body_mono": True}
+    para = {"k": "p", "runs": [mono("Ha a nyomas magas, "), mono("ZÁRNI", True), mono(" a szelepet.")],
+            "geom": {"page": 5, "top": 300, "bottom": 310, "x0": 80, "x1": 400, "first_x0": 80, "size": 9}, "seg": True}
+    mem = B.Memory([("Egy", "Один"), ("Kettő", "Два"), ("Három", "Три"), ("Négy", "Четыре"),
+                    ("<f1>Ha a nyomas magas, </f1><f2>ZÁRNI</f2><f3> a szelepet.</f3>",
+                     "<f1>Если давление высокое, </f1><f2>ЗАКРЫТЬ</f2><f3> клапан.</f3>")])
+    out = tmp_path / "g.docx"
+    B.Builder(mem, lambda img: png(), PROFILE).build([p("x", 5, 80), tbl, para], str(out), LAYOUT)
+    doc = Document(str(out))
+    assert len(doc.tables[0].columns) == 3
+    par = next(x for x in doc.paragraphs if "ЗАКРЫТЬ" in x.text)
+    assert par.text == "Если давление высокое, ЗАКРЫТЬ клапан." and "Consolas" not in par._p.xml
+    assert [r.bold for r in par.runs if r.text.strip()] == [None, True, None]
+
+
+def test_floating_text_box_goes_back_to_its_page():
+    """Надпись Word, лежащая в дереве у места привязки (лист 40 между листами 2 и 3, руководство ТЭ357), — к своему
+    листу: оглавление снова одно поле."""
+    toc = lambda pg: {"k": "toc", "info": {"levels": 2, "keys": [f"k{pg}"], "extra": [], "bold": [True, False],
+                                           "indent": [0, 0], "figures": False, "page": pg}, "geom": {"page": pg}}
+    bs = [p("Cím", 1, 100), toc(2), p("", 40, 250), p("Текст строки", 40, 254), p("", None), toc(3),
+          p("Bevezetés", 4, 100), p("Szöveg", 40, 100), p("Vége", 41, 100)]
+    for b in bs:
+        if b.get("geom") and b["geom"]["page"] is None:
+            b["geom"] = None
+    got = D.join_tocs(D.reflow(bs))
+    pages = [(b.get("geom") or {}).get("page") for b in got if b["k"] != "toc"]
+    assert sum(1 for b in got if b["k"] == "toc") == 1
+    assert [x for x in pages if x] == sorted(x for x in pages if x)        # листы по порядку
+    texts = [B.text_of(b["runs"]) for b in got if b["k"] == "p"]
+    assert texts.index("Текст строки") > texts.index("Bevezetés")
+
+
+def test_scanned_pdf_keeps_old_path_outline_pdf_goes_by_segments(tmp_path):
+    """Распознанный PDF — по сегментам листа, только если это не сканы: у скана формы линии — пиксели, рукопись в
+    сегменты не попадает, и форма разваливалась (30RDGT, 30RDIT)."""
+    import docx_layout as DL
+    scan = fitz.open()
+    for _ in range(2):
+        pg = scan.new_page(width=595, height=842)
+        pg.insert_image(fitz.Rect(40, 60, 555, 800), stream=fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 50, 70), False)
+                        .tobytes("png"))
+    scan.save(tmp_path / "scan.pdf")
+    outline = fitz.open()
+    for _ in range(2):
+        pg = outline.new_page(width=595, height=842)
+        pg.draw_rect(fitz.Rect(100, 100, 300, 120))
+    outline.save(tmp_path / "outline.pdf")
+    assert not DL.suits(tmp_path / "scan.pdf", [0, 1])
+    assert DL.suits(tmp_path / "outline.pdf", [0, 1])
+    assert not DL.suits(tmp_path / "outline.pdf", [])                     # не распознан — прежний путь
+
+
+def _cell(text, page, x0, th=False):
+    g = {"page": page, "top": 100.0, "bottom": 110.0, "x0": x0, "x1": x0 + 90, "first_x0": x0, "size": 10, "lines": 1}
+    return {"blocks": [p(text, page, x0=x0)] if text else [], "th": th, "geom": g, "attrs": {}}
+
+
+def test_row_cut_by_page_tail_goes_back_to_its_cells():
+    """Строка, разрезанная листом: хвост («необходимо контроль» под 4-й ячейкой шапки) — в ту же ячейку; следующая
+    строка «1 | …» нового листа — своя, хотя ячейка выше без точки (синтетика, 16.10)."""
+    head = [_cell("Система", 1, 57, True), _cell("Расход", 1, 177, True), _cell("Вода", 1, 298, True),
+            _cell("Выполнение уровень", 1, 418, True)]
+    tail = [_cell("необходимо контроль", 2, 418)]
+    row1 = [_cell("1", 2, 57, True), _cell("Частота датчик.", 2, 177), _cell("Ручной.", 2, 418)]
+    got = D._cut_rows([head, tail, row1])
+    assert len(got) == 2
+    assert B.text_of(got[0][3]["blocks"][0]["runs"]) == "Выполнение уровень необходимо контроль"
+    assert B.text_of(got[1][0]["blocks"][0]["runs"]) == "1"
+
+
+def test_paragraph_cut_by_page_is_one():
+    """Абзац, разрезанный листом, Word размечает двумя P — снова один; начатый с прописной после точки — свой."""
+    a = p("Пуск регулятор блок уставка время выполняется расход", 3, 700)
+    b = p("температура производится частота.", 4, 60)
+    c = p("Давление пуск агрегат.", 5, 60)
+    got = D.join_pages([a, b, c])
+    assert [B.text_of(x["runs"]) for x in got] == [
+        "Пуск регулятор блок уставка время выполняется расход температура производится частота.",
+        "Давление пуск агрегат."]
+
+
+def test_numbered_and_bullet_items_in_one_word_list_split():
+    """Нумерованный и следом маркированный пункты Word кладёт одним L: вид пункта — по маркеру «•» в его тексте."""
+    bullet = p("x", 2, 300)
+    bullet["runs"] = [{"t": "•", "font": "Symbol", "size": 10, "b": False, "i": False, "color": "000000"},
+                      {"t": " Канал подача", "font": "Arial", "size": 10, "b": False, "i": False, "color": "000000"}]
+    got = D.relist([lst("Decimal", [[p("Турбина работа", 2, 260)], [p("Уставка документ", 2, 280)], [bullet]])])
+    assert [b["kind"] for b in got] == ["Decimal", "Disc"]
+    assert [len(b["items"]) for b in got] == [2, 1]
+
+
+def test_justified_two_word_line_is_not_tab():
+    """Строка из двух слов, растянутая выключкой до правого края ячейки, — не табуляция."""
+    def ch(t, x0, top):
+        return {"text": t, "x0": x0, "x1": x0 + 5, "top": top, "size": 10, "fontname": "Arial", "ncs": "DeviceGray",
+                "non_stroking_color": (0,), "page_number": 1}
+    line1 = [ch(c, 177 + 5 * i, 118) for i, c in enumerate("Агрегат")] + [ch(" ", 212, 118)] + \
+        [ch(c, 257 + 5 * i, 118) for i, c in enumerate("работа")]
+    line2 = [ch(c, 177 + 5 * i, 132) for i, c in enumerate("измерение.")]
+    runs = D._runs([{"ch": c} for c in line1 + line2])
+    assert "\t" not in B.text_of(runs)
+
+
+def test_text_from_next_page_nested_in_table_cell_goes_out():
+    """Подпись с листа 13, которую Word вложил в список последней ячейки таблицы листа 12, — в поток на своё место."""
+    cap = p("Рисунок 1 – Данные", 13, 608)
+    cell = {"blocks": [lst("Disc", [[p("Строка таблицы", 12, 190), lst("Disc", [[cap]])]])], "th": False,
+            "geom": {"page": 12, "top": 190.0, "bottom": 200.0, "x0": 80, "x1": 300, "first_x0": 80, "size": 10}}
+    table = {"k": "table", "rows": [[cell]], "geom": {"page": 12, "top": 180.0, "bottom": 200.0}}
+    got = D.evict([table, p("Данные в табличном виде", 13, 76), p("Назначение элементов", 13, 630)])
+    texts = [B.text_of(b["runs"]) for b in got if b["k"] == "p"]
+    assert texts == ["Данные в табличном виде", "Рисунок 1 – Данные", "Назначение элементов"]
+    inner = got[0]["rows"][0][0]["blocks"][0]["items"][0]
+    assert [x["k"] for x in inner] == ["p"]                  # пустой вложенный список-обёртка убран

@@ -189,6 +189,10 @@ def extract(inputs, work, progress=_quiet):
                 log(f"извлечение: {f.name} — размеченный PDF, разметка покрывает {cov:.1%} текста: DOCX по разметке")
             elif cov:
                 log(f"извлечение: {f.name} — разметка покрывает только {cov:.1%} текста: DOCX не по разметке")
+        if f.suffix.lower() == ".pdf" and info.get("ocr_pages") and __import__("docx_layout").suits(f, info["ocr_pages"]):
+            # распознанный PDF (текст листа — контурами, не скан): DOCX по сегментам листа (docx_layout); абзацы с
+            # выделенными словами — переводом с метками начертания (struct_fill), как у размеченного
+            struct = {"mode": "layout"}
         if f.suffix.lower() == ".pdf" and not info.get("ocr_pages") and not struct:
             # PDF с текстовым слоем: DOCX — из оригинала, его абзацы без пары в PDF переводятся своими сегментами
             import docx_src
@@ -348,7 +352,9 @@ def struct_fill(work, prj, progress=_quiet):
     сегментов страниц их нет (абзац со ссылкой Word из нескольких элементов дерева, «FIGYELEM!» жирным + текст, пункт
     с командой Consolas), — перевод порталом (сначала — память переводов проекта) своими сегментами (loc.struct_only,
     после текста своей страницы). Дальше они идут как все: проверка, шлифовка, таблица вычитки, правки редактора.
-    Второй круг — то, что сборка спросит из-за первого: перевод с метками вернулся без меток — тот же абзац без них."""
+    Второй круг — то, что сборка спросит из-за первого: перевод с метками вернулся без меток — тот же абзац без них.
+    Распознанный PDF (d["struct"]["mode"] == "layout", docx_layout) — так же: абзацы с полужирными и курсивными
+    словами (по картинке листа) переводятся с метками начертания."""
     import docx_build as B
     files = doc_files(work)
     for i, f in enumerate(files):
@@ -360,7 +366,7 @@ def struct_fill(work, prj, progress=_quiet):
         t0, tr, added = time.time(), None, 0
         for _ in range(2):
             try:
-                miss = B.missing(d["file"], d["segs"], d["res"])
+                miss = B.missing(d["file"], d["segs"], d["res"], st.get("mode") or "struct")
             except Exception as e:                  # noqa: BLE001 — сборка по разметке тогда откатится на прежний путь
                 st["error"] = f"{type(e).__name__}: {e}"[:200]
                 log(f"структура: {f.stem} — пробная сборка DOCX по разметке не удалась ({st['error']})")
