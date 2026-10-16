@@ -24,9 +24,19 @@ SKIP = {"Artifact"}
 INLINE = {"Link", "Span", "Reference", "Annot", "Quote", "Code", "BibEntry", "Note"}
 
 
+# начертание в имени шрифта PDF — и по-английски, и по-местному: Word 2016 с венгерским интерфейсом пишет
+# «Times New Roman félkövér» — это полужирный Times, а не шрифт с таким именем (ÜFK, 16.10)
+BOLD_W = r"Bold|Black|Heavy|Semibold|Demibold|félkövér|Fett|полужирный|Gras|Negrita|Grassetto"
+ITAL_W = r"Italic|Oblique|dőlt|Kursiv|курсив|Italique|Cursiva|Corsivo"
+
+
 def _fmt(ch):
     name = ch["fontname"].split("+")[-1]
-    fam = re.sub(r"(PSMT|PS|MT)$", "", re.split(r"[-,]", name)[0])
+    fam = re.split(r"[-,]", name)[0]
+    fam = re.sub(rf"\s+(?:{BOLD_W}|{ITAL_W}|Regular|Normál|Обычный)\b.*$", "", fam, flags=re.I).strip()
+    fam = re.sub(r"(PSMT|PS|MT)$", "", fam)
+    if " " not in fam:                          # «TimesNewRoman», «CourierNew» — имя шрифта Word с пробелами
+        fam = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", fam)
     col = ch.get("non_stroking_color")
     if isinstance(col, (list, tuple)) and len(col) == 3:
         color = "%02x%02x%02x" % tuple(int(round(float(v) * 255)) for v in col)
@@ -38,7 +48,7 @@ def _fmt(ch):
     m = ch.get("matrix") or (1, 0, 0, 1)
     slant = abs(float(m[1])) < 1e-6 and abs(float(m[2])) > 0.1 * abs(float(m[3]) or 1)
     return {"font": fam, "size": round(float(ch["size"]) * 2) / 2,
-            "b": bool(re.search(r"Bold|Black|Heavy", name)), "i": bool(re.search(r"Italic|Oblique", name)) or slant,
+            "b": bool(re.search(BOLD_W, name, re.I)), "i": bool(re.search(ITAL_W, name, re.I)) or slant,
             "color": color}
 
 
@@ -115,6 +125,14 @@ def join_tables(bs):
     for b in bs:
         if b["k"] == "list":
             b = dict(b, items=[join_tables(it) for it in b["items"]])
+        # пометка о переносе («Folytatás a következő oldalon.») между таблицей и её продолжением без шапки на следующем
+        # листе — прочь: в DOCX таблица переносится сама (ÜFK, 16.10)
+        if b["k"] == "table" and len(out) >= 2 and out[-1]["k"] == "p" and out[-2]["k"] == "table" \
+                and len(text_of(out[-1]["runs"]).strip()) < 60 and b["rows"] and out[-2]["rows"] \
+                and not all(c["th"] for c in b["rows"][0]) \
+                and (out[-2].get("geom") or {}).get("page", 0) <= (out[-1].get("geom") or {}).get("page", -1) \
+                < (b.get("geom") or {}).get("page", 0):
+            out.pop()
         prev = out[-1] if out else None
         if prev is not None and prev["k"] == "table" and b["k"] == "table" and prev["rows"] and b["rows"] \
                 and not all(c["th"] for c in b["rows"][0]) \
@@ -157,7 +175,40 @@ def attach_icons(blocks, imgs, height):
 
 
 NUMBERED = {"Decimal", "LowerAlpha", "UpperAlpha", "LowerRoman", "UpperRoman"}
-LABEL = re.compile(r"^\s*(\d{1,3}|[A-Za-z]|[ivxIVX]{2,5})[.)](?=\s|$)\s*")
+LABEL = re.compile(r"^\s*(\d{1,3}|[A-Za-z]|[ivxIVX]{2,5})(\.\)|[.)])(?=\s|$)\s*")
+DASH = re.compile(r"^\s*[–—\-](?=\s)")
+
+
+def text_labels(bs):
+    """Маркированный по дереву список, у всех пунктов которого номер или тире стоят прямо в тексте (Word не вынес
+    их в Lbl: ÜFK «a. kampányonként …», «– ha az …»), — буквенный, нумерованный или «тире» с тем же видом метки
+    («a.» / «a.)»): иначе в DOCX «• a. …» — двойной маркер (16.10). Номера из текста снимает relist."""
+    for b in bs:
+        if b["k"] == "table":
+            for r in b["rows"]:
+                for c in r:
+                    text_labels(c["blocks"])
+        if b["k"] != "list":
+            continue
+        for it in b["items"]:
+            text_labels(it)
+        if b["kind"] in NUMBERED or not b["items"]:
+            continue
+        firsts = [next((x for x in it if x["k"] == "p"), None) for it in b["items"]]
+        texts = [text_of(p["runs"]) if p else "" for p in firsts]
+        if all(DASH.match(t) for t in texts):
+            b["kind"] = "Dash"                              # тире из текста снимает сборка (LEAD)
+            continue
+        ms = [LABEL.match(t) for t in texts]
+        if not all(ms):
+            continue
+        labs = [m.group(1) for m in ms]
+        kind = ("Decimal" if all(x.isdigit() for x in labs) else
+                "LowerAlpha" if all(len(x) == 1 and x.islower() for x in labs) else
+                "UpperAlpha" if all(len(x) == 1 and x.isupper() for x in labs) else None)
+        vals = [label_value(x, kind) for x in labs] if kind else []
+        if kind and all(v2 == v1 + 1 for v1, v2 in zip(vals, vals[1:])):
+            b["kind"], b["suffix"] = kind, ms[0].group(2)
 ROMAN = {"i": 1, "v": 5, "x": 10}
 
 
@@ -201,7 +252,8 @@ def _flatten(lst, depth, out):
         body = [x for x in it if x["k"] not in ("list", "lbl")]
         key = next(((x["geom"]["page"], x["geom"]["top"]) for x in body
                     if x["k"] in ("p", "h") and x.get("geom") and x["geom"].get("page")), None)
-        out.append({"depth": depth, "kind": lst["kind"], "body": body, "key": key, "lbl": lbl})
+        out.append({"depth": depth, "kind": lst["kind"], "body": body, "key": key, "lbl": lbl,
+                    "suffix": lst.get("suffix")})
         for x in it:
             if x["k"] == "list":
                 _flatten(x, depth + 1, out)
@@ -223,6 +275,8 @@ def _nest(seq, pos, depth):
         lab = label_value(it["label"], it["kind"])
         if cur is None or cur["kind"] != it["kind"] or (lab is not None and lab != cur["start"] + len(cur["items"])):
             cur = {"k": "list", "kind": it["kind"], "items": [], "start": lab or 1}
+            if it.get("suffix"):
+                cur["suffix"] = it["suffix"]
             lists.append(cur)
         cur["items"].append(list(it["body"]))
         pos += 1
@@ -418,11 +472,13 @@ def load(path):
         extra = [] if figs else [(re.sub(r"\s*(\.{3,}\s*)?\d+\s*$", "", e["t"]).strip(), level(e["x0"]))
                                  for e in body if not re.match(r"\d+(\.\d+)*\s", e["t"])]
         width = float(pdf.pages[0].width)
+        first_page = ents[0]["page"] if ents else None
         steps = sorted(b["top"] - a["top"] for a, b in zip(body, body[1:]) if a["page"] == b["page"] and b["top"] > a["top"])
         return {"title": title and dict(title["f"], t=title["t"], center=abs(title["cx"] - width / 2) < 30),
                 "levels": len(lv), "bold": bold, "figures": figs, "extra": extra,
                 "indent": [round(x - lv[0], 1) for x in lv],                      # отступ уровня от 1-го, pt
-                "pitch": round(steps[len(steps) // 2], 1) if steps else None}     # шаг строк оглавления, pt
+                "pitch": round(steps[len(steps) // 2], 1) if steps else None,     # шаг строк оглавления, pt
+                "page": first_page}
 
     def own(el):
         """Абзац из собственных MCID контейнера (текст прямо в LBody/TD, без вложенного P)."""
@@ -477,7 +533,10 @@ def load(path):
                      "bottom": max(c.get("bottom", c["top"] + 12) for c in cells if c["page"] == cells[0]["page"])}
             return [{"k": "table", "rows": rows, "geom": g, "borders": borders(g), "frame": frame(g, rows) if g else {}}]
         if t in ("TOC", "TOCI"):
-            return [{"k": "toc", "info": toc_info(el)}] if t == "TOC" else []
+            if t != "TOC":
+                return []
+            info = toc_info(el)                 # лист — чтобы сборка видела конец титула (ÜFK: оглавление на 2-м листе)
+            return [{"k": "toc", "info": info, "geom": {"page": info["page"]} if info.get("page") else None}]
         out = []                                            # Document, Sect, Div, Span, Link, Art, Part…
         if t in INLINE:
             # ссылка/фрагмент рядом с абзацем, а не внутри него (перекрёстная ссылка Word «5.6.4.7 fejezet)» в пункте
@@ -501,6 +560,7 @@ def load(path):
         blocks += block(root)
     page = pdf.pages[0]
     attach_icons(blocks, artifacts["imgs"], float(page.height))
+    text_labels(blocks)
     blocks = join_tables(relist(blocks))
     info = {"width": float(page.width), "height": float(page.height), "pages": len(pdf.pages),
             "artifacts": artifacts}
@@ -529,12 +589,12 @@ def layout(path, blocks):
     right = W - max((g["x1"] for g in body), default=W - 59)
     title = [b["geom"] for b in flat(blocks) if b.get("geom") and b["geom"]["page"] == 1 and b["k"] == "p"
              and any("t" in r and r["t"].strip() for r in b["runs"])]
-    page = pdf.pages[min(1, len(pdf.pages) - 1)]
-    arts = [c for c in page.chars if c.get("mcid") is None]
-    tops = sorted(g["top"] for g in body)
     body_top = min((g["top"] for g in body), default=110)
+    page, page_tok = _typical_page(pdf, body_top, H)
+    arts = [c for c in page.chars if c.get("mcid") is None]
     head_chars = [c for c in arts if c["top"] < body_top]
-    foot_chars = [c for c in arts if c["top"] > H * 0.8]
+    ftop = _foot_top(arts, page.rects + page.lines, H)
+    foot_chars = [c for c in arts if c["top"] >= ftop]
     head_imgs = [{"xref": i["stream"].objid, "x0": float(i["x0"]), "x1": float(i["x1"]), "top": float(i["top"]),
                   "bottom": float(i["bottom"])} for i in page.images if i.get("mcid") is None and float(i["top"]) < body_top]
     hw = pdfplumber.utils.extract_words(head_chars, x_tolerance=2.5, y_tolerance=2) if head_chars else []
@@ -544,31 +604,112 @@ def layout(path, blocks):
     head_lines = [{"t": " ".join(w["text"] for w in sorted(ws, key=lambda w: w["x0"])),
                    "size": round(float(ws[0].get("size", 10)) if "size" in ws[0] else 11)}
                   for _, ws in sorted(lines.items())]
-    # штамп: столбцы — по рамкам ячеек, строки — по словам
-    rects = [r for r in page.rects if float(r["top"]) > H * 0.8]
-    xs = sorted({round(float(v)) for r in rects for v in (r["x0"], r["x1"])})
-    cols = []
-    for x in xs:
-        if not cols or x - cols[-1] > 8:
-            cols.append(x)
-    words = pdfplumber.utils.extract_words(foot_chars, x_tolerance=2.5, y_tolerance=2) if foot_chars else []
-    rows = {}
-    for w in words:
-        rows.setdefault(round(float(w["top"]) / 3), []).append(w)
-    grid = []
-    for _, ws in sorted(rows.items()):
-        cells = [""] * max(len(cols) - 1, 1)
-        bold = any("Bold" in c["fontname"] for c in foot_chars if abs(c["top"] - ws[0]["top"]) < 2)
-        for w in sorted(ws, key=lambda w: w["x0"]):
-            ci = max(0, min(len(cells) - 1, sum(1 for x in cols[1:-1] if float(w["x0"]) >= x - 2)))
-            cells[ci] = (cells[ci] + " " + w["text"]).strip()
-        grid.append({"cells": cells, "bold": bold})
-    widths = [cols[i + 1] - cols[i] for i in range(len(cols) - 1)] if len(cols) > 1 else []
+    # штамп: столбцы — по рамкам ячеек (нет внутренних линий — по разрывам между группами слов), строки — по словам
+    foot = _zone_grid(foot_chars, [r for r in page.rects + page.lines if float(r["top"]) >= ftop])
+    # шапка без логотипов (ÜFK: строка-таблица «Üzemeltetési Feltételek … | 1.2. változat») — такой же сеткой
+    head = _zone_grid(head_chars, [r for r in page.rects + page.lines if float(r["bottom"]) < body_top]) \
+        if head_chars and not head_imgs else None
     foot_top = min((float(c["top"]) for c in foot_chars), default=H - 100)
     foot_bottom = max((float(c["bottom"]) for c in foot_chars), default=H - 40)
     head_top = min([i["top"] for i in head_imgs] + [float(c["top"]) for c in head_chars] or [36])
     return {"W": W, "H": H, "left": left, "right": max(right, 20), "top": body_top - 4,
             "bottom": H - foot_top + 12, "header": head_top, "footer": max(H - foot_bottom - 6, 18),
             "title_left": Counter(round(g["x0"]) for g in title).most_common(1)[0][0] if title else left,
-            "head_imgs": head_imgs, "head_lines": head_lines, "stamp": grid, "stamp_widths": widths,
-            "stamp_font": "Times New Roman"}
+            "head_imgs": head_imgs, "head_lines": head_lines, "head_grid": head,
+            "stamp": foot["rows"], "stamp_widths": foot["widths"], "stamp_aligns": foot["aligns"],
+            "stamp_font": foot["font"] or "Times New Roman", "stamp_size": foot["size"], "stamp_box": foot["box"],
+            "stamp_inner": foot["inner"], "page_tok": page_tok}
+
+
+def _typical_page(pdf, body_top, H, sample=15):
+    """Лист для колонтитулов — с самыми частыми колонтитулами (текст без цифр), а не второй по счёту: у ÜFK
+    второй лист — оглавление, и в подвал всех листов попадало «Tartalom» («Содержание», 16.10). Заодно — номер
+    листа: число колонтитула, которое растёт вместе с листом («13. oldal» на 19-м листе) → (лист, его текст)."""
+    import pdfplumber
+    n = len(pdf.pages)
+    idx = sorted({round(1 + k * (n - 2) / max(sample - 1, 1)) for k in range(sample)} & set(range(1, n))) or [0]
+    sig, words = {}, {}
+    for i in idx:
+        pg = pdf.pages[i]
+        art = [c for c in pg.chars if c.get("mcid") is None]
+        ftop = _foot_top(art, pg.rects + pg.lines, H)
+        arts = [c for c in art if c["top"] < body_top or c["top"] >= ftop]
+        sig[i] = re.sub(r"\d+", "#", "".join(c["text"] for c in arts))
+        words[i] = [w["text"] for w in pdfplumber.utils.extract_words(arts, x_tolerance=2.5, y_tolerance=2)] if arts else []
+    common = Counter(s for s in sig.values() if s.strip()).most_common(1)
+    same = [i for i in idx if common and sig[i] == common[0][0]] or idx
+    rep = same[len(same) // 2]
+    tok = None
+    if len(same) >= 3 and len({len(words[i]) for i in same}) == 1:
+        for j, w in enumerate(words[rep]):
+            vals = [re.fullmatch(r"(\d+)\.?", words[i][j]) for i in same]
+            if all(vals) and len({int(v[1]) - i for v, i in zip(vals, same)}) == 1:
+                tok = w
+                break
+    return pdf.pages[rep], tok
+
+
+def _foot_top(arts, rects, H):
+    """Верх подвала: нижняя группа строк-артефактов и линий без разрыва больше 15 pt. Порог «ниже 80 % листа»
+    захватывал низ таблицы и пометку «Folytatás a következő oldalon» — их линии резали подвал на лишние ячейки
+    (ÜFK I, 16.10)."""
+    ys = sorted({round(float(c["top"])) for c in arts if float(c["top"]) > H * 0.7}
+                | {round(float(r["top"])) for r in rects if float(r["top"]) > H * 0.7}, reverse=True)
+    if not ys:
+        return H
+    top = ys[0]
+    for y in ys[1:]:
+        if top - y > 15:
+            break
+        top = y
+    return top - 1
+
+
+def _zone_grid(chars, rects):
+    """Сетка колонтитула: столбцы — по вертикальным краям рамок; если внутренних линий нет — по разрывам между
+    группами слов (> 18 pt) внутри рамки; строки — по словам; выравнивание столбца — по положению текста; шрифт
+    и кегль — по знакам колонтитула. {"rows": [{"cells", "bold"}], "widths", "aligns", "font", "size", "box"}."""
+    import pdfplumber
+    out = {"rows": [], "widths": [], "aligns": [], "font": None, "size": None, "box": bool(rects), "inner": False}
+    words = pdfplumber.utils.extract_words(chars, x_tolerance=2.5, y_tolerance=2) if chars else []
+    if not words:
+        return out
+    xs = sorted({round(float(r["x0"])) for r in rects} | {round(float(r["x1"])) for r in rects})
+    cols = []
+    for x in xs:
+        if not cols or x - cols[-1] > 8:
+            cols.append(x)
+    out["inner"] = len(cols) >= 3
+    if len(cols) < 3:                                       # нет внутренних линий — разрывы между словами
+        box = len(cols) == 2                                # края рамки — или края текста
+        lo = cols[0] if box else round(min(float(w["x0"]) for w in words)) - 4
+        hi = cols[-1] if box else round(max(float(w["x1"]) for w in words)) + 4
+        spans = sorted((float(w["x0"]), float(w["x1"])) for w in words)
+        cols, end = [lo], spans[0][1]
+        for a, b in spans[1:]:
+            if a - end > 18:
+                cols.append(round((a + end) / 2))
+            end = max(end, b)
+        cols.append(hi)
+    rows = {}
+    for w in words:
+        rows.setdefault(round(float(w["top"]) / 3), []).append(w)
+    ncell = max(len(cols) - 1, 1)
+    side = [[] for _ in range(ncell)]
+    for _, ws in sorted(rows.items()):
+        cells = [""] * ncell
+        bold = any("Bold" in c["fontname"] for c in chars if abs(c["top"] - ws[0]["top"]) < 2)
+        for w in sorted(ws, key=lambda w: w["x0"]):
+            ci = max(0, min(ncell - 1, sum(1 for x in cols[1:-1] if float(w["x0"]) >= x - 2)))
+            cells[ci] = (cells[ci] + " " + w["text"]).strip()
+            side[ci].append((float(w["x0"]) - cols[ci], cols[ci + 1] - float(w["x1"])))
+        out["rows"].append({"cells": cells, "bold": bold})
+    for ci, gaps in enumerate(side):
+        left = min((g[0] for g in gaps), default=0)
+        right = min((g[1] for g in gaps), default=0)
+        out["aligns"].append("right" if right < 10 < left - 10 else "center" if abs(left - right) < 6 and left > 10 else "left")
+    out["widths"] = [cols[i + 1] - cols[i] for i in range(ncell)]
+    f = Counter((_fmt(c)["font"], _fmt(c)["size"]) for c in chars if c["text"].strip()).most_common(1)
+    if f:
+        out["font"], out["size"] = f[0][0]
+    return out

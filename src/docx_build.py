@@ -9,7 +9,8 @@ from collections import Counter
 from docx_struct import text_of, insert_imgs
 
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
-BULLETS = {"Disc": ("", "Symbol"), "Circle": ("o", "Courier New"), "Square": ("", "Wingdings")}
+BULLETS = {"Disc": ("", "Symbol"), "Circle": ("o", "Courier New"), "Square": ("", "Wingdings"),
+           "Dash": ("–", None)}                     # тире из текста пункта (ÜFK «– ha az …») — шрифтом абзаца
 NUMFMT = {"Decimal": "decimal", "LowerAlpha": "lowerLetter", "UpperAlpha": "upperLetter",
           "LowerRoman": "lowerRoman", "UpperRoman": "upperRoman"}
 LEAD = re.compile(r"^\s*[•▪◦·o\-–](?:\s+|$)")
@@ -111,6 +112,62 @@ def _text_w(text, size):
         import fitz
         _HELV = fitz.Font("helv")
     return sum(_HELV.text_length(ch, fontsize=size) if ord(ch) < 256 else 0.6 * size for ch in text)
+
+
+def _span_starts(row, xs, ncol):
+    """Ячейки неполной строки — по столбцам рамки (xs): разбиение столбцов на len(row) подряд идущих групп, текст
+    ячейки внутри своей группы и ближе всего к её середине или левому краю. Шапка ÜFK «Eltérő állapot» стоит над
+    двумя столбцами «A. | текст» — раньше объединялся только хвост строки, и шапка съезжала (16.10). Без рамки —
+    хвост строки, как раньше. Возвращает столбец начала каждой ячейки."""
+    k = len(row)
+    tail = list(range(k))
+    if len(xs) != ncol + 1 or k == 0:
+        return tail
+    geo = [c.get("geom") for c in row]
+    if all(g is None for g in geo):
+        return tail
+    from functools import lru_cache
+
+    def cost(i, a, z):
+        g = geo[i]
+        if g is None:
+            return 5.0 * (z - a)                             # пустая ячейка — по столбцу, если ничто не мешает
+        gl, gr = xs[a], xs[z + 1]
+        inside = 0 if gl - 3 <= g["x0"] and g["x1"] <= gr + 3 else 1000
+        return inside + min(abs((gl + gr) / 2 - (g["x0"] + g["x1"]) / 2), abs(g["x0"] - gl - 5))
+
+    @lru_cache(None)
+    def best(i, a):
+        if i == k:
+            return (0.0, ()) if a == ncol else (float("inf"), ())
+        out = (float("inf"), ())
+        for z in range(a, ncol - (k - i - 1)):
+            c, rest = best(i + 1, z + 1)
+            c += cost(i, a, z)
+            if c < out[0]:
+                out = (c, (a,) + rest)
+        return out
+
+    c, starts = best(0, 0)
+    return list(starts) if c < 1000 else tail
+
+
+def _autonum_ok(blocks):
+    """Автонумерация заголовков воспроизводит номера оригинала (UTS: 157 из 157) — иначе номера остаются текстом:
+    у ÜFK «DF 1.2.1.», «BK 3.1.1.» — автонумерация давала «1.2.1 DF 1.2.1. …» (16.10); заголовки без номеров
+    автонумерация нумеровала сама."""
+    cnt, ok, n = [0] * 6, 0, 0
+    for b in blocks:
+        if b["k"] != "h":
+            continue
+        lv = min(b["level"], 5)
+        cnt[lv - 1] += 1
+        for i in range(lv, 6):
+            cnt[i] = 0
+        m = re.match(r"\s*(\d+(?:\.\d+)*)\.?\s", text_of(b["runs"]))
+        n += 1
+        ok += bool(m and m[1] == ".".join(str(c) for c in cnt[:lv]))
+    return n > 0 and ok >= 0.9 * n
 
 
 def _keep_tab(src, ru):
@@ -407,11 +464,12 @@ class Builder:
         stepx = (v["text"] - lists[str(known[0])]["text"]) / top if top else 36
         return v["marker"] + stepx * (lv - top), v["text"] + stepx * (lv - top)
 
-    def _list_num(self, kind, start=1, level=0):
+    def _list_num(self, kind, start=1, level=0, suffix="."):
         """Новый экземпляр списка вида kind: нумерация — с номера первого пункта оригинала (start, на уровне level;
-        список после рисунка продолжает «7.»), маркеры уровней • o ▪."""
+        список после рисунка продолжает «7.»), вид метки — как в оригинале («a.» / «a.)»), маркеры уровней • o ▪."""
         num = self.doc.part.numbering_part.element
-        if kind not in self._abstract:
+        key = (kind, suffix or ".")
+        if key not in self._abstract:
             aid = 901 + len(self._abstract)
             an = _el("w:abstractNum", w__abstractNumId=aid)
             an.append(_el("w:multiLevelType", w__val="hybridMultilevel"))
@@ -421,7 +479,8 @@ class Builder:
                 fontn = None
                 if kind in NUMFMT:
                     fmt = NUMFMT[kind] if lv == 0 else ["lowerLetter", "lowerRoman", "decimal"][(lv - 1) % 3]
-                    l.append(_el("w:numFmt", w__val=fmt)); l.append(_el("w:lvlText", w__val=f"%{lv + 1}."))
+                    l.append(_el("w:numFmt", w__val=fmt))
+                    l.append(_el("w:lvlText", w__val=f"%{lv + 1}" + ((suffix or ".") if lv == 0 else ".")))
                 else:
                     ch, fontn = BULLETS.get(kind if lv == 0 else ["Circle", "Square", "Disc"][(lv - 1) % 3],
                                             BULLETS["Disc"])
@@ -436,9 +495,9 @@ class Builder:
                 an.append(l)
             first_num = num.find(W + "num")
             (first_num.addprevious if first_num is not None else num.append)(an)
-            self._abstract[kind] = aid
+            self._abstract[key] = aid
         nid = 1000 + len(self.nums)
-        n = _el("w:num", w__numId=nid); n.append(_el("w:abstractNumId", w__val=self._abstract[kind]))
+        n = _el("w:num", w__numId=nid); n.append(_el("w:abstractNumId", w__val=self._abstract[key]))
         for lv in range(4):
             o = _el("w:lvlOverride", w__ilvl=lv)
             o.append(_el("w:startOverride", w__val=start if lv == min(level, 3) else 1)); n.append(o)
@@ -598,17 +657,27 @@ class Builder:
     def _centered(self, b):
         from docx_profile import centered
         g = b.get("geom") or {}
+        if (g.get("page") or 0) == 1 and g.get("x0") is not None:
+            # титул: центр — по листу (у титула свои поля); «Érvényes … visszavonásig» ÜFK стоял влево (16.10)
+            return abs((g["x0"] + g["x1"]) / 2 - self.L["W"] / 2) < 15 and g["x1"] - g["x0"] < 0.7 * self.L["W"]
         return (g.get("page") or 0) >= 2 and centered(g, self.L)
 
     def heading(self, b):
         full = text_of(b["runs"]).strip()
         get = getattr(self.tr, "get", None)
         ru = get(full) if get else None                      # в памяти PDF заголовок — с номером
+        auto = getattr(self, "autonum", True)
         if ru:
             par = self.doc.add_paragraph(style=f"Heading {min(b['level'], 5)}")
-            par.add_run(re.sub(r"^\s*\d+(?:\.\d+)*\.?\s*", "", ru))
+            par.add_run(re.sub(r"^\s*\d+(?:\.\d+)*\.?\s*", "", ru) if auto else ru)
             return
         runs = [dict(r) for r in b["runs"] if "t" in r]
+        if not auto:                                         # номер оригинала — текстом, его не даёт нумерация
+            for r in runs:
+                r["b"] = False
+            par = self.doc.add_paragraph(style=f"Heading {min(b['level'], 5)}")
+            self._put_runs(par, runs)
+            return
         while runs and re.fullmatch(r"\s*\d+(?:\.\d+)*\s*", runs[0]["t"]):
             runs = runs[1:]                                  # номер отдельным прогоном — его даёт нумерация стиля
         if runs:
@@ -620,7 +689,7 @@ class Builder:
 
     def list_(self, b, level=0, tgt=None):
         from docx.shared import Pt
-        nid = self._list_num(b["kind"], b.get("start", 1), level)
+        nid = self._list_num(b["kind"], b.get("start", 1), level, b.get("suffix") or ".")
         tgt = tgt if tgt is not None else self.doc
         for item in b["items"]:
             first = True
@@ -693,6 +762,7 @@ class Builder:
         # Ф10: ширины столбцов — по рамке оригинала; без рамки — по левым краям ячеек полных строк
         xs = fr.get("xs") or []
         widths = None
+        bounds = xs if len(xs) == ncol + 1 else []           # границы столбцов — для объединённых ячеек
         if len(xs) == ncol + 1:
             widths = [xs[i + 1] - xs[i] for i in range(ncol)]
         else:
@@ -700,7 +770,12 @@ class Builder:
             lefts = [min([r[c]["geom"]["x0"] for r in full if r[c].get("geom")] or [None], key=lambda v: v or 0)
                      for c in range(ncol)]
             if all(v is not None for v in lefts) and len(set(round(v) for v in lefts)) == ncol:
-                rights = lefts[1:] + [max(r[-1]["geom"]["x1"] for r in full if r[-1].get("geom")) + 6]
+                # рамка неполная (ÜFK: линии только между группами шапки) — границы по левым краям текста полных строк;
+                # правый край — по самому правому тексту таблицы, шапки тоже (у столбца «8 óra» шапка
+                # «Ellenőrzési ciklusidő» шире — по полным строкам столбец выходил в 27 pt, шапка рассыпалась)
+                right = max(c["geom"]["x1"] for r in rows for c in r if c.get("geom")) + 6
+                bounds = lefts + [right]
+                rights = lefts[1:] + [right]
                 if not b.get("borders", True) and self.L:
                     # раскладка без рамок (значок ⇥ подпись): последний столбец — до правого поля, а не по длине
                     # венгерского текста (русский длиннее и переносился в узком столбце, UTS стр. 93); отступ — как в оригинале
@@ -725,8 +800,11 @@ class Builder:
         aligns = _col_align(rows, xs, (b.get("geom") or {}).get("page"))
         in_head = True
         for ri, row in enumerate(rows):
-            if len(row) < ncol:                              # объединённая ячейка: хвост строки
-                t.cell(ri, len(row) - 1).merge(t.cell(ri, ncol - 1))
+            starts = _span_starts(row, bounds, ncol) if len(row) < ncol else list(range(len(row)))
+            for ci, a in enumerate(starts):                  # объединённые ячейки строки — по столбцам рамки
+                z = starts[ci + 1] - 1 if ci + 1 < len(starts) else ncol - 1
+                if z > a:
+                    t.cell(ri, a).merge(t.cell(ri, z))
             in_head = in_head and all(c["th"] for c in row)
             head = in_head and ri < 3 and len(rows) > 1
             if head and len(rows) > 3:
@@ -736,7 +814,7 @@ class Builder:
             if size < 600 and not any("img" in r for c in row for x in c["blocks"] if x["k"] == "p" for r in x["runs"]):
                 t.rows[ri]._tr.get_or_add_trPr().append(_el("w:cantSplit"))
             for ci, cell in enumerate(row):
-                dc = t.cell(ri, ci)
+                dc = t.cell(ri, starts[ci])
                 first = dc.paragraphs[0]
                 used = False
                 style = head_style if head else cell_style
@@ -767,11 +845,13 @@ class Builder:
         self.doc.add_paragraph(style="Table Text")        # Word: после таблицы — абзац
 
     def _fit_words(self, rows, widths, size):
-        """Столбец не уже самого длинного слова перевода (с полями ячейки): «Редакция» в узком столбце «Törés / verzió»
-        рвалась «Редакци / я» (UTS, 16.10). Недостающее — у столбца с самым большим запасом; ширина таблицы та же."""
+        """Столбец не уже самого длинного слова перевода с полями ячейки: «Редакция» в узком столбце «Törés / verzió»
+        рвалась «Редакци / я» (UTS), метка «A.1.» — «A. / 1.» (ÜFK, 16.10). Недостающее — у столбца с самым большим
+        запасом; ширина таблицы та же."""
         get = getattr(self.tr, "get", None)
         if get is None:
             return
+        pad = 2 * (self.P.get("table") or {}).get("pad_left", 5.4) + 5     # поля ячейки слева и справа (_cell_margins)
         ncol = len(widths)
         need = [0.0] * ncol
         for row in rows:
@@ -785,7 +865,7 @@ class Builder:
                     ru = TAGS.sub("", (get(src) if src else None) or src)
                     bold = any(r.get("b") for r in x["runs"] if r.get("t", "").strip())
                     w = max((_text_w(wd, size) for wd in ru.split()), default=0) * (1.1 if bold else 1.0)
-                    need[ci] = max(need[ci], w + 12)
+                    need[ci] = max(need[ci], w + pad)
         for c in range(ncol):
             short = need[c] - widths[c]
             if short <= 0:
@@ -795,6 +875,17 @@ class Builder:
             if give > 0:
                 widths[c] += give
                 widths[d] -= give
+
+    def _title_styles(self, blocks):
+        """Стили крупного, «переднего» и мелкого текста (титул) — шрифтом, кеглем и начертанием оригинала: было
+        зашито Verdana 18 полужирный под UTS, а титул ÜFK набран Times New Roman (16.10)."""
+        pick = {"Title UTS": lambda s: s >= 17, "Front UTS": lambda s: 13 <= s < 17, "Small UTS": lambda s: s <= 8}
+        for name, ok in pick.items():
+            runs = [r for b in _paras(blocks) if b["k"] == "p" and (b.get("geom") or {}).get("size")
+                    and ok(b["geom"]["size"]) for r in b["runs"] if r.get("t", "").strip()]
+            if runs:
+                font, size, bold = Counter((r.get("font"), r.get("size"), bool(r.get("b"))) for r in runs).most_common(1)[0][0]
+                self._font(self.doc.styles[name], font or "Tahoma", size or 10, bold)
 
     def _aligned(self, style, al):
         """Стиль ячейки с выравниванием столбца оригинала (стилем, а не прямым оформлением абзаца)."""
@@ -894,13 +985,79 @@ class Builder:
             b.append(_el(f"w:{side}", w__val="nil"))
         tblpr.append(b)
 
+    def _zone_table(self, part, grid, style, page_tok=None):
+        """Таблица колонтитула по сетке оригинала (docx_struct._zone_grid): ширины и выравнивание столбцов, рамка —
+        все линии (штамп UTS) / только внешняя (строка-рамка ÜFK) / без рамки; номер листа — полем PAGE."""
+        from docx.shared import Pt
+        from docx.enum.text import WD_ALIGN_PARAGRAPH as AL
+        rows, widths, aligns = grid["rows"], grid.get("widths") or [], grid.get("aligns") or []
+        ncol = max(len(r["cells"]) for r in rows)
+        t = part.add_table(rows=len(rows), cols=ncol, width=Pt(sum(widths) or 400))
+        if grid.get("inner", True):
+            t.style = self.doc.styles["Table Grid"]
+        elif grid.get("box"):
+            b = _el("w:tblBorders")
+            for side in ("top", "left", "bottom", "right", "insideH", "insideV"):
+                b.append(_el(f"w:{side}", w__val="single" if side in ("top", "left", "bottom", "right") else "nil",
+                             w__sz=4, w__space=0, w__color="000000"))
+            t._tbl.tblPr.append(b)
+        else:
+            self._no_borders(t)
+        for c, w in zip(t.columns, widths):
+            for cell in c.cells:
+                cell.width = Pt(w)
+        if widths:                             # и сетка таблицы: LibreOffice берёт ширины из неё, а не из ячеек
+            t.autofit = False
+            for gc, w in zip(t._tbl.tblGrid.findall(W + "gridCol"), widths):
+                gc.set(W + "w", str(round(w * 20)))
+        al_of = {"right": AL.RIGHT, "center": AL.CENTER}
+        for ri, row in enumerate(rows):
+            for ci, txt in enumerate(row["cells"]):
+                p = t.cell(ri, ci).paragraphs[0]
+                p.style = self.doc.styles[style]
+                if ci < len(aligns) and aligns[ci] in al_of:
+                    p.alignment = al_of[aligns[ci]]
+                self._zone_text(p, txt, row["bold"], page_tok)
+        return t
+
+    def _zone_text(self, p, txt, bold, page_tok):
+        """Текст ячейки колонтитула: «N/NN» → PAGE/NUMPAGES (штамп UTS), число листа из колонтитула оригинала
+        («85. oldal», docx_struct._typical_page) → PAGE в переводе на том же месте; прочее — перевод."""
+        m = re.match(r"^(.*?)(\d+)\s*/\s*(\d+)\s*$", txt)
+        if m:
+            head = (m.group(1).strip() + "    ") if m.group(1).strip() else ""
+            r = p.add_run(head); r.bold = bold
+            f = _field(p, "PAGE", m.group(2)); f.bold = bold
+            r = p.add_run("/"); r.bold = bold
+            f = _field(p, "NUMPAGES", m.group(3)); f.bold = bold
+            p.alignment = 2
+            return
+        tok = (page_tok or "").rstrip(".")
+        num = re.compile(rf"(?<!\d){re.escape(tok)}(?!\d)") if tok else None
+        ru = (self.tr(txt) or txt) if txt else ""
+        mm = num.search(ru) if num and num.search(txt) else None
+        if mm:
+            r = p.add_run(ru[:mm.start()]); r.bold = bold
+            f = _field(p, "PAGE", tok); f.bold = bold
+            r = p.add_run(ru[mm.end():]); r.bold = bold
+        else:
+            r = p.add_run(ru); r.bold = bold
+
     def _header(self, sec, L, logos_only=False):
-        """Шапка: логотипы по краям, строки по центру (название и номер документа), линия снизу."""
+        """Шапка: логотипы по краям, строки по центру (название и номер документа), линия снизу; шапка без логотипов
+        (строка-таблица ÜFK) — таблицей по сетке оригинала."""
         from docx.shared import Pt
         from docx.enum.text import WD_ALIGN_PARAGRAPH as AL
         hdr = sec.header
         hdr.is_linked_to_previous = True                     # новый раздел копирует ссылку на шапку титула —
         hdr.is_linked_to_previous = False                    # своя часть, иначе обе шапки пишутся в одну
+        grid = L.get("head_grid")
+        if grid and grid.get("rows"):
+            if not logos_only:
+                t = self._zone_table(hdr, grid, "Header UTS", L.get("page_tok"))
+                hdr.paragraphs[0]._p.addprevious(t._tbl)
+                hdr.paragraphs[0].paragraph_format.space_after = Pt(0)
+            return
         width = L["W"] - L["left"] - L["right"]
         t = hdr.add_table(rows=1, cols=3, width=Pt(width))
         hdr.paragraphs[0]._p.addprevious(t._tbl)             # таблица — первой: пустой абзац под ней несёт линию
@@ -935,38 +1092,16 @@ class Builder:
             p.paragraph_format.line_spacing = 0.3
 
     def _footer(self, sec, L):
-        """Штамп листа: сетка по рамкам ячеек оригинала, номер листа «N/NN» — полями PAGE и NUMPAGES."""
+        """Штамп листа: сетка, выравнивание и рамка по оригиналу (_zone_table), номер листа — полем."""
         from docx.shared import Pt
         ftr = sec.footer
         ftr.is_linked_to_previous = True
         ftr.is_linked_to_previous = False
-        grid = L["stamp"]
-        if not grid:
+        if not L["stamp"]:
             return
-        ncol = max(len(r["cells"]) for r in grid)
-        t = ftr.add_table(rows=len(grid), cols=ncol, width=Pt(sum(L["stamp_widths"]) or 400))
-        t.style = self.doc.styles["Table Grid"]
-        for c, w in zip(t.columns, L["stamp_widths"]):
-            for cell in c.cells:
-                cell.width = Pt(w)
-        if L["stamp_widths"]:                  # и сетка таблицы: LibreOffice берёт ширины из неё, а не из ячеек
-            t.autofit = False
-            for gc, w in zip(t._tbl.tblGrid.findall(W + "gridCol"), L["stamp_widths"]):
-                gc.set(W + "w", str(round(w * 20)))
-        for ri, row in enumerate(grid):
-            for ci, txt in enumerate(row["cells"]):
-                p = t.cell(ri, ci).paragraphs[0]
-                p.style = self.doc.styles["Stamp UTS"]
-                m = re.match(r"^(.*?)(\d+)\s*/\s*(\d+)\s*$", txt)
-                if m:
-                    head = (m.group(1).strip() + "    ") if m.group(1).strip() else ""
-                    r = p.add_run(head); r.bold = row["bold"]
-                    f = _field(p, "PAGE", m.group(2)); f.bold = row["bold"]
-                    r = p.add_run("/"); r.bold = row["bold"]
-                    f = _field(p, "NUMPAGES", m.group(3)); f.bold = row["bold"]
-                    p.alignment = 2
-                else:
-                    r = p.add_run(self.tr(txt) or txt if txt else ""); r.bold = row["bold"]
+        self._zone_table(ftr, {"rows": L["stamp"], "widths": L["stamp_widths"], "aligns": L.get("stamp_aligns"),
+                               "inner": L.get("stamp_inner", True), "box": L.get("stamp_box", True)},
+                         "Stamp UTS", L.get("page_tok"))
         for p in list(ftr.paragraphs):
             p.paragraph_format.space_after = Pt(0)
 
@@ -979,8 +1114,24 @@ class Builder:
             L = dict(L, right=self.P["page"]["right"])      # правое поле — по краю выключки текста, не по таблицам
         self.L = L
         self._toc_styles(blocks)
+        self._title_styles(blocks)
+        self.autonum = _autonum_ok(blocks)
+        if not self.autonum:                    # номера заголовков — текстом, как в оригинале: стили без нумерации
+            for lv in range(1, 6):
+                ppr = self.doc.styles[f"Heading {lv}"].element.pPr
+                for np_ in ([] if ppr is None else ppr.findall(W + "numPr")):
+                    ppr.remove(np_)
+                if ppr is not None:
+                    for ind in ppr.findall(W + "ind"):
+                        ppr.remove(ind)
+        # шрифт штампа и шапки-таблицы — как в колонтитулах оригинала (было зашито под UTS: Times New Roman 10, Tahoma 10)
+        if L.get("stamp_font"):
+            self._font(self.doc.styles["Stamp UTS"], L["stamp_font"], L.get("stamp_size") or 10)
+        hg = L.get("head_grid") or {}
+        if hg.get("font"):
+            self._font(self.doc.styles["Header UTS"], hg["font"], hg.get("size") or 10)
         first = self.doc.sections[0]
-        prev_bottom = None
+        prev_bottom = 40                        # от верхнего поля титула: название ÜFK стоит с середины листа
         self._page(first, L, L["title_left"], 20, 40, 30)
         self.left = L["title_left"]
         in_title = True
@@ -996,9 +1147,11 @@ class Builder:
                 self._header(sec, L)
                 self._footer(sec, L)
             if in_title and b["k"] == "p" and _figure(b) is False and all("img" in r for r in b["runs"]):
+                prev_bottom = max(prev_bottom, g.get("bottom") or 0)   # отступ текста титула — от низа логотипов
                 continue                                     # логотипы титула — в шапку титула
             if in_title and b["k"] == "p" and all("img" in r for r in b["runs"]):
                 if g and g.get("top", 999) < 110:
+                    prev_bottom = max(prev_bottom, g.get("bottom") or 0)
                     continue
             if in_title and b["k"] == "p" and g.get("top", 0) > 0.8 * L["H"]:
                 title_foot.append(b)                         # юридический текст внизу титула — в подвал титула
