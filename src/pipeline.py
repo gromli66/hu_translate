@@ -175,9 +175,18 @@ def extract(inputs, work, progress=_quiet):
         else:
             segs, info = S.pdf_segments(f, progress=lambda x: progress("извлечение", i + x, len(files)))
         dplan = struct = None
-        if f.suffix.lower() == ".pdf" and not info.get("ocr_pages"):
+        ocr = info.get("ocr_pages") or []
+        if f.suffix.lower() == ".pdf" and ocr:
+            import fitz
+            with fitz.open(f) as pdf_:
+                few_ocr = len(ocr) < 0.5 * pdf_.page_count
+        else:
+            few_ocr = True
+        if f.suffix.lower() == ".pdf" and few_ocr:
             # размеченный PDF (экспорт Word): DOCX — по дереву разметки и профилю оформления оригинала
-            # (struct_fill, assemble.build_struct_docx); неполная разметка потеряла бы текст — тогда как раньше
+            # (struct_fill, assemble.build_struct_docx); неполная разметка потеряла бы текст — тогда как раньше.
+            # Отдельные распознанные листы (логотип на титуле руководства OAH ушёл в OCR) путь по разметке не
+            # отменяют: прежде один такой лист уводил весь документ в перевод поверх PDF (живая проверка, 16.10)
             import docx_build
             try:
                 cov = docx_build.coverage(f, segs)

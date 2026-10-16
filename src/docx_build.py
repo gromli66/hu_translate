@@ -1667,7 +1667,10 @@ def coverage(pdf, segs):
     # дерево — по соглашениям экспорта Word (Lbl/LBody, TOC, ячейки TD); разметку Acrobat/PDF24 ставят автоматически:
     # абзацы прямо в строке таблицы мимо ячеек — DOCX разваливался (31RDGT: столбцы нулевой ширины, 102 стр., 16.10)
     meta = doc.metadata or {}
-    if not re.search(r"Microsoft.{0,4}Word", (meta.get("producer") or "") + " " + (meta.get("creator") or ""), re.I):
+    # и Word 2007 — «Microsoft® Office Word 2007»: прежнее «Microsoft.{0,4}Word» его не узнавало, и руководства OAH
+    # шли переводом поверх PDF (живая проверка, 16.10)
+    if not re.search(r"Microsoft\W{0,3}(?:Office\s+)?Word", (meta.get("producer") or "") + " " + (meta.get("creator") or ""),
+                     re.I):
         return 0.0
     blocks, _ = docx_struct.load(str(pdf))
     blob = "".join(KEY(text_of(b["runs"])) for b in _paras(blocks))

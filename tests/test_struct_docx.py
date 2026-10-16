@@ -963,3 +963,25 @@ def test_size_styles_follow_body_size(tmp_path):
         return [x.style.name for x in Document(out).paragraphs if x.text.startswith("Текст")]
     assert styles(14) == ["Normal"]
     assert styles(10) == ["Front UTS"]
+
+
+def test_word_2007_pdf_counts_as_word(tmp_path):
+    """PDF из Word 2007 («Microsoft® Office Word 2007») — тоже путь по разметке: прежде проверка производителя его не
+    узнавала, и руководства OAH шли переводом поверх PDF (живая проверка, 16.10)."""
+    doc = fitz.open()
+    doc.new_page().insert_text((72, 72), "Bevezetés a dokumentumhoz")
+    doc.set_metadata({"producer": "Microsoft® Office Word 2007", "creator": "Microsoft® Office Word 2007"})
+    f = tmp_path / "w2007.pdf"
+    doc.save(f)
+    seen = []
+    orig = D.load
+    D.load = lambda path: (seen.append(path), ([], {}))[1]       # до разбора дерева дошло — производитель узнан
+    try:
+        doc2 = fitz.open(f)
+        root = doc2.pdf_catalog()
+        doc2.xref_set_key(root, "StructTreeRoot", "<< /Type /StructTreeRoot >>")
+        doc2.save(tmp_path / "w2007t.pdf")
+        B.coverage(tmp_path / "w2007t.pdf", [])
+    finally:
+        D.load = orig
+    assert seen
