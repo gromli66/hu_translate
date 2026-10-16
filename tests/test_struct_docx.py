@@ -215,6 +215,104 @@ def test_item_number_as_text_but_not_initials():
     assert not DP.ITEM_NUM_TEXT.match("Ф. И. О. оператора: имя пользователя UTS")
 
 
+def run(t, x, top=140.0, page=31, **kw):
+    return dict({"t": t, "font": "Tahoma", "size": 10, "b": False, "i": False, "color": "000000",
+                 "x": x, "top": top, "page": page}, **kw)
+
+
+def test_icon_in_line_goes_to_its_place_not_paragraph_end(tmp_path):
+    """Word рисует значок строки после текста: «● : не подключено» становилось «: не подключено●» (UTS, 27 пунктов,
+    16.10). Значок встаёт перед текстом своей строки по листу; значок без MCID (оформление) возвращается в абзац своей
+    строки; в DOCX значок после маркера пункта — в начале пункта."""
+    icon = {"img": {"x0": 98, "x1": 106, "top": 141, "bottom": 149, "page_number": 31}}
+    runs = [run("•", 90), run("\t", 94), run(": az UTS nincs felcsatlakozva", 108)]
+    got = D.insert_imgs(runs, [icon])
+    assert ["img" in r for r in got] == [False, False, True, False]
+    far = {"img": {"x0": 400, "x1": 408, "top": 300, "bottom": 308, "page_number": 31}}
+    assert "img" in D.insert_imgs(runs, [far])[-1]                       # не на строке абзаца — в конец, как было
+    para = {"k": "p", "runs": [run(": nem meghatározható", 108, 300)],
+            "geom": {"page": 31, "top": 300, "x0": 108, "x1": 200, "size": 10}}
+    D.attach_icons([para], [{"x0": 98, "x1": 106, "top": 301, "bottom": 309, "page_number": 31},
+                            {"x0": 62, "x1": 120, "top": 40, "bottom": 80, "page_number": 31}], 842)   # логотип шапки — нет
+    assert ["img" in r for r in para["runs"]] == [True, False]
+    blocks = [lst("Disc", [[{"k": "p", "runs": got, "geom": {"page": 31, "top": 140, "x0": 90, "x1": 300}}]])]
+    mem = B.Memory([(": az UTS nincs felcsatlakozva", ": UTS не подключено")])
+    out = tmp_path / "i.docx"
+    B.Builder(mem, lambda img: png(), PROFILE).build(blocks, str(out), LAYOUT)
+    par = next(x for x in Document(str(out)).paragraphs if "подключено" in x.text)
+    seq = "".join("\0" if e.tag == W + "drawing" else (e.text or "") for e in par._p.iter(W + "t", W + "drawing"))
+    assert seq.lstrip().startswith("\0") and seq.rstrip().endswith("подключено")
+
+
+def test_table_cut_by_pages_is_joined():
+    """Word при экспорте режет таблицу по листам: продолжение — таблица без шапки сразу за ней (UTS стр. 75–78)."""
+    cell = lambda th: {"blocks": [], "th": th}
+    t1 = {"k": "table", "rows": [[cell(True), cell(True)], [cell(False), cell(False)]], "geom": {"page": 75}}
+    t2 = {"k": "table", "rows": [[cell(False), cell(False)]] * 3, "geom": {"page": 76}}
+    t3 = {"k": "table", "rows": [[cell(True), cell(True)], [cell(False), cell(False)]], "geom": {"page": 77}}
+    got = D.join_tables([t1, t2, t3])
+    assert [len(t["rows"]) for t in got] == [5, 2]
+
+
+def test_label_tab_kept_and_column_alignment_from_original():
+    assert B._keep_tab("Műszaki változás száma\t10776", "Номер технического изменения 10776") == \
+        "Номер технического изменения\t10776"
+    assert B._keep_tab("Tervező\tSinger Gábor", "Проектант\tСинглер Габор") == "Проектант\tСинглер Габор"
+    g = lambda x0, x1: {"page": 2, "x0": x0, "x1": x1, "lines": 1}
+    rows = [[{"th": True, "geom": g(160, 202)}, {"th": True, "geom": g(410, 450)}],
+            [{"th": False, "geom": g(66, 120)}, {"th": False, "geom": g(500, 555)}]]
+    assert B._col_align(rows, [62, 300, 560], 2) == {("head", 0): "center", ("head", 1): "center", ("body", 1): "right"}
+
+
+def test_latin_name_counted_paths_aside_and_verbatim_style_kept():
+    """«…UTS… при запуске СОИ другой среды» проходило проверку: UTS хоть раз есть (или «uts_kmod.conf»)."""
+    hu = "Blokki UTS esetén az UTS alkalmazás indítása előtt, lásd /etc/modprobe.d/uts_kmod.conf"
+    assert any(v[0] == "Я5" for v in C.check(hu, "В случае СОИ блока перед запуском приложения UTS, см. "
+                                                 "/etc/modprobe.d/uts_kmod.conf", RULES))
+    assert not any(v[0] == "Я5" for v in C.check(hu, "В случае UTS блока перед запуском приложения UTS, см. "
+                                                     "/etc/modprobe.d/uts_kmod.conf", RULES))
+    assert not any(v[0] == "Я5" for v in C.check("<UTS környezet>/<év>", "<среда UTS>/<год>", RULES))
+    plain, ital = (False, False, False, None), (False, True, False, None)
+    parts = ["Ezen kívül a kernel modul ", "/etc/modprobe.d/uts_kmod.conf", " fájlban meg kell adni"]
+    groups = [[plain, []], [ital, []], [plain, []]]
+    out = B._restyle("Кроме того, в файле /etc/modprobe.d/uts_kmod.conf необходимо указать", groups, parts)
+    assert (ital, "/etc/modprobe.d/uts_kmod.conf") in out and "".join(t for _, t in out).startswith("Кроме")
+
+
+def test_slanted_tahoma_is_italic_and_verbatim_parts_need_no_portal():
+    """У Tahoma нет курсива — Word наклоняет знаки матрицей (c = 0,33): это курсив (пути в UTS). Если перевод без меток
+    есть и курсивный кусок стоит в нём дословно — перевод с метками у портала не просим."""
+    ch = {"fontname": "BCDEEE+Tahoma", "size": 10, "non_stroking_color": (0,), "matrix": (1, 0, 0.33, 1, 200, 600)}
+    assert D._fmt(ch)["i"] and not D._fmt(dict(ch, matrix=(1, 0, 0, 1, 200, 600)))["i"]
+    plain, ital = (False, False, False, None), (False, True, False, None)
+    groups = [[plain, []], [ital, []], [plain, []]]
+    parts = ["Ezen kívül a kernel modul ", "/etc/modprobe.d/uts_kmod.conf", " fájlban"]
+    assert B._verbatim("Кроме того, в файле /etc/modprobe.d/uts_kmod.conf", groups, parts)
+    assert not B._verbatim("Отметьте опцию «Шаг испытания успешен»", groups, ["Jelölje be a ", "„A tesztlépés sikeres”", ""])
+
+
+def test_toc_like_original_levels_bold_title_and_unnumbered_entry(tmp_path):
+    """Оглавление — по оригиналу: уровней столько же (UTS: 3, а собиралось 4), 1-й полужирный, отступы и шаг строк,
+    заголовок своим кеглем и цветом, пункт без номера раздела (шапка таблицы) — с уровнем структуры."""
+    info = {"title": {"t": "Tartalom", "font": "Tahoma", "size": 14, "b": True, "color": "365f91", "center": False},
+            "levels": 3, "bold": [True, False, False], "indent": [0, 21, 40], "pitch": 19.6, "figures": False,
+            "extra": [("Dokumentumhoz kapcsolódó szerepek", 1)]}
+    th = {"blocks": [p("Dokumentumhoz kapcsolódó szerepek", 2, 100)], "th": True}
+    blocks = [{"k": "table", "rows": [[th], [{"blocks": [p("Singler Gábor", 2, 120)], "th": False}]],
+               "geom": {"page": 2, "top": 100}}, {"k": "toc", "info": info}]
+    mem = B.Memory([("Tartalom", "Содержание"), ("Dokumentumhoz kapcsolódó szerepek", "Роли, связанные с документом"),
+                    ("Singler Gábor", "Синглер Габор")])
+    out = tmp_path / "t.docx"
+    B.Builder(mem, lambda img: png(), PROFILE).build(blocks, str(out), LAYOUT)
+    doc = Document(str(out))
+    body = doc.element.body.xml
+    assert 'TOC \\o "1-3"' in body and '<w:outlineLvl w:val="0"/>' in body
+    st = {s.style_id: s for s in doc.styles}
+    assert st["TOC1"].font.bold and not st["TOC2"].font.bold and st["TOC2"].paragraph_format.left_indent.pt == 21
+    assert st["TOC1"].element.get(W + "customStyle") is None      # встроенный «toc 1», иначе Word берёт свой
+    assert str(st["TOCTitleUTS"].font.color.rgb) == "365F91"
+
+
 # ---------------------------------------------------------------- в конвейере: извлечение → структура → шлифовка → сборка
 def tagged_pdf(path, pages, tagged=True):
     """PDF «как из Word»: pages — [[(тег, текст, x, y, кегль, жирный)]], каждая строка — свой элемент дерева разметки

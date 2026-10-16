@@ -5,6 +5,17 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-hun \
  && rm -rf /var/lib/apt/lists/*
 
+# PDF перевода печатается из готового DOCX (LibreOffice без окна, оглавление и поля — через UNO системного python3).
+# Шрифты: Tahoma — метрическая копия из fonts-wine, Times New Roman — Liberation Serif, Consolas/Verdana — DejaVu
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libreoffice-writer-nogui python3-uno \
+    fonts-wine fonts-liberation fonts-dejavu-core fonts-crosextra-carlito fonts-crosextra-caladea fonts-opensymbol \
+ && rm -rf /var/lib/apt/lists/* \
+ && mkdir -p /usr/share/fonts/truetype/wine \
+ && ln -s /usr/share/wine/fonts/tahoma.ttf /usr/share/fonts/truetype/wine/
+COPY docker/fonts.conf /etc/fonts/local.conf
+RUN fc-cache -f
+
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

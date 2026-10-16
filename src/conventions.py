@@ -145,10 +145,11 @@ def check(hu, ru, rules, kind="text"):
     if _quotes_fix(hu_t, ru_t) != ru_t:
         out.append(("Я4", "кавычки «ёлочки»", True))
     for name in rules.get("latin", []):
-        if re.search(rf"(?<![\w]){re.escape(name)}(?![\w])", hu_t) and not re.search(re.escape(name), ru_t, re.I):
+        n_hu = _name_count(name, hu_t)
+        if n_hu and _name_count(name, ru_t) < n_hu:
             cyr = [k for k, v in rules.get("cyrillic_to_latin", {}).items() if v.lower().startswith(name.lower())
                    and re.search(rf"(?<![{CYR}]){re.escape(k)}", ru_t)]
-            out.append(("Я5", f"«{name}» — латиницей", bool(cyr)))
+            out.append(("Я5", f"«{name}» — латиницей" + (f", в оригинале {n_hu} раз" if n_hu > 1 else ""), bool(cyr)))
     for c in _codes(hu_t):
         if c not in ru_t:
             out.append(("Я6", f"«{c}» — дословно", _code_guess(c, ru_t) is not None))
@@ -172,6 +173,16 @@ def check(hu, ru, rules, kind="text"):
     if left:
         out.append(("Я11", "венгерский остался: " + ", ".join(left[:5]), False))
     return out
+
+
+# путь, имя файла — по символам пути (шаблон «<UTS környezet>/<év>» — текст в скобках, не путь)
+CODE_LIKE = re.compile(r"[\w.\-]*[/\\_][\w./\\\-]*|[\w\-]+\.[a-z]{2,4}(?!\w)")
+
+
+def _name_count(name, t):
+    """Сколько раз название стоит в тексте отдельным словом (UTS-t — тоже); пути и имена файлов не в счёт. Название
+    латиницей хоть раз — мало: «…UTS… при запуске СОИ другой среды» и «uts_kmod.conf» проходили проверку (UTS, 16.10)."""
+    return len(re.findall(rf"(?<![\w]){re.escape(name)}(?![\w])", CODE_LIKE.sub(" ", t), re.I))
 
 
 def _hungarian(ru):

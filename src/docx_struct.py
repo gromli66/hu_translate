@@ -34,8 +34,11 @@ def _fmt(ch):
         color = "%02x%02x%02x" % ((int(round(float(col[0]) * 255)),) * 3)
     else:
         color = "000000"
+    # курсив без курсивного начертания (у Tahoma его нет): Word наклоняет знаки матрицей — c ≠ 0 при b = 0
+    m = ch.get("matrix") or (1, 0, 0, 1)
+    slant = abs(float(m[1])) < 1e-6 and abs(float(m[2])) > 0.1 * abs(float(m[3]) or 1)
     return {"font": fam, "size": round(float(ch["size"]) * 2) / 2,
-            "b": bool(re.search(r"Bold|Black|Heavy", name)), "i": bool(re.search(r"Italic|Oblique", name)),
+            "b": bool(re.search(r"Bold|Black|Heavy", name)), "i": bool(re.search(r"Italic|Oblique", name)) or slant,
             "color": color}
 
 
@@ -61,8 +64,8 @@ def _runs(items):
         f = _fmt(ch)
         if runs and "t" in runs[-1] and all(runs[-1][k] == f[k] for k in f):
             runs[-1]["t"] += t
-        else:
-            runs.append(dict(f, t=t))
+        else:                                   # начало прогона на листе — место для значка в строке (insert_imgs)
+            runs.append(dict(f, t=t, x=float(ch["x0"]), top=float(ch["top"]), page=ch.get("page_number")))
         prev = ch
     # выключка по ширине даёт широкие пробелы в каждом промежутке строки — это не табуляции («Linux⇥alatt⇥például»):
     # табуляция — один-два разрыва в абзаце
@@ -85,6 +88,72 @@ def _runs(items):
 
 def text_of(runs):
     return "".join(r.get("t", "") for r in runs)
+
+
+def insert_imgs(runs, imgs):
+    """Значки — на своё место в строке по листу: перед первым прогоном текста той же строки, который начинается
+    правее значка; нет такого — в конец. Word рисует картинки строки после текста, и по порядку отрисовки значок
+    пункта «● : не подключено» уезжал в конец: «: не подключено●» (UTS, 27 пунктов списков, 16.10)."""
+    out = list(runs)
+    for im in imgs:
+        g = im["img"]
+        cy = (float(g["top"]) + float(g["bottom"])) / 2
+        pos = next((i for i, r in enumerate(out) if "x" in r and r.get("page") == g.get("page_number")
+                    and r["top"] - 2 <= cy <= r["top"] + 1.5 * r["size"] and r["x"] >= float(g["x0"]) - 1), None)
+        if pos is None:
+            out.append(im)
+        else:
+            out.insert(pos, im)
+    return out
+
+
+def join_tables(bs):
+    """Таблица, которую Word при экспорте разрезал по листам (продолжение — отдельная таблица сразу за ней, без шапки,
+    с тем же числом столбцов, на следующем листе), — снова одна: в DOCX она переносится сама и повторяет шапку
+    (UTS стр. 75–78: разрыв с пустой строкой и без шапки, 16.10)."""
+    out = []
+    for b in bs:
+        if b["k"] == "list":
+            b = dict(b, items=[join_tables(it) for it in b["items"]])
+        prev = out[-1] if out else None
+        if prev is not None and prev["k"] == "table" and b["k"] == "table" and prev["rows"] and b["rows"] \
+                and not all(c["th"] for c in b["rows"][0]) \
+                and max(map(len, b["rows"])) == max(map(len, prev["rows"])) \
+                and (b.get("geom") or {}).get("page", 0) > (prev.get("geom") or {}).get("page", 0):
+            out[-1] = dict(prev, rows=prev["rows"] + b["rows"])
+            continue
+        out.append(b)
+    return out
+
+
+def _paras(bs):
+    for b in bs:
+        if b["k"] == "p":
+            yield b
+        elif b["k"] == "list":
+            for it in b["items"]:
+                yield from _paras(it)
+        elif b["k"] == "table":
+            for r in b["rows"]:
+                for c in r:
+                    yield from _paras(c["blocks"])
+
+
+def attach_icons(blocks, imgs, height):
+    """Значок, который Word пометил оформлением (без MCID), но который стоит в первой строке абзаца, — в этот абзац
+    на своё место (UTS: серый значок «nem meghatározható» пропадал из пункта). Колонтитулы, рисунки — не значки."""
+    ps = [p for p in _paras(blocks) if p.get("geom") and any(r.get("t", "").strip() for r in p["runs"])]
+    for im in imgs:
+        top, bot, x0 = float(im["top"]), float(im["bottom"]), float(im["x0"])
+        if bot - top > 20 or top < 0.12 * height or bot > 0.88 * height:
+            continue
+        cy = (top + bot) / 2
+        cand = [p for p in ps if p["geom"]["page"] == im["page_number"]
+                and p["geom"]["top"] - 3 <= cy <= p["geom"]["top"] + 3 + 1.5 * p["geom"]["size"]
+                and p["geom"]["x0"] - 40 <= x0 <= p["geom"]["x1"]]
+        if cand:
+            p = min(cand, key=lambda p: abs(p["geom"]["x0"] - x0))
+            p["runs"] = insert_imgs(p["runs"], [{"img": im}])
 
 
 NUMBERED = {"Decimal", "LowerAlpha", "UpperAlpha", "LowerRoman", "UpperRoman"}
@@ -230,7 +299,9 @@ def load(path):
         return out
 
     def geom(el):
-        its = items(el)
+        return geom_of(items(el))
+
+    def geom_of(its):
         chs = [it["ch"] for it in its if "ch" in it and it["ch"]["text"].strip()]
         if not chs:
             ims = [it["img"] for it in its if "img" in it]
@@ -318,6 +389,41 @@ def load(path):
                 v.sort(); out["pad_" + k] = round(v[len(v) // 2], 1)
         return out
 
+    def toc_info(el):
+        """Оглавление оригинала, как его собрать заново полем Word: заголовок (текст, кегль, цвет, по центру ли), число
+        уровней и какие из них полужирные (по отступам строк), пункты без номера раздела — абзацы вне заголовков,
+        которым нужен уровень структуры (UTS: «Dokumentumhoz kapcsolódó szerepek» — шапка таблицы, 1-й уровень);
+        список рисунков — если строки «N. ábra …»."""
+        ents = []
+        for e in el.children:
+            its = [it for it in items(e) if "ch" in it]
+            chs = [it["ch"] for it in its if it["ch"]["text"].strip()]
+            if chs:
+                txt = re.sub(r"\s+", " ", "".join(it["ch"]["text"] for it in its)).strip()
+                ents.append({"t": txt, "x0": float(chs[0]["x0"]), "cx": (chs[0]["x0"] + chs[-1]["x1"]) / 2,
+                             "f": _fmt(chs[0]), "num": bool(re.search(r"\d+\s*$", txt)),
+                             "page": chs[0]["page_number"], "top": float(chs[0]["top"])})
+        title = ents[0] if ents and not ents[0]["num"] else None
+        body = [e for e in ents if e["num"]]
+        lv = []
+        for x in sorted(e["x0"] for e in body):
+            if not lv or x - lv[-1] > 4:
+                lv.append(x)
+        level = lambda x: min(range(len(lv)), key=lambda i: abs(lv[i] - x)) + 1
+        bold = []
+        for i in range(len(lv)):
+            at = [e for e in body if level(e["x0"]) == i + 1]
+            bold.append(sum(e["f"]["b"] for e in at) * 2 > len(at))
+        figs = sum(bool(re.match(r"\d+\.\s*ábra", e["t"], re.I)) for e in body) * 2 > len(body)
+        extra = [] if figs else [(re.sub(r"\s*(\.{3,}\s*)?\d+\s*$", "", e["t"]).strip(), level(e["x0"]))
+                                 for e in body if not re.match(r"\d+(\.\d+)*\s", e["t"])]
+        width = float(pdf.pages[0].width)
+        steps = sorted(b["top"] - a["top"] for a, b in zip(body, body[1:]) if a["page"] == b["page"] and b["top"] > a["top"])
+        return {"title": title and dict(title["f"], t=title["t"], center=abs(title["cx"] - width / 2) < 30),
+                "levels": len(lv), "bold": bold, "figures": figs, "extra": extra,
+                "indent": [round(x - lv[0], 1) for x in lv],                      # отступ уровня от 1-го, pt
+                "pitch": round(steps[len(steps) // 2], 1) if steps else None}     # шаг строк оглавления, pt
+
     def own(el):
         """Абзац из собственных MCID контейнера (текст прямо в LBody/TD, без вложенного P)."""
         its = []
@@ -371,7 +477,7 @@ def load(path):
                      "bottom": max(c.get("bottom", c["top"] + 12) for c in cells if c["page"] == cells[0]["page"])}
             return [{"k": "table", "rows": rows, "geom": g, "borders": borders(g), "frame": frame(g, rows) if g else {}}]
         if t in ("TOC", "TOCI"):
-            return [{"k": "toc"}] if t == "TOC" else []
+            return [{"k": "toc", "info": toc_info(el)}] if t == "TOC" else []
         out = []                                            # Document, Sect, Div, Span, Link, Art, Part…
         if t in INLINE:
             # ссылка/фрагмент рядом с абзацем, а не внутри него (перекрёстная ссылка Word «5.6.4.7 fejezet)» в пункте
@@ -380,6 +486,12 @@ def load(path):
         if el.mcids and t not in ("Document", "Sect", "Div", "Part", "Art"):
             out.append({"k": "p", "runs": _runs(items(el)), "geom": geom(el)})
             return out
+        if el.mcids and t != "Document":
+            # своё содержимое обёртки (Word кладёт значок пункта списка прямо в Sect внутри LBody) — абзацем перед
+            # вложенными; раньше терялось (UTS: серый значок «nem meghatározható», 16.10)
+            its = [x for m in el.mcids for x in content.get((el.page_number, m), [])]
+            if its:
+                out.append({"k": "p", "runs": _runs(its), "geom": geom_of(its)})
         for c in el.children:
             out += block(c, depth + 1)
         return out
@@ -387,8 +499,9 @@ def load(path):
     blocks = []
     for root in tree:
         blocks += block(root)
-    blocks = relist(blocks)
     page = pdf.pages[0]
+    attach_icons(blocks, artifacts["imgs"], float(page.height))
+    blocks = join_tables(relist(blocks))
     info = {"width": float(page.width), "height": float(page.height), "pages": len(pdf.pages),
             "artifacts": artifacts}
     return blocks, info

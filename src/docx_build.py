@@ -6,7 +6,7 @@ import io
 import re
 from collections import Counter
 
-from docx_struct import text_of
+from docx_struct import text_of, insert_imgs
 
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 BULLETS = {"Disc": ("", "Symbol"), "Circle": ("o", "Courier New"), "Square": ("", "Wingdings")}
@@ -85,14 +85,108 @@ def merge_inline(blocks):
                 if "img" in r and free > 0:
                     r["paren"] = True
                     free -= 1
-            pt, nt = text_of(prev["runs"]), text_of(runs)
-            if pt and nt and "t" in runs[0] and not pt.endswith((" ", "\t", "(", "„", "«")) \
-                    and not nt.startswith((" ", ".", ",", ";", ":", ")", "”", "»")):
-                runs[0]["t"] = " " + runs[0]["t"]              # «(lásd:» + «5.6.4.7» + «fejezet)» — с пробелами
-            out[-1] = dict(prev, runs=prev["runs"] + runs, last_top=g.get("top", prev.get("last_top")),
+            if all("img" in r and not r.get("paren") for r in runs):
+                merged = insert_imgs(prev["runs"], runs)        # значок без скобок — на своё место в строке
+            else:
+                pt, nt = text_of(prev["runs"]), text_of(runs)
+                if pt and nt and "t" in runs[0] and not pt.endswith((" ", "\t", "(", "„", "«")) \
+                        and not nt.startswith((" ", ".", ",", ";", ":", ")", "”", "»")):
+                    runs[0]["t"] = " " + runs[0]["t"]          # «(lásd:» + «5.6.4.7» + «fejezet)» — с пробелами
+                merged = prev["runs"] + runs
+            out[-1] = dict(prev, runs=merged, last_top=g.get("top", prev.get("last_top")),
                            tail_inline=bool(b.get("inline")))
             continue
         out.append(b)
+    return out
+
+
+_HELV = None
+
+
+def _text_w(text, size):
+    """Ширина строки, pt: латиница — по метрике Helvetica, кириллица и прочее — средней шириной Tahoma (у Helvetica
+    PDF кириллицы нет, шрифтов Word на сервере нет)."""
+    global _HELV
+    if _HELV is None:
+        import fitz
+        _HELV = fitz.Font("helv")
+    return sum(_HELV.text_length(ch, fontsize=size) if ord(ch) < 256 else 0.6 * size for ch in text)
+
+
+def _keep_tab(src, ru):
+    """«подпись ⇥ значение»: перевод потерял табуляцию («Номер технического изменения 10776» — значение не в столбце,
+    титул UTS, 16.10) — вернуть её перед значением, если оно стоит в конце перевода дословно."""
+    if not ru or src.count("\t") != 1 or "\t" in ru:
+        return ru
+    val, r = src.split("\t")[1].strip(), ru.rstrip()
+    if val and r.endswith(val) and len(r) > len(val):
+        return r[:-len(val)].rstrip() + "\t" + val
+    return ru
+
+
+def _col_align(rows, xs, page):
+    """Выравнивание столбцов таблицы по оригиналу (рамка xs на первом листе): {("head" | "body", столбец): "center" |
+    "right"}; по однострочным ячейкам полных строк, большинством. Шапка UTS — по центру, номера версий — вправо, а
+    в переводе всё стояло влево (16.10)."""
+    if len(xs) < 2:
+        return {}
+    ncol = len(xs) - 1
+    votes = {}
+    head = True
+    for r in rows:
+        head = head and all(c["th"] for c in r)
+        if len(r) != ncol:
+            continue
+        for ci, c in enumerate(r):
+            g = c.get("geom")
+            if not g or g.get("page") != page or (g.get("lines") or 1) > 1:
+                continue
+            left, right = g["x0"] - xs[ci], xs[ci + 1] - g["x1"]
+            v = "center" if abs(left - right) < 4 and left > 8 else "right" if right < 10 < left - 8 else "left"
+            votes.setdefault(("head" if head else "body", ci), []).append(v)
+    out = {}
+    for k, v in votes.items():
+        best = Counter(v).most_common(1)[0][0]
+        if best != "left":
+            out[k] = best
+    return out
+
+
+def _base_group(text, groups, parts):
+    told = [i for i, s in enumerate(parts) if s.strip() and s.strip() not in text] or list(range(len(groups)))
+    return max(told, key=lambda i: len(parts[i].strip()))
+
+
+def _verbatim(text, groups, parts):
+    """Все куски не основного начертания стоят в переводе дословно (путь курсивом, команда моноширинным) —
+    начертание расставит _restyle, перевод с метками у портала не нужен."""
+    base = _base_group(text, groups, parts)
+    return all(parts[i].strip() in text for i, g in enumerate(groups)
+               if g[0] != groups[base][0] and parts[i].strip())
+
+
+def _restyle(text, groups, parts):
+    """Перевод без меток начертания (из памяти сегментов страниц) — основным начертанием абзаца (самая длинная из
+    переведённых групп — тех, чего дословно в переводе нет), а куски, перешедшие в перевод дословно (путь, имя файла,
+    команда курсивом или моноширинным), — своим: раньше весь абзац брал начертание первой группы, и курсив путей
+    пропадал (UTS, 16.10)."""
+    base = _base_group(text, groups, parts)
+    spans = []
+    for i, (g, p) in enumerate(zip(groups, parts)):
+        s = p.strip()
+        if i == base or len(s) < 3 or g[0] == groups[base][0]:
+            continue
+        j = text.find(s)
+        if j >= 0 and not any(a < j + len(s) and j < b for a, b, _ in spans):
+            spans.append((j, j + len(s), g[0]))
+    out, pos = [], 0
+    for a, b, key in sorted(spans):
+        if a > pos:
+            out.append((groups[base][0], text[pos:a]))
+        out.append((key, text[a:b]))
+        pos = b
+    if pos < len(text) or not out:
+        out.append((groups[base][0], text[pos:]))
     return out
 
 
@@ -262,8 +356,9 @@ class Builder:
         s = new("Front UTS"); self._font(s, size=14); self._para(s, after=4)
         s = new("Small UTS"); self._font(s, size=8); self._para(s, after=0, line=1.0)
         s = new("TOC Title UTS"); self._font(s, size=14, bold=True); self._para(s, before=6, after=12)
+        s = new("TOF Title UTS", "TOC Title UTS")
         s = new("Header UTS"); self._font(s, size=10); self._para(s, after=0, line=1.0, align=AL.CENTER)
-        s = new("Stamp UTS"); self._font(s, "Times New Roman", 10); self._para(s, after=0, line=1.0)
+        s = new("Stamp UTS"); self._font(s, "Times New Roman", 10); self._para(s, after=0, line=1.0, align=AL.LEFT)
 
     def _heading_numbering(self):
         """Многоуровневая нумерация заголовков (1, 1.1, 1.1.1 …), привязана к стилям Heading 1–5: в оригинале все 157
@@ -360,7 +455,9 @@ class Builder:
         texts = [r for r in runs if "t" in r]
         imgs = [r for r in runs if "img" in r and not r.get("paren")]
         pimgs = [r for r in runs if "img" in r and r.get("paren")]      # значки в «()» — на то же место в переводе
-        lead_img = bool(runs) and "img" in runs[0] and not runs[0].get("paren")
+        # значок в начале — первым после пустых прогонов (табуляция после снятого маркера пункта)
+        head = next((r for r in runs if "img" in r or r["t"].strip()), None)
+        lead_img = head is not None and "img" in head and not head.get("paren")
         groups = []
         for r in texts:
             key = (bool(r.get("b")), bool(r.get("i")), (r.get("font") or "").lower().startswith(("consolas", "courier")),
@@ -382,14 +479,19 @@ class Builder:
         out = []
         if len(groups) <= 1:
             src = "".join(parts)
-            ru = self.tr(src) if src.strip() else src
+            ru = _keep_tab(src, self.tr(src) if src.strip() else src)
             out = [(groups[0][0] if groups else None, ru if ru is not None else src)]
         else:
             tagged = "".join(f"<f{i + 1}>{t}</f{i + 1}>" for i, t in enumerate(parts))
             code = {i + 1 for i, g in enumerate(groups) if g[0][2]}          # моноширинные группы — code_part
             if code:
                 self.code_groups[tagged] = code
-            ru = self.tr(tagged)
+            get = getattr(self.tr, "get", None)
+            plain0 = get("".join(parts)) if get else None
+            if get and plain0 is not None and get(tagged) is None and _verbatim(plain0, groups, parts):
+                ru = None       # есть перевод без меток, прочие начертания — у дословных кусков: портал не нужен
+            else:
+                ru = self.tr(tagged)
             got = re.findall(r"<f(\d+)>(.*?)</f\1>", ru or "", re.S)
             if ru and sorted(int(k) for k, _ in got) == list(range(1, len(groups) + 1)):
                 d = {int(k): t for k, t in got}
@@ -402,7 +504,7 @@ class Builder:
                     out.append((g[0], t))
             else:
                 plain = self.tr("".join(parts))
-                out = [(groups[0][0], plain if plain is not None else "".join(parts))]
+                out = _restyle(plain if plain is not None else "".join(parts), groups, parts)
         if lead_img:
             for im in imgs:
                 self._img_run(par, im["img"])
@@ -430,6 +532,13 @@ class Builder:
                 text_run(t, key)
         for im in ([] if lead_img else imgs) + pimgs:
             self._img_run(par, im["img"])
+        # пункт оглавления оригинала без номера раздела (шапка таблицы) — уровень структуры, чтобы его видело поле TOC
+        lv = getattr(self, "toc_extra", {}).get(KEY(text_of(runs)))
+        if lv:
+            ppr = par._p.get_or_add_pPr()
+            after = next((c for c in ppr if c.tag in {W + n for n in ("divId", "cnfStyle", "rPr", "sectPr", "pPrChange")}), None)
+            el = _el("w:outlineLvl", w__val=lv - 1)            # порядок элементов pPr — по схеме, иначе Word ругается
+            after.addprevious(el) if after is not None else ppr.append(el)
         # табуляция — позиции по оригиналу (пары «подпись ⇥ значение» на титуле, колонки в абзаце)
         from docx.shared import Pt
         for x in sorted({round(x) for r in runs for x in r.get("tabs", [])}):
@@ -587,8 +696,20 @@ class Builder:
                      for c in range(ncol)]
             if all(v is not None for v in lefts) and len(set(round(v) for v in lefts)) == ncol:
                 rights = lefts[1:] + [max(r[-1]["geom"]["x1"] for r in full if r[-1].get("geom")) + 6]
+                if not b.get("borders", True) and self.L:
+                    # раскладка без рамок (значок ⇥ подпись): последний столбец — до правого поля, а не по длине
+                    # венгерского текста (русский длиннее и переносился в узком столбце, UTS стр. 93); отступ — как в оригинале
+                    rights[-1] = max(rights[-1], self.L["W"] - self.L["right"])
+                    ind = lefts[0] - self.left - 5
+                    if ind > 3:
+                        tp = t._tbl.tblPr
+                        nxt = next((c for c in tp if c.tag in {W + n for n in (
+                            "tblBorders", "shd", "tblLayout", "tblCellMar", "tblLook", "tblCaption")}), None)
+                        el = _el("w:tblInd", w__w=round(ind * 20), w__type="dxa")   # порядок tblPr — по схеме
+                        nxt.addprevious(el) if nxt is not None else tp.append(el)
                 widths = [max(rights[c] - lefts[c], 20) for c in range(ncol)]
         if widths:
+            self._fit_words(rows, widths, 9 if small else 10)
             t.autofit = False
             for c in range(ncol):
                 for cell in t.columns[c].cells:
@@ -596,6 +717,7 @@ class Builder:
             grid = t._tbl.tblGrid
             for gc, w in zip(grid.findall(W + "gridCol"), widths):
                 gc.set(W + "w", str(round(w * 20)))
+        aligns = _col_align(rows, xs, (b.get("geom") or {}).get("page"))
         in_head = True
         for ri, row in enumerate(rows):
             if len(row) < ncol:                              # объединённая ячейка: хвост строки
@@ -613,6 +735,9 @@ class Builder:
                 first = dc.paragraphs[0]
                 used = False
                 style = head_style if head else cell_style
+                al = aligns.get(("head" if head else "body", ci)) if len(row) == ncol else None
+                if al:
+                    style = self._aligned(style, al)
                 for x in cell["blocks"]:
                     if x["k"] == "list":
                         self.list_(x, 0, dc); continue
@@ -630,19 +755,110 @@ class Builder:
                         self.paragraph(x, style, tgt=dc)
                 if not used and len(dc.paragraphs) > 1:      # ячейка начинается со списка — пустой первый абзац прочь
                     first._p.getparent().remove(first._p)
+                elif not used:                               # пустая ячейка — стилем таблицы: «Обычный» (8 pt после,
+                    first.style = self.doc.styles[style]     # 1,15) раздувал строку (история изменений UTS, 16.10)
                 if head and fr.get("fill") and b.get("borders", True):
                     dc._tc.get_or_add_tcPr().append(_el("w:shd", w__val="clear", w__color="auto", w__fill=fr["fill"]))
         self.doc.add_paragraph(style="Table Text")        # Word: после таблицы — абзац
 
-    def toc(self):
-        if self._toc_n == 0:
-            self.doc.add_paragraph(self.tr("Tartalom") or "Содержание", style="TOC Title UTS")
-            par = self.doc.add_paragraph()
-            _field(par, 'TOC \\o "1-4" \\h \\z \\u', "[Оглавление: в Word — правой кнопкой → «Обновить поле»]")
-        else:
-            self.doc.add_paragraph("Список рисунков", style="TOC Title UTS")
-            par = self.doc.add_paragraph()
+    def _fit_words(self, rows, widths, size):
+        """Столбец не уже самого длинного слова перевода (с полями ячейки): «Редакция» в узком столбце «Törés / verzió»
+        рвалась «Редакци / я» (UTS, 16.10). Недостающее — у столбца с самым большим запасом; ширина таблицы та же."""
+        get = getattr(self.tr, "get", None)
+        if get is None:
+            return
+        ncol = len(widths)
+        need = [0.0] * ncol
+        for row in rows:
+            if len(row) != ncol:
+                continue
+            for ci, cell in enumerate(row):
+                for x in cell["blocks"]:
+                    if x["k"] != "p" or not x["runs"]:
+                        continue
+                    src = text_of(x["runs"]).strip()
+                    ru = TAGS.sub("", (get(src) if src else None) or src)
+                    bold = any(r.get("b") for r in x["runs"] if r.get("t", "").strip())
+                    w = max((_text_w(wd, size) for wd in ru.split()), default=0) * (1.1 if bold else 1.0)
+                    need[ci] = max(need[ci], w + 12)
+        for c in range(ncol):
+            short = need[c] - widths[c]
+            if short <= 0:
+                continue
+            d = max((k for k in range(ncol) if k != c), key=lambda k: widths[k] - need[k], default=None)
+            give = min(short, widths[d] - need[d]) if d is not None else 0
+            if give > 0:
+                widths[c] += give
+                widths[d] -= give
+
+    def _aligned(self, style, al):
+        """Стиль ячейки с выравниванием столбца оригинала (стилем, а не прямым оформлением абзаца)."""
+        from docx.enum.style import WD_STYLE_TYPE
+        from docx.enum.text import WD_ALIGN_PARAGRAPH as AL
+        name = f"{style} {al}"
+        if name not in [s.name for s in self.doc.styles]:
+            s = self.doc.styles.add_style(name, WD_STYLE_TYPE.PARAGRAPH)
+            s.base_style = self.doc.styles[style]
+            s.paragraph_format.alignment = AL.CENTER if al == "center" else AL.RIGHT
+        return name
+
+    def _toc_styles(self, blocks):
+        """Оглавления оригинала (docx_struct.toc_info): заголовки — свои стили по оригиналу (кегль, цвет, центр),
+        строки уровней — стили Word «toc N» (полужирные — как в оригинале), пункты без номера раздела — абзацы, которым
+        сборка даст уровень структуры (иначе поле TOC их не видит)."""
+        from docx.enum.style import WD_STYLE_TYPE
+        from docx.enum.text import WD_ALIGN_PARAGRAPH as AL
+        from docx.oxml.ns import qn
+        from docx.shared import RGBColor
+        self.toc_extra = {}
+        for b in blocks:
+            info = (b.get("info") or {}) if b["k"] == "toc" else None
+            if info is None:
+                continue
+            for text, lv in info.get("extra", []):
+                self.toc_extra[KEY(text)] = lv
+            t = info.get("title")
+            name = "TOF Title UTS" if info.get("figures") else "TOC Title UTS"
+            if t:
+                s = self.doc.styles[name]
+                self._font(s, t.get("font") or "Tahoma", t.get("size") or 14, bool(t.get("b")))
+                if (t.get("color") or "000000") != "000000":
+                    s.font.color.rgb = RGBColor.from_string(t["color"].upper())
+                s.paragraph_format.alignment = AL.CENTER if t.get("center") else AL.LEFT
+            if info.get("figures"):
+                continue
+            from docx.shared import Pt
+            for i, bold in enumerate(info.get("bold", [])):
+                sid = f"TOC{i + 1}"
+                s = next((x for x in self.doc.styles if x.style_id == sid), None)
+                if s is None:
+                    s = self.doc.styles.add_style(f"toc {i + 1}", WD_STYLE_TYPE.PARAGRAPH)
+                    s.element.set(qn("w:styleId"), sid)
+                    # встроенный стиль Word «toc N», а не пользовательский: иначе Word собирает оглавление своими
+                    # «Оглавление N» и наши полужирный, отступы и шаг строк не видит
+                    s.element.attrib.pop(qn("w:customStyle"), None)
+                    s.base_style = self.doc.styles["Normal"]
+                pf = s.paragraph_format
+                pf.alignment = AL.LEFT                  # от «Обычного» по ширине — строка разреживалась по буквам
+                pf.space_before = pf.space_after = Pt(0)
+                ind = info.get("indent") or []
+                pf.left_indent = Pt(ind[i] if i < len(ind) else 0)
+                if info.get("pitch"):
+                    pf.line_spacing = Pt(info["pitch"])     # шаг строк — как в оглавлении оригинала
+                s.font.bold = bold
+
+    def toc(self, b=None):
+        info = (b or {}).get("info") or {}
+        figs = info.get("figures", self._toc_n > 0)
+        title = (info.get("title") or {}).get("t")
+        text = (self.tr(title) if title else None) or ("Список рисунков" if figs else "Содержание")
+        self.doc.add_paragraph(text, style="TOF Title UTS" if figs else "TOC Title UTS")
+        par = self.doc.add_paragraph()
+        if figs:
             _field(par, 'TOC \\h \\z \\c "Рисунок"', "[Список рисунков: в Word — правой кнопкой → «Обновить поле»]")
+        else:                                       # уровней — сколько в оглавлении оригинала
+            _field(par, f'TOC \\o "1-{info.get("levels") or 3}" \\h \\z \\u',
+                   "[Оглавление: в Word — правой кнопкой → «Обновить поле»]")
         self._toc_n += 1
 
     def block(self, b):
@@ -656,7 +872,7 @@ class Builder:
         elif k == "table":
             self.table(b)
         elif k == "toc":
-            self.toc()
+            self.toc(b)
 
     # ---------------------------------------------------------------- лист, колонтитулы, титул
     def _page(self, sec, L, left, right, top, bottom):
@@ -728,6 +944,10 @@ class Builder:
         for c, w in zip(t.columns, L["stamp_widths"]):
             for cell in c.cells:
                 cell.width = Pt(w)
+        if L["stamp_widths"]:                  # и сетка таблицы: LibreOffice берёт ширины из неё, а не из ячеек
+            t.autofit = False
+            for gc, w in zip(t._tbl.tblGrid.findall(W + "gridCol"), L["stamp_widths"]):
+                gc.set(W + "w", str(round(w * 20)))
         for ri, row in enumerate(grid):
             for ci, txt in enumerate(row["cells"]):
                 p = t.cell(ri, ci).paragraphs[0]
@@ -753,6 +973,7 @@ class Builder:
         if (self.P.get("page") or {}).get("right"):
             L = dict(L, right=self.P["page"]["right"])      # правое поле — по краю выключки текста, не по таблицам
         self.L = L
+        self._toc_styles(blocks)
         first = self.doc.sections[0]
         prev_bottom = None
         self._page(first, L, L["title_left"], 20, 40, 30)
@@ -806,8 +1027,43 @@ class Builder:
                 self.paragraph(b, tgt=foot)
             if first_p is not None:
                 first_p._p.getparent().remove(first_p._p)
+        self._tab_groups()
         self.doc.settings.element.append(_el("w:updateFields", w__val="true"))
         self.doc.save(out)
+
+    def _tab_groups(self):
+        """Пары «подпись ⇥ значение» подряд с одной табуляцией (титул: «Műszaki változás száma⇥10776»): позиция —
+        общая и не ближе самой длинной русской подписи, иначе значение длинной подписи уезжало на следующую
+        табуляцию («Номер технического изменения 10776» не в столбце, UTS 16.10). Ширина — латиница по метрике
+        Helvetica, кириллица и прочее — средней шириной Tahoma (у Helvetica PDF нет кириллицы, шрифтов Word на
+        сервере нет), с запасом."""
+        from docx.shared import Pt
+        normal = (self.doc.styles["Normal"].font.size or Pt(10)).pt
+        pars = self.doc.paragraphs
+
+        def stop(p):
+            ts = p.paragraph_format.tab_stops
+            return ts[0].position if len(ts) == 1 and "\t" in p.text else None
+
+        i = 0
+        while i < len(pars):
+            pos = stop(pars[i])
+            if pos is None:
+                i += 1
+                continue
+            j = i
+            while j < len(pars) and stop(pars[j]) == pos:
+                j += 1
+            need = 0.0
+            for p in pars[i:j]:
+                size = (p.style.font.size.pt if p.style.font.size else normal)
+                ind = p.paragraph_format.left_indent.pt if p.paragraph_format.left_indent else 0.0
+                need = max(need, ind + 1.1 * _text_w(p.text.split("\t")[0], size) + 8)
+            if need > pos.pt:
+                for p in pars[i:j]:
+                    p.paragraph_format.tab_stops.clear_all()
+                    p.paragraph_format.tab_stops.add_tab_stop(Pt(round(need)))
+            i = j
 
 
 # ---------------------------------------------------------------- в конвейере (pipeline.extract, struct_fill; assemble)

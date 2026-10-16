@@ -542,6 +542,34 @@ def source_path(d):
     return Path(d["file"])
 
 
+def pdf_from_docx(docx, pdf, timeout=900):
+    """PDF перевода из готового DOCX (lo_pdf.py: LibreOffice без окна, оглавление и поля обновлены) — решение
+    Максима 16.10 вместо PDF «на месте», где не помещающийся русский текст ужимался. Нет LibreOffice или python
+    с модулем uno — OSError (остаётся PDF в вёрстке оригинала)."""
+    import os, shutil, subprocess
+    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    win = Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "LibreOffice" / "program" / "soffice.exe"
+    if not soffice and win.exists():
+        soffice = str(win)
+    if not soffice:
+        raise FileNotFoundError("LibreOffice (soffice) не установлен")
+    py = os.environ.get("HUT_LO_PYTHON") or next(
+        (p for p in ("/usr/bin/python3", str(Path(soffice).with_name("python.exe")), str(Path(soffice).with_name("python")))
+         if Path(p).exists()), None)
+    if not py:
+        raise FileNotFoundError("нет python с модулем uno (python3-uno)")
+    tmp = Path(pdf).with_name(Path(pdf).stem + ".lo.tmp.pdf")
+    r = subprocess.run([py, str(Path(__file__).with_name("lo_pdf.py")), str(docx), str(tmp), soffice],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+    if r.returncode != 0 or not tmp.exists():
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError("LibreOffice: " + ((r.stderr or r.stdout).strip()[-300:] or f"код {r.returncode}"))
+    os.replace(tmp, pdf)
+    import fitz
+    with fitz.open(pdf) as doc:
+        return {"from": "DOCX (LibreOffice)", "pages": doc.page_count}
+
+
 def assemble_all(jf, d, out_dir=None, progress=None):
     """Перевод в исходном формате (DOCX на месте / PDF на месте + DOCX по разметке, из оригинала или из переведённого
     PDF) и таблица вычитки.
@@ -561,6 +589,11 @@ def assemble_all(jf, d, out_dir=None, progress=None):
                 info["docx"], rows = build_struct_docx(src, outd / f"{stem}_RU.docx", d["segs"], d["res"],
                                                        (d.get("polish") or {}).get("rules"),
                                                        progress=lambda x: tick(0.4 + 0.6 * x))
+                import subprocess
+                try:                                    # PDF — из этого DOCX; без LibreOffice — в вёрстке оригинала
+                    info["pdf"] = pdf_from_docx(outd / f"{stem}_RU.docx", outd / f"{stem}_RU.pdf")
+                except (OSError, RuntimeError, subprocess.SubprocessError) as e:
+                    info["pdf"] = {"from": "вёрстка оригинала", "reason": f"{type(e).__name__}: {e}"[:200]}
             except Exception as e:                      # noqa: BLE001 — DOCX прежним путём, причина — в отчёт сборки
                 info["docx"] = docx_from_pdf(outd / f"{stem}_RU.pdf", outd / f"{stem}_RU.docx",
                                              progress=lambda x: tick(0.4 + 0.6 * x))
