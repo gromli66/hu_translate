@@ -314,7 +314,7 @@ def test_toc_like_original_levels_bold_title_and_unnumbered_entry(tmp_path):
 
 
 # ---------------------------------------------------------------- в конвейере: извлечение → структура → шлифовка → сборка
-def tagged_pdf(path, pages, tagged=True):
+def tagged_pdf(path, pages, tagged=True, producer="Microsoft® Word 2019"):
     """PDF «как из Word»: pages — [[(тег, текст, x, y, кегль, жирный)]], каждая строка — свой элемент дерева разметки
     со своим MCID. Возвращает рамки строк [(стр., текст, Rect, кегль, жирный)] — из них сегменты страниц."""
     doc = fitz.open()
@@ -346,6 +346,7 @@ def tagged_pdf(path, pages, tagged=True):
         doc.update_object(sect, f"<< /Type /StructElem /S /Sect /P {root} 0 R /K [{' '.join(f'{k} 0 R' for k in kids)}] >>")
         doc.update_object(root, f"<< /Type /StructTreeRoot /K [{sect} 0 R] >>")
         doc.xref_set_key(doc.pdf_catalog(), "StructTreeRoot", f"{root} 0 R")
+    doc.set_metadata({"producer": producer, "creator": producer})
     doc.save(path)
     return lines
 
@@ -378,6 +379,9 @@ def test_tagged_pdf_is_recognized_by_coverage(tmp_path):
     assert B.coverage(str(tmp_path / "t.pdf"), page_segs(lines)) == 1.0
     plain = tagged_pdf(tmp_path / "p.pdf", PAGES, tagged=False)
     assert B.coverage(str(tmp_path / "p.pdf"), page_segs(plain)) == 0.0      # без разметки — прежним путём
+    # разметка не из Word (Acrobat ставит её сам, дерево иное: 31RDGT развалился) — прежним путём
+    acro = tagged_pdf(tmp_path / "a.pdf", PAGES, producer="Adobe PDF Library 20.1.68")
+    assert B.coverage(str(tmp_path / "a.pdf"), page_segs(acro)) == 0.0
 
 
 def test_pipeline_struct_fill_polish_assemble(tmp_path, monkeypatch):

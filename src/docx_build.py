@@ -205,8 +205,11 @@ def code_part(src, ru):
     if s.startswith("<") and s.endswith(">") and not ru.strip().startswith("<"):
         return src[:len(src) - len(src.lstrip())] + "<" + ru.strip() + ">" + src[len(src.rstrip()):]
     return ru
-LABEL_T = re.compile(r"^(\s*(?:<f\d+>)?)\s*(?:\d{1,3}|[A-Za-z]|[ivxIVX]{2,5})[.)]\s+(?=\S)")
-LABEL_RU_T = re.compile(r"^(\s*(?:<f\d+>)?)\s*(?:\d{1,3}|[A-Za-zА-Яа-яЁё]|[ivxIVX]{2,5})[.)]\s+(?=\S)")
+# метка пункта в начале сегмента страницы: «a.», «1)», составная «E.1.», «4.1.2.», «a.)», маркер-тире «–»; дерево Word
+# отдаёт её отдельно (Lbl), и сборка ищет перевод текста без неё (ÜFK I: 680 абзацев не находились, 16.10)
+_LBL = r"(?:(?:\d{1,3}|LL|[ivxIVX]{2,5})(?:\.(?:\d{1,3}|LL))*(?:\.\)|[.)])|[–\-•▪◦·])"
+LABEL_T = re.compile(r"^(\s*(?:<f\d+>)?)\s*" + _LBL.replace("LL", "[A-Za-z]") + r"\s+(?=\S)")
+LABEL_RU_T = re.compile(r"^(\s*(?:<f\d+>)?)\s*" + _LBL.replace("LL", "[A-Za-zА-Яа-яЁё]") + r"\s+(?=\S)")
 
 
 class Memory:
@@ -233,6 +236,8 @@ class Memory:
         mh, mr = LABEL_T.match(hu), LABEL_RU_T.match(ru)
         if mh and mr:
             self.add(mh.group(1) + hu[mh.end():], mr.group(1) + ru[mr.end():])
+        elif mh:                                    # перевод без метки (тире перевод опустил) — как есть
+            self.add(mh.group(1) + hu[mh.end():], ru)
 
     def get(self, text):
         if not self.need(TAGS.sub("", text)):
@@ -1100,6 +1105,11 @@ def coverage(pdf, segs):
     from segments import needs_translation
     doc = fitz.open(pdf)
     if doc.xref_get_key(doc.pdf_catalog(), "StructTreeRoot")[0] == "null":
+        return 0.0
+    # дерево — по соглашениям экспорта Word (Lbl/LBody, TOC, ячейки TD); разметку Acrobat/PDF24 ставят автоматически:
+    # абзацы прямо в строке таблицы мимо ячеек — DOCX разваливался (31RDGT: столбцы нулевой ширины, 102 стр., 16.10)
+    meta = doc.metadata or {}
+    if not re.search(r"Microsoft.{0,4}Word", (meta.get("producer") or "") + " " + (meta.get("creator") or ""), re.I):
         return 0.0
     blocks, _ = docx_struct.load(str(pdf))
     blob = "".join(KEY(text_of(b["runs"])) for b in _paras(blocks))
