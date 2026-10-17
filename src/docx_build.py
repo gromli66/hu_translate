@@ -116,9 +116,17 @@ def merge_inline(blocks):
         prev = out[-1] if out else None
         g, pg = b.get("geom") or {}, (prev or {}).get("geom") or {}
         # ссылка рядом с абзацем (Link/Span) — часть абзаца; хвост после неё на той же строке — тоже
+        # строчный элемент — только у конца абзаца (тот же лист, до следующей строки): подписи рисунков JPDS тоже
+        # строчные, и «Рисунок 14 … Рисунок 15 … Рисунок 20» слипались в один абзац с разных листов (17.10)
+        size = pg.get("size") or 10
+        low = max(pg.get("bottom") or pg.get("top") or 0, (prev or {}).get("last_bottom") or 0)
+        near = not g.get("top") or not pg.get("top") or g.get("page") == pg.get("page") \
+            and pg["top"] - 3 <= g["top"] <= low + 0.6 * size
+        cap = bool(__import__("docx_struct").CAPTION_ANY.match(text_of(b.get("runs") or []))) and \
+            abs((g.get("top") or 0) - (prev or {}).get("last_top", pg.get("top") or 0)) >= 6
         joins = prev is not None and prev["k"] == "p" and b["k"] == "p" and not _figure(prev) and not _figure(b) \
             and not b.get("seg") and not prev.get("seg") and (      # абзацы по сегментам листа уже собраны (docx_layout)
-            b.get("inline")
+            b.get("inline") and near and not cap
             or (prev.get("tail_inline") and g and g.get("page") == pg.get("page")
                 and abs(g["top"] - (prev.get("last_top") or 0)) < 6)
             or (g and pg and g["page"] == pg["page"] and abs(g["top"] - prev.get("last_top", pg["top"])) < 6
@@ -136,11 +144,18 @@ def merge_inline(blocks):
                 merged = insert_imgs(prev["runs"], runs)        # значок без скобок — на своё место в строке
             else:
                 pt, nt = text_of(prev["runs"]), text_of(runs)
-                if pt and nt and "t" in runs[0] and not pt.endswith((" ", "\t", "(", "„", "«")) \
+                # пробел — только если на листе между кусками промежуток: Word кладёт «i» и «5» в разные элементы
+                # («Core i 5», «по явятся» в ТЭ357, 17.10)
+                a, z = prev["runs"][-1], runs[0]
+                touch = a.get("x1") is not None and z.get("x") is not None and a.get("page") == z.get("page") \
+                    and abs((a.get("top") or 0) - (z.get("top") or 0)) < 0.5 * (a.get("size") or 10) \
+                    and -1 <= z["x"] - a["x1"] < 0.12 * (a.get("size") or 10)
+                if pt and nt and "t" in runs[0] and not touch and not pt.endswith((" ", "\t", "(", "„", "«")) \
                         and not nt.startswith((" ", ".", ",", ";", ":", ")", "”", "»")):
                     runs[0]["t"] = " " + runs[0]["t"]          # «(lásd:» + «5.6.4.7» + «fejezet)» — с пробелами
                 merged = prev["runs"] + runs
             out[-1] = dict(prev, runs=merged, last_top=g.get("top", prev.get("last_top")),
+                           last_bottom=max(g.get("bottom") or 0, prev.get("last_bottom") or 0),
                            tail_inline=bool(b.get("inline")), **__import__("docx_struct").join_notes(prev, b))
             continue
         out.append(b)
@@ -558,7 +573,9 @@ class Builder:
                 l = _el("w:lvl", w__ilvl=lv)
                 l.append(_el("w:start", w__val=1))
                 fontn = None
-                if kind in NUMFMT:
+                if kind == "Label":                         # метка — в тексте пункта («ba)», «(a)»): без маркера
+                    l.append(_el("w:numFmt", w__val="none")); l.append(_el("w:lvlText", w__val=""))
+                elif kind in NUMFMT:
                     fmt = NUMFMT[kind] if lv == 0 else ["lowerLetter", "lowerRoman", "decimal"][(lv - 1) % 3]
                     l.append(_el("w:numFmt", w__val=fmt))
                     l.append(_el("w:lvlText", w__val=f"%{lv + 1}" + ((suffix or ".") if lv == 0 else ".")))
@@ -596,15 +613,44 @@ class Builder:
         if data:
             w = float(img["x1"]) - float(img["x0"])
             if getattr(self, "L", None):                    # не шире поля набора
+                w0 = w
                 w = min(w, self.L["W"] - self.L["left"] - self.L["right"])
+                # и не выше поля набора без места под подпись: снимок во весь лист уводил «Рисунок 17» на следующий
+                # лист (ИН-1065, 18.10)
+                h = (float(img.get("bottom") or 0) - float(img.get("top") or 0)) * w / w0 if w0 > 0 else 0
+                room = self.L["H"] - self.L["top"] - self.L["bottom"] - 48
+                if h > room > 100:
+                    w *= room / h
             par.add_run().add_picture(io.BytesIO(data), width=Pt(w))
 
-    def _put_runs(self, par, runs, style_bold=False):
+    def _own_size(self, runs, style):
+        """Кегль абзаца, если он не кегль его стиля (на 1 pt и больше): титул 14 pt и выходные данные 10 pt при теле
+        12 pt печатались 12 pt (OAH 4.22, 18.10). Только при точном кегле — из знаков PDF (L["sizes"]), не из оценки
+        распознавания."""
+        if not (getattr(self, "L", None) or {}).get("sizes"):
+            return None
+        from docx.shared import Pt
+        c = Counter()
+        for r in runs:
+            if "t" in r and r.get("size"):
+                c[float(r["size"])] += len(r["t"].strip())
+        if not c or not max(c.values()):
+            return None
+        size = c.most_common(1)[0][0]
+        st = self.doc.styles[style]
+        while st is not None and st.font.size is None:
+            st = st.base_style
+        have = st.font.size.pt if st is not None else (self.doc.styles["Normal"].font.size or Pt(10)).pt
+        return size if abs(size - have) >= 1 else None
+
+    def _put_runs(self, par, runs, style_bold=False, size=None):
         """Текст с переводом. Одно начертание — перевод целиком; несколько (жирное «FIGYELEM!» + текст) — перевод
-        с метками <fN>, каждой группе своё начертание. Картинки в начале — перед текстом, иначе — после."""
-        from docx.shared import RGBColor
+        с метками <fN>, каждой группе своё начертание. Картинки в начале — перед текстом, иначе — после. size — свой
+        кегль абзаца (_own_size)."""
+        from docx.shared import RGBColor, Pt
         texts = [r for r in runs if "t" in r]
-        imgs = [r for r in runs if "img" in r and not r.get("paren")]
+        imgs = [r for r in runs if "img" in r and not r.get("paren") and not r.get("at_tab")]
+        timgs = [r for r in runs if r.get("at_tab")]          # значки на месте табуляции (docx_struct.inline_pictures)
         pimgs = [r for r in runs if "img" in r and r.get("paren")]      # значки в «()» — на то же место в переводе
         # значок в начале — первым после пустых прогонов (табуляция после снятого маркера пункта)
         head = next((r for r in runs if "img" in r or r["t"].strip()), None)
@@ -678,6 +724,8 @@ class Builder:
                 if not piece or m and not m.group(2):
                     continue
                 run = par.add_run(m.group(2) if m else piece)
+                if size:
+                    run.font.size = Pt(size)
                 if m:
                     if m.group(1) == "sub":
                         run.font.subscript = True
@@ -694,6 +742,11 @@ class Builder:
                     if color and color != "ffffff":
                         run.font.color.rgb = RGBColor.from_string(color.upper())
         for key, t in out:
+            while t and timgs and "	" in t:
+                k = t.index("	")
+                text_run(t[:k].rstrip() + " ", key)
+                self._img_run(par, timgs.pop(0)["img"])
+                t = " " + t[k + 1:].lstrip()
             while t and pimgs and re.search(r"\(\s*\)", t):
                 m = re.search(r"\(\s*\)", t)
                 text_run(t[:m.start() + 1], key)
@@ -701,7 +754,7 @@ class Builder:
                 t = ")" + t[m.end():]
             if t:
                 text_run(t, key)
-        for im in ([] if lead_img else imgs) + pimgs:
+        for im in ([] if lead_img else imgs) + pimgs + timgs:
             self._img_run(par, im["img"])
         # пункт оглавления оригинала без номера раздела (шапка таблицы) — уровень структуры, чтобы его видело поле TOC
         lv = getattr(self, "toc_extra", {}).get(KEY(text_of(runs)))
@@ -771,7 +824,16 @@ class Builder:
                 if 6 <= d < 0.5 * (self.L["W"] - self.L["left"] - self.L["right"]):
                     style = self._indented(d)
         par = tgt.add_paragraph(style=style)
-        self._put_runs(par, runs, style_bold=style in ("Title UTS",))
+        # в ячейке кегль — стилем таблицы (ужатым под ширину, «Table Text Small»)
+        self._put_runs(par, runs, style_bold=style in ("Title UTS",),
+                       size=self._own_size(runs, style) if tgt is self.doc else None)
+        # строка-заголовок не из разметки (вся полужирная, короткая, без знака конца фразы: «FŐIGAZGATÓI ELŐSZÓ» OAH,
+        # «4. ТЕХНИЧЕСКИЕ ДАННЫЕ …» ИН-1065) — не последней строкой листа, со следующим абзацем (оставалась внизу
+        # листа, текст — на следующем, 18.10)
+        ink = [r for r in runs if "t" in r and r["t"].strip()]
+        if tgt is self.doc and ink and all(r.get("b") for r in ink) and len(text) <= 160 \
+                and not text.endswith((".", ",", ";", ":")) and re.search(r"[^\W\d_]{3}", text):
+            par.paragraph_format.keep_with_next = True
         for n in b.get("notes") or []:
             self._footnote(par, n)
         return par
@@ -915,7 +977,12 @@ class Builder:
         auto = getattr(self, "autonum", True)
         if ru:
             par = self.doc.add_paragraph(style=self._head_style(b))
-            par.add_run(re.sub(r"^\s*\d+(?:\.\d+)*\.?\s*", "", ru) if auto else ru)
+            run = par.add_run(re.sub(r"^\s*\d+(?:\.\d+)*\.?\s*", "", ru) if auto else ru)
+            # цвет заголовка — общий цвет его текста в оригинале (синие «Приложение 1 …» ИН-1172 выходили чёрными)
+            cols = {(r.get("color") or "000000").lower() for r in b["runs"] if r.get("t", "").strip()}
+            if len(cols) == 1 and cols - {"000000", "ffffff"}:
+                from docx.shared import RGBColor
+                run.font.color.rgb = RGBColor.from_string(cols.pop().upper())
             return par
         runs = [dict(r) for r in b["runs"] if "t" in r]
         if not auto:                                         # номер оригинала — текстом, его не даёт нумерация
@@ -1196,8 +1263,10 @@ class Builder:
                     first._p.getparent().remove(first._p)
                 elif not used:                               # пустая ячейка — стилем таблицы: «Обычный» (8 pt после,
                     first.style = self.doc.styles[style]     # 1,15) раздувал строку (история изменений UTS, 16.10)
-                if head and fr.get("fill") and b.get("borders", True):
-                    dc._tc.get_or_add_tcPr().append(_el("w:shd", w__val="clear", w__color="auto", w__fill=fr["fill"]))
+                fill = fr.get("fill") if head and b.get("borders", True) else None
+                fill = fill or cell.get("fill")                     # заливка ячейки по оригиналу (docx_struct)
+                if fill:
+                    dc._tc.get_or_add_tcPr().append(_el("w:shd", w__val="clear", w__color="auto", w__fill=fill))
         self.doc.add_paragraph(style="Table Text")        # Word: после таблицы — абзац
 
     def _cell_borders(self, dc, edges, color):
@@ -1337,6 +1406,13 @@ class Builder:
         elif k == "list":
             self.list_(b, b.get("level", 0))                # уровень по отступу оригинала (docx_layout)
         elif k == "table":
+            if b.get("break") and not fresh:
+                # разрыв перед таблицей — пустым абзацем в 1 pt «с новой страницы»: у таблицы своего разрыва нет
+                from docx.shared import Pt
+                par = self.doc.add_paragraph(style="Table Text")
+                par.paragraph_format.page_break_before = True
+                par.paragraph_format.space_before = par.paragraph_format.space_after = Pt(0)
+                par.paragraph_format.line_spacing = Pt(1)
             self.table(b)
         elif k == "toc":
             self.toc(b)
@@ -1726,8 +1802,10 @@ class Builder:
             if in_title and b["k"] == "p" and b["runs"] and all("img" in r for r in b["runs"]) and g.get("x1") \
                     and (g["x1"] - g["x0"]) * ((g.get("bottom") or g["top"]) - g["top"]) > 0.4 * L["W"] * L["H"]:
                 continue                                     # фон обложки (UTS) — не картинкой в потоке
-            if in_title and b["k"] == "p" and g.get("top", 0) > 0.8 * L["H"]:
-                title_foot.append(b)                         # юридический текст внизу титула — в подвал титула
+            # юридический текст внизу титула — в подвал титула; только ниже поля тела (UTS: 780 pt при поле 728),
+            # дата титула выше поля — в потоке (OAH 4.22: «2015. szeptember» на 681 pt уходила в подвал к логотипу)
+            if in_title and b["k"] == "p" and g.get("top", 0) > max(0.8 * L["H"], L["H"] - L["bottom"] - 2):
+                title_foot.append(b)
                 continue
             self.block(b)
             pg = g.get("page")
@@ -1900,12 +1978,12 @@ def blocks_layout(pdf, segs, mode):
         import docx_layout
         blocks, info = docx_layout.load(str(pdf), segs, text=mode == "text")
         if mode == "text":
-            return blocks, docx_struct.layout(str(pdf), blocks, content=info.get("content_boxes"))
+            return blocks, dict(docx_struct.layout(str(pdf), blocks, content=info.get("content_boxes")), sizes=True)
         return blocks, docx_layout.layout(str(pdf), blocks, segs, info)
     blocks, _ = docx_struct.load(str(pdf))
     blocks = docx_struct.compose_figures(blocks, str(pdf))   # не в load: load зовёт и coverage при извлечении
     docx_struct.list_geo(blocks)
-    return blocks, docx_struct.layout(str(pdf), blocks)
+    return blocks, dict(docx_struct.layout(str(pdf), blocks), sizes=True)    # кегль — из знаков PDF, точный
 
 
 def job_memory(segs, res):

@@ -420,7 +420,7 @@ def build_struct_docx(src, out, segs, res, rules=None, progress=None, mode="stru
         ru = TAG.sub("", r.get("ru") or "").strip()
         if sh and ru and not r.get("copied") and ru != s["text"]:
             shot_items.setdefault(sh["xref"], []).append((sh, ru))
-    cache = {}
+    cache, turned = {}, {}
 
     ov = fitz.open(overlay) if overlay and Path(overlay).exists() else None
 
@@ -450,6 +450,14 @@ def build_struct_docx(src, out, segs, res, rules=None, progress=None, mode="stru
         try:
             masked = any(doc.xref_get_key(x, k)[0] != "null" for k in ("SMask", "Mask")) \
                 or doc.xref_get_key(x, "ImageMask")[1] == "true"
+            # картинка нарисована с отражением или поворотом (окно настроек JPDS выходило вверх ногами, 17.10) —
+            # снимком с листа, как видна
+            pno = (img.get("page_number") or 2) - 1
+            if pno not in turned:
+                turned[pno] = {i["xref"] for i in doc[pno].get_image_info(xrefs=True) if i["xref"] and (
+                    i["transform"][0] < 0 or i["transform"][3] < 0 or abs(i["transform"][1]) > 1e-3
+                    or abs(i["transform"][2]) > 1e-3)}
+            masked = masked or x in turned[pno]
             if x in shot_items and not masked:
                 data = SH.render(doc, x, shot_items[x]).tobytes("png")          # переведённый скриншот
             elif masked:

@@ -629,7 +629,8 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=()):
             row.append({"blocks": paras, "th": False, "geom": geom, "edges": e, "span": z - a})
         rows.append(row)
     head = [p for c in rows[0] for p in c["blocks"]] if rows else []
-    if head and len(rows) > 1 and all(r.get("b") for p in head for r in p["runs"] if r["t"].strip()):
+    # картинка в ячейке шапки (значок, JPDS текстовым слоем) — не текст: KeyError 't' ронял сборку (18.10)
+    if head and len(rows) > 1 and all(r.get("b") for p in head for r in p["runs"] if r.get("t", "").strip()):
         for c in rows[0]:
             c["th"] = True                                  # шапка — первая строка, если вся полужирная
     return {"k": "table", "rows": rows, "borders": True, "frame": {"xs": [round(x, 1) for x in xs]},
@@ -709,10 +710,14 @@ def _regions(doc, content, bold, font, size, mono, mask=None):
     import fitz
     import numpy as np
     from layout import rules_from_image
-    draw = [page.get_cdrawings() for page in doc]
-    per, scans = [], []
-    for page, d in zip(doc, draw):
+    # от путей листа нужны линии (здесь) и рамки (для рисунков): все пути всех листов держали в памяти до 6,6 ГБ —
+    # у 3PR42 текст нарисован контурами, тысячи путей на лист (17.10)
+    draw, per, scans = [], [], []
+    for page in doc:
+        d = page.get_cdrawings()
+        draw.append([{"rect": x["rect"]} for x in d])
         hs, vs = _rules(d)
+        del d
         scan = is_scan(page)                                # отдельный скан в документе: линий-векторов нет
         if scan:
             pix = page.get_pixmap(dpi=200, colorspace=fitz.csGRAY)
@@ -956,15 +961,28 @@ def _continues(prev, s, lh):
     head = s["text"].lstrip()
     start = head[:1].islower() or (head[:1].isdigit() and not re.match(r"\d+(?:\.\d+)*\.\s", head))
     edge = min(abs(x0 - g["x0"]), abs(x0 - g.get("last_x0", g["x0"])))
-    return bool(t) and t[-1] not in ".:;!?" and "\t" not in t and edge < 6 and \
+    # первая строка абзаца с красной строкой: вторая левее (до 40 pt), обе — до одного правого края (выключка по
+    # ширине): «2.2.2. Текст ПЗ … написан акку-» / «ратно от руки …» (NSU, 18.10) — было два абзаца
+    indent = (g.get("lines") or 1) == 1 and 0 < g["x0"] - x0 <= 40 and g.get("x1") is not None \
+        and abs(s["loc"]["bbox"][2] - g["x1"]) < 3
+    return bool(t) and t[-1] not in ".:;!?" and "\t" not in t and (edge < 6 or indent) and \
         -2 <= y0 - g["bottom"] < 0.8 * lh and start
 
 
+SUSPENDED = re.compile(r"(?:és|vagy|illetve|ill\.|и|или|либо|and|or)\s", re.I)   # «fűtő- és …»: дефис — не перенос
+
+
 def _join(prev, runs, geom):
-    """Строку — в конец абзаца: через пробел (после переноса «bar-» — без него), прогоны одного начертания — одним."""
+    """Строку — в конец абзаца: через пробел (после переноса «bar-» — без него и без дефиса, как layout.join_lines:
+    «акку-» + «ратно» печаталось «акку-ратно», NSU 18.10; дефис составного слова и после прописной или цифры — на
+    месте), прогоны одного начертания — одним."""
     tail = prev["runs"][-1]
-    if not tail["t"].endswith((" ", "-")):
-        tail["t"] += " "
+    head = (runs[0].get("t") or "") if runs else ""
+    if tail["t"].endswith("-") and head[:1].islower() and not SUSPENDED.match(head) \
+            and not re.search(r"[A-ZÁÉÍÓÖŐÚÜŰА-ЯЁ0-9]-$", tail["t"]) and not re.search(r"\w-\w+-$", tail["t"]):
+        tail["t"] = tail["t"][:-1]
+    elif not tail["t"].endswith(" ") and (not tail["t"].endswith("-") or SUSPENDED.match(head)):
+        tail["t"] += " "                                    # «fűtő- és hűtő…» — дефис с пробелом перед союзом
     for r in runs:
         tail = prev["runs"][-1]
         if (tail.get("b"), tail.get("i")) == (r.get("b"), r.get("i")) and not tail.get("tabs") and not tail.get("rtab"):

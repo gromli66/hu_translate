@@ -842,6 +842,43 @@ def test_row_cut_by_page_tail_goes_back_to_its_cells():
     assert B.text_of(got[1][0]["blocks"][0]["runs"]) == "1"
 
 
+def test_header_without_th_repeated_joins_and_icons_go_to_their_rows():
+    """Шапка без TH, повторённая на новом листе, — та же таблица; значки строк прошлого листа, вложенные Word в повтор
+    шапки, — в свои ячейки по месту на листе; хвост строки, начатый пунктом списка, — в её список (JPDS табл. 15)."""
+    def cell(blocks, page, x0, top):
+        return {"blocks": blocks, "th": False, "attrs": {},
+                "geom": {"page": page, "top": top, "bottom": top + 12, "x0": x0, "x1": x0 + 60, "size": 10}}
+    icon = lambda top: dict(p("", 1, top, x0=12), runs=[{"img": {"x0": 12, "x1": 30}}],
+                            geom=dict(p("", 1, top, x0=12)["geom"], x1=30.0))
+    hdr = lambda pg: [cell([p("Jel", pg, 50, x0=10)], pg, 10, 50), cell([p("Leírás", pg, 50, x0=100)], pg, 100, 50)]
+    item = lambda t, pg, top: lst("bullet", [[p(t, pg, top, x0=100)]])
+    a = {"k": "table", "geom": {"page": 1, "top": 50}, "rows": [
+        hdr(1), [cell([], 1, 10, 80), cell([p("Ablak címe.", 1, 80, x0=100)], 1, 100, 80)],
+        [cell([], 1, 10, 110), cell([p("Rádiógombok:", 1, 110, x0=100), item("– MOD", 1, 124)], 1, 100, 110)]]}
+    h2 = hdr(2)
+    h2[1]["blocks"] += [icon(80), icon(110)]
+    b = {"k": "table", "geom": {"page": 2, "top": 50}, "rows": [
+        h2, [cell([item("– ADD", 2, 70)], 2, 100, 70)],
+        [cell([], 2, 10, 100), cell([p("Kapcsolók.", 2, 100, x0=100)], 2, 100, 100)]]}
+    got = D.adopt(D.join_tables([a, b]))
+    assert [x["k"] for x in got] == ["table"]
+    rows = got[0]["rows"]
+    assert len(rows) == 4                                   # шапка, две строки листа 1, строка листа 2
+    assert [sum("img" in q for x in r[0]["blocks"] for q in x["runs"]) for r in rows[1:3]] == [1, 1]
+    assert len(rows[2][1]["blocks"][-1]["items"]) == 2      # «– MOD», «– ADD» — один список
+
+
+def test_caption_in_last_cell_below_text_after_table_leaves_it():
+    """Подпись следующего рисунка, вложенная Word в последнюю ячейку таблицы, на том же листе ниже текста после
+    таблицы, — прочь из таблицы, на своё место (JPDS л. 69: «Рисунок 60» печаталась в ячейке)."""
+    c = {"blocks": [p("Gombok:", 1, 200, x0=100), lst("bullet", [[p("Ábra 60 – Ablak", 1, 735)]])], "th": False,
+         "attrs": {}, "geom": {"page": 1, "top": 200, "bottom": 747, "x0": 100, "x1": 500}}
+    t = {"k": "table", "geom": {"page": 1, "top": 100}, "rows": [[c]]}
+    got = D.evict([t, p("4.3.2.1 Változó", 1, 395), p("Az ablak:", 1, 414)])
+    assert [B.text_of(x.get("runs") or []) for x in got[1:]] == ["4.3.2.1 Változó", "Az ablak:", "Ábra 60 – Ablak"]
+    assert len(got[0]["rows"][0][0]["blocks"]) == 1
+
+
 def test_paragraph_cut_by_page_is_one():
     """Абзац, разрезанный листом, Word размечает двумя P — снова один; начатый с прописной после точки — свой."""
     a = p("Пуск регулятор блок уставка время выполняется расход", 3, 700)
@@ -1120,6 +1157,122 @@ def test_cell_picture_ignores_page_background_takes_small_icon(tmp_path):
     assert clip(rows[1][0]) and B.text_of(rows[2][1]["blocks"][0]["runs"]).startswith("A gomb")
 
 
+def test_list_tail_below_next_paragraph_goes_after_it():
+    """Рисунок и подпись в последнем пункте, а на листе — ниже абзаца за списком: за этот абзац (JPDS л. 42); пункт,
+    чей рисунок выше абзаца, — на месте."""
+    pic = lambda top: dict(p("", 2, top), runs=[{"img": {"x0": 70, "x1": 570}}], geom=dict(p("", 2, top)["geom"], bottom=top + 250))
+    bs = [lst("bullet", [[p("– Fájlok.", 2, 67)], ]), p("Az adatok megfelelése:", 2, 82), p("Folytatás", 2, 400)]
+    bs[0]["items"][0] += [pic(103), lst("num", [[p("Ábra 37 – Megfelelés", 2, 369)]])]
+    got = D.list_tails(bs)
+    assert [x["k"] for x in got] == ["list", "p", "p", "list", "p"]
+    assert B.text_of(got[1]["runs"]) == "Az adatok megfelelése:" and len(got[0]["items"][0]) == 1
+    keep = [lst("bullet", [[p("– Fájlok.", 2, 67), pic(80)]]), p("Utána", 2, 340)]
+    assert len(D.list_tails(keep)[0]["items"][0]) == 2
+
+
+def test_figures_take_their_place_among_text():
+    """Рисунки с подписями пачкой перед абзацами, что на листе выше них, — по месту; порядок текста не меняется;
+    значок рядом по высоте с абзацем — как в разметке (JPDS л. 109)."""
+    pic = lambda top, h=50: dict(p("", 2, top), runs=[{"img": {"x0": 200, "x1": 400}}],
+                                 geom=dict(p("", 2, top)["geom"], bottom=top + h))
+    bs = [p("Hozzáadás", 2, 82), pic(118), p("105. ábra – Sor", 2, 184), pic(241), p("106. ábra – Kijelölt", 2, 305),
+          p("Kijelölés", 2, 206), pic(203, 12), p("Másolás", 2, 327)]
+    got = [B.text_of(x["runs"]) or "IMG%d" % x["geom"]["top"] for x in D.figures_in_place(bs)]
+    assert got == ["Hozzáadás", "IMG118", "105. ábra – Sor", "Kijelölés", "IMG203", "IMG241", "106. ábra – Kijelölt",
+                   "Másolás"]
+
+
+def test_paragraph_inside_table_row_goes_into_its_cell():
+    """Надпись ячейки, размеченная Word отдельным абзацем до таблицы (образцы «Текст строки» ТЭ357), — в ячейку по
+    строке и столбцу; абзац под таблицей — на месте."""
+    def cell(t, top, x0):
+        return {"blocks": [p(t, 40, top, x0=x0)] if t else [], "th": False, "attrs": {}}
+    t = {"k": "table", "geom": {"page": 40, "top": 204},
+         "rows": [[cell("Megjelenés", 204, 70), cell("Leírás", 204, 300)],
+                  [cell("", 0, 70), cell("háttér színe", 230, 300)], [cell("", 0, 70), cell("dőlt betű", 300, 300)]]}
+    loose = dict(p("Sor szövege", 40, 305, x0=100), geom=dict(p("", 40, 305, x0=100)["geom"], x1=180.0))
+    got = D.adopt([loose, t, p("Utána", 40, 400)])
+    assert [x["k"] for x in got] == ["table", "p"]
+    assert B.text_of(got[0]["rows"][2][0]["blocks"][0]["runs"]) == "Sor szövege"
+
+
+def test_line_hyphen_joins_word_keeps_suspended_and_compound():
+    """Перенос по слогам — слово целиком («акку-» + «ратно», NSU); дефис перед союзом («fűtő- és») и в составном
+    («loss-of-» + «coolant») — на месте."""
+    import layout as LY
+    import docx_layout as DL
+    assert LY.join_lines(["написан акку-", "ратно от руки"]) == "написан аккуратно от руки"
+    assert LY.join_lines(["a fűtő-", "és hűtőrendszer"]) == "a fűtő- és hűtőrendszer"
+    assert LY.join_lines(["loss-of-", "coolant"]) == "loss-of-coolant"
+    par = lambda t: {"k": "p", "runs": [{"t": t}], "geom": {"x1": 300, "bottom": 100}}
+    for a, b, want in [("написан акку-", "ратно", "написан аккуратно"), ("a fűtő-", "és hűtő", "a fűtő- és hűtő"),
+                       ("ÜFK-", "nak", "ÜFK-nak"), ("szöveg", "folytatás", "szöveg folytatás")]:
+        p0 = par(a)
+        DL._join(p0, [{"t": b}], {"x1": 300, "bottom": 112})
+        assert p0["runs"][0]["t"] == want
+
+
+def test_hanging_indent_gap_is_tab():
+    """Промежуток в первой строке до висячего отступа — табуляция («MSZ 27003-0:2013 ⇥ Nukleáris…», OAH), хотя он
+    уже порога «1,8 кегля»; обычный пробел — пробел."""
+    def ch(t, x0, top):
+        return {"text": t, "x0": x0, "x1": x0 + 6, "top": top, "bottom": top + 12, "size": 12.0, "fontname": "Arial"}
+    first = [ch(c, 120 + 6 * i, 100) for i, c in enumerate("MSZ 1:2013")] + \
+            [ch(c, 241 + 6 * i, 100) for i, c in enumerate("Nukl")]
+    rest = [ch(c, 241 + 6 * i, 114) for i, c in enumerate("szab")]
+    assert D._hanging_tab(first + rest) == {id(first[10])}
+    flat = [ch(c, 120 + 6 * i, 114) for i, c in enumerate("szab")]
+    assert not D._hanging_tab(first + flat)
+
+
+def test_body_text_tagged_heading_is_paragraph_and_levels_by_number():
+    """Абзац тела со стилем заголовка (длинный, не полужирный) — абзац; короткий заголовок — заголовок; уровни тегов,
+    расходящиеся с номерами («1.1.» — H1, «6.» — H3, ИН-1172), — по глубине номера."""
+    h = lambda lv, t, b=True, lines=1: {"k": "h", "level": lv, "runs": [{"t": t, "b": b}],
+                                        "geom": {"page": 3, "top": 100, "bottom": 112, "lines": lines}}
+    bs = [h(3, "6.\tAlgoritmusok."), h(1, "1.1. A dokumentum célja."), h(2, "Ez az utasítás a turbina szabályozójának "
+          "működését írja le részletesen, minden üzemállapotban.", b=False, lines=2),
+          h(1, "1.2. Az utasítás ismerete kötelező a következő személyeknek:", b=False), h(2, "Rövid cím", b=False)]
+    got = D.real_headings(bs)
+    assert [b["k"] for b in got] == ["h", "h", "p", "p", "h"]
+    assert got[0]["level"] == 1 and got[1]["level"] == 2
+
+
+def test_icon_after_list_marker_tab_stays_at_item_start():
+    """Значок на табуляции сразу после маркера пункта («•⇥[значок] : …», UTS) — в начале текста, не «на табуляции»
+    (маркер с табуляцией сборка снимает — значок уезжал в конец пункта); на табуляции внутри текста — at_tab."""
+    item = dict(p("", 42, 219), runs=[{"t": "•"}, {"t": "\t", "tabs": [98.0]}, {"t": ": a tesztlépés"}])
+    icon = dict(p("", 42, 219), runs=[{"img": {"x0": 98.4, "x1": 106, "top": 219, "bottom": 227}}])
+    got = D.inline_pictures([item, icon])
+    assert len(got) == 1 and "img" in got[0]["runs"][2] and not got[0]["runs"][2].get("at_tab")
+    par = dict(p("", 82, 300), runs=[{"t": "Нажать\t", "tabs": [160.0]}, {"t": "для выхода"}])
+    esc = dict(p("", 82, 300), runs=[{"img": {"x0": 140, "x1": 160, "top": 300, "bottom": 310}}])
+    got = D.inline_pictures([par, esc])
+    assert got[0]["runs"][1].get("at_tab")
+
+
+def test_cell_fill_legend_stays_in_its_row(tmp_path):
+    """Легенда цветов: заливки соседних строк касаются — картинка ячейки только своей строки, не весь столбец (JPDS:
+    9 копий столбца, +9 листов, 17.10)."""
+    doc = fitz.open()
+    page = doc.new_page()
+    for k, col in enumerate([(1, 0, 0), (0, 1, 0), (0, 0, 1)]):
+        page.draw_rect(fitz.Rect(72, 200 + 31 * k, 318, 230 + 31 * k), fill=col, color=None)
+        page.draw_rect(fitz.Rect(72, 230 + 31 * k, 318, 231 + 31 * k), fill=(0, 0, 0), color=None)   # граница строк
+    f = tmp_path / "legend.pdf"
+    doc.save(f)
+    def cell(t, top):
+        g = {"page": 1, "top": top, "bottom": top + 12, "x0": 330, "x1": 400, "first_x0": 330, "size": 10}
+        return {"blocks": [dict(p(t, 1, top, x0=330), geom=g)], "th": False, "geom": g}
+    rows = [[{"blocks": [], "th": False}, cell(t, 209 + 31 * k)] for k, t in enumerate(["Nyitott", "Kész", "Lezárt"])]
+    t = {"k": "table", "rows": rows, "geom": {"page": 1, "top": 200, "bottom": 293, "x0": 72, "x1": 400}}
+    with fitz.open(f) as d2:
+        D._cell_pictures(t, d2, [t])
+    clips = [[r["img"]["clip"] for x in r0[0]["blocks"] for r in x["runs"] if "img" in r] for r0 in rows]
+    assert all(len(c) == 1 for c in clips)
+    assert all(c[0][3] - c[0][1] < 40 for c in clips)                       # строка, а не столбец в 93 pt
+
+
 def test_heading_number_dot_follows_original(tmp_path):
     """Точка после номера заголовка — по уровню, как в оригинале: «1. Introduction», а «2.1 Scope» — без (Eskom)."""
     from docx import Document
@@ -1176,3 +1329,56 @@ def test_table_column_not_narrower_than_its_picture(tmp_path):
     B.Builder(B.Memory([]), lambda im: png(), PROFILE).build([t], str(out), dict(LAYOUT, first_is_body=True))
     grid = Document(out).tables[0]._tbl.tblGrid.findall(W + "gridCol")
     assert int(grid[0].get(W + "w")) / 20 >= 24 + 12 - 0.5
+
+
+def test_raised_and_lowered_small_chars_become_unicode_indices():
+    """Индекс — мелкий знак выше или ниже строки: «545 ºс» → «545 °с» (ИН-1065), «dm3» → «dm³»; обычные знаки — как
+    есть; соседние элементы разметки без промежутка («Core i» + «5», ТЭ357) — без пробела."""
+    def ch(t, x0, top, size=12.0, w=6.0):
+        return {"text": t, "x0": x0, "x1": x0 + w, "top": top, "bottom": top + size, "size": size,
+                "fontname": "Times New Roman", "page_number": 1}
+    items = [{"ch": ch("5", 100, 100)}, {"ch": ch("4", 106, 100)}, {"ch": ch("5", 112, 100)},
+             {"ch": ch(" ", 118, 100, w=3)}, {"ch": ch("о", 121, 96, size=8, w=4)}, {"ch": ch("с", 125, 100)},
+             {"ch": ch(" ", 131, 100, w=3)}, {"ch": ch("d", 134, 100)}, {"ch": ch("m", 140, 100)},
+             {"ch": ch("3", 146, 97, size=7, w=4)}]
+    assert B.text_of(D._runs(items)) == "545 °с dm³"
+    prev = dict(p("процессор Core", 8, 600), runs=[{"t": "процессор Core", "x": 200.0, "x1": 256.0, "top": 616.7,
+                                                    "page": 8, "size": 12.0}])
+    nxt = dict(p("i5 c тактовой частотой", 8, 600), inline=True,
+               runs=[{"t": "i5 c тактовой частотой", "x": 259.0, "x1": 380.0, "top": 616.7, "page": 8, "size": 12.0}])
+    glued = dict(nxt, runs=[dict(nxt["runs"][0], x=256.5)])
+    assert B.text_of(B.merge_inline([prev, nxt])[0]["runs"]) == "процессор Core i5 c тактовой частотой"
+    assert B.text_of(B.merge_inline([dict(prev, runs=[dict(prev["runs"][0])]), glued])[0]["runs"]) == \
+        "процессор Corei5 c тактовой частотой"
+
+
+def test_icon_after_paragraph_goes_to_its_tab_in_text(tmp_path):
+    """Значок, размеченный отдельным рисунком после абзаца, но стоящий в его строке на месте табуляции (клавиша ESC,
+    ИН-1065), — в абзац на место табуляции: текст целиком, значок между словами."""
+    from docx import Document
+    para = p("при помощь клавиши\tна встроенной клавиатуре, с помощью кнопок", 82, 462)
+    para["geom"]["bottom"] = 563
+    para["runs"][0]["tabs"] = [217.61]
+    icon = {"k": "p", "runs": [{"img": {"x0": 168, "x1": 217, "top": 474, "bottom": 505, "page_number": 82}}],
+            "geom": {"page": 82, "top": 474, "bottom": 505, "x0": 168, "x1": 217, "first_x0": 168, "size": 10}}
+    got = D.inline_pictures([para, icon])
+    assert len(got) == 1 and any(r.get("at_tab") for r in got[0]["runs"])
+    out = tmp_path / "esc.docx"
+    B.Builder(B.Memory([]), lambda im: png(), PROFILE).build(got, str(out), dict(LAYOUT, first_is_body=True))
+    par = next(x for x in Document(out).paragraphs if "клавиши" in x.text)
+    assert par.text.startswith("при помощь клавиши") and "встроенной клавиатуре" in par.text and "\t" not in par.text
+    body = par._p.xml
+    assert body.index("клавиши") < body.index("<w:drawing") < body.index("встроенной")
+
+
+def test_heading_from_memory_keeps_its_color(tmp_path):
+    """Заголовок, текст которого взят из памяти целиком (русский документ, перевод), — цвет общий для его текста в
+    оригинале (синие «Приложение 1 …» ИН-1172 выходили чёрными)."""
+    from docx import Document
+    h = {"k": "h", "level": 1, "runs": [{"t": "Приложение 1 ПОРЯДОК ПОДГОТОВКИ", "font": "Calibri", "size": 13.0,
+                                         "b": False, "i": False, "color": "2e74b5"}],
+         "geom": {"page": 3, "top": 100, "bottom": 112, "x0": 62.4, "x1": 400, "first_x0": 62.4, "size": 13}}
+    out = tmp_path / "hc.docx"
+    B.Builder(B.Memory([]), lambda im: None, PROFILE).build([h], str(out), dict(LAYOUT, first_is_body=True))
+    run = next(x for x in Document(out).paragraphs if x.text).runs[0]
+    assert str(run.font.color.rgb) == "2E74B5"

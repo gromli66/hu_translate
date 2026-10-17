@@ -320,6 +320,8 @@ def join_lines(lines):
             continue
         if not out:
             out = ln
+        elif out.endswith("-") and re.match(r"(?:és|vagy|illetve|ill\.|и|или|либо|and|or)\s", ln, re.I):
+            out += " " + ln                                 # «fűtő- és hűtőrendszer»: дефис перед союзом — не перенос
         elif out.endswith("-") and ln[:1].islower():
             # дефис — часть слова: после прописной или цифры, и в составном через дефис («loss-of-» + «coolant», Eskom)
             keep = re.search(r"[A-ZÁÉÍÓÖŐÚÜŰ0-9]-$", out) or re.search(r"\w-\w+-$", out)

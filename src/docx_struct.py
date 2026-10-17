@@ -59,11 +59,17 @@ def _fmt(ch):
             "color": color}
 
 
+SUP = str.maketrans("0123456789+-oоº°", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻°°°°")
+SUB = str.maketrans("0123456789+-", "₀₁₂₃₄₅₆₇₈₉₊₋")
+
+
 def _runs(items):
     """Символы и картинки одного элемента → прогоны одинакового начертания. Перенос строки — пробел, широкий
     разрыв в строке (табуляция Word) — «\\t»."""
-    runs, prev = [], None
+    runs, prev, base = [], None, None                     # base — последний знак обычного кегля (для индексов)
     just = _justified_gaps([it["ch"] for it in items if "ch" in it])
+    hang = _hanging_tab([it["ch"] for it in items if "ch" in it])
+    bot = lambda c: float(c.get("bottom", float(c["top"]) + float(c["size"])))
     for it in items:
         if "img" in it:
             runs.append({"img": it["img"]}); prev = None; continue
@@ -73,23 +79,34 @@ def _runs(items):
             # формула Word (Cambria Math: «𝑏𝑖𝑛á𝑟𝑖𝑠») — обычными буквами, иначе не переводится; «№», «℃» — как есть
             # (NFKC давал «No1» вместо «№1», ИН-1172, 17.10)
             t = unicodedata.normalize("NFKC", t)
+        # индекс — мелкий знак выше или ниже строки рядом с обычным: знаком Юникода, он переживёт и перевод («545 ºс»
+        # ИН-1065 печаталось «545 ос», «H₃BO₃» ÜFK II — «H3BO3», 17.10)
+        if base is not None and prev is not None and t.strip() and float(ch["size"]) < 0.8 * float(base["size"])                 and abs(float(ch["x0"]) - float(prev["x1"])) < 2 * float(base["size"]):
+            if bot(ch) < bot(base) - 0.2 * float(base["size"]):
+                t = t.translate(SUP)
+            elif bot(ch) > bot(base) + 0.1 * float(base["size"]):
+                t = t.translate(SUB)
+        elif t.strip():
+            base = ch
         if prev is not None:
             # та же строка — и у индекса («H₃BO₃»: «3» ниже и мельче, после него вставлялся пробел, 17.10): знаки
             # перекрываются по высоте
-            bot = lambda c: float(c.get("bottom", float(c["top"]) + float(c["size"])))
             same_line = abs(ch["top"] - prev["top"]) < 0.5 * prev["size"] or min(bot(ch), bot(prev)) - max(
                 float(ch["top"]), float(prev["top"])) > 0.3 * min(bot(ch) - float(ch["top"]), bot(prev) - float(prev["top"]))
             if not same_line and runs and "t" in runs[-1] and not runs[-1]["t"].endswith((" ", "\t")):
                 t = " " + t
-            elif same_line and ch["x0"] - prev["x1"] > 1.8 * prev["size"] and t != " " and id(ch) not in just \
-                    and runs and "t" in runs[-1] and not runs[-1]["t"].endswith("\t"):
+            elif same_line and (ch["x0"] - prev["x1"] > 1.8 * prev["size"] or id(ch) in hang) and t != " " \
+                    and id(ch) not in just and runs and "t" in runs[-1] and not runs[-1]["t"].endswith("\t"):
                 runs[-1]["t"] = runs[-1]["t"].rstrip(" ") + "\t"
                 runs[-1].setdefault("tabs", []).append(float(ch["x0"]))     # позиция табуляции — по оригиналу
         f = _fmt(ch)
         if runs and "t" in runs[-1] and all(runs[-1][k] == f[k] for k in f):
             runs[-1]["t"] += t
+            if t.strip():                       # правый край — по видимым знакам (хвостовой пробел потом срезается)
+                runs[-1]["x1"] = float(ch["x1"])
         else:                                   # начало прогона на листе — место для значка в строке (insert_imgs)
-            runs.append(dict(f, t=t, x=float(ch["x0"]), top=float(ch["top"]), page=ch.get("page_number")))
+            runs.append(dict(f, t=t, x=float(ch["x0"]), x1=float(ch["x1"]) if t.strip() else None, top=float(ch["top"]),
+                             page=ch.get("page_number")))
         prev = ch
     # выключка по ширине даёт широкие пробелы в каждом промежутке строки — это не табуляции («Linux⇥alatt⇥például»):
     # табуляция — один-два разрыва в абзаце
@@ -140,6 +157,31 @@ def _justified_gaps(chars):
     return out
 
 
+def _hanging_tab(chars):
+    """Знак после промежутка в первой строке, стоящий ровно на висячем отступе (где начинаются прочие строки), —
+    табуляция Word к отступу: «MSZ 27003-0:2013 ⇥ Nukleáris…» перечня OAH — промежуток 17,6 pt меньше порога
+    «1,8 кегля», и строка шла растяжкой по ширине (18.10). → множество id знаков."""
+    ink = [c for c in chars if c["text"].strip()]
+    if len(ink) < 3:
+        return set()
+    first = [c for c in ink if abs(float(c["top"]) - float(ink[0]["top"])) < 0.5 * float(ink[0]["size"])]
+    rest = [c for c in ink if c not in first and float(c["top"]) > float(ink[0]["top"])]
+    if not rest:
+        return set()
+    lines, cur = [], [rest[0]]                              # начала прочих строк — один висячий отступ
+    for c in rest[1:]:
+        if abs(float(c["top"]) - float(cur[0]["top"])) < 0.5 * float(cur[0]["size"]):
+            cur.append(c)
+        else:
+            lines.append(cur); cur = [c]
+    lines.append(cur)
+    x = min(float(ln[0]["x0"]) for ln in lines)
+    if any(abs(float(ln[0]["x0"]) - x) > 1.5 for ln in lines) or x < float(first[0]["x0"]) + 20:
+        return set()
+    return {id(b) for a, b in zip(first, first[1:])
+            if abs(float(b["x0"]) - x) < 1.5 and float(b["x0"]) - float(a["x1"]) > 0.8 * float(a["size"])}
+
+
 def _tail_pairs(last, r):
     """Хвост строки last на новом листе (см. _cut_rows) → [(столбец в last, ячейка хвоста)] или []."""
     cell_t = lambda c: " ".join(text_of(x["runs"]) for x in c.get("blocks", []) if x["k"] == "p").strip()
@@ -147,6 +189,9 @@ def _tail_pairs(last, r):
     if not (last and r and len(r) <= len(last) and (page(r) or 0) > (page(last) or 0)) \
             or any((c.get("attrs") or {}).get("ColSpan") for c in r):
         return []
+    # продолжение списка: ячейка выше кончается списком, хвост начат списком («– MOD …» | «– ADD …», JPDS табл. 15)
+    lists = lambda d, c: bool(d.get("blocks") and c.get("blocks")) and d["blocks"][-1]["k"] == "list" \
+        and c["blocks"][0]["k"] == "list"
     pairs = []
     for c in r:
         g = c.get("geom")
@@ -154,10 +199,10 @@ def _tail_pairs(last, r):
         t = cell_t(c)
         # продолжение фразы — со строчной: «ячейка выше без точки» не годится — у шапок точек нет, и строка «1 | …»
         # нового листа уходила в шапку (синтетика, 16.10)
-        if j is None or t and not t[0].islower():
+        if j is None or t and not t[0].islower() and not lists(last[j], c):
             return []
         pairs.append((j, c))
-    return pairs if any(cell_t(c) for _, c in pairs) else []
+    return pairs if any(cell_t(c) or lists(last[j], c) for j, c in pairs) else []
 
 
 def _cut_rows(rows):
@@ -183,6 +228,9 @@ def _cut_rows(rows):
                 if k < len(runs) and "t" in runs[k] and runs[k - 1].get("t", " ")[-1:] not in (" ", "-"):
                     runs[k]["t"] = " " + runs[k]["t"]
                 head[-1] = dict(head[-1], runs=runs)
+                tail = tail[1:]
+            elif head and tail and head[-1]["k"] == "list" == tail[0]["k"] and head[-1].get("kind") == tail[0].get("kind"):
+                head[-1] = dict(head[-1], items=head[-1]["items"] + tail[0]["items"])     # список, разрезанный листом
                 tail = tail[1:]
             last[j]["blocks"] = head + tail
     return out
@@ -241,11 +289,22 @@ def join_tables(bs):
             if n and n < len(b["rows"]) and n <= head_n(prev) \
                     and [row_t(r) for r in b["rows"][:n]] == [row_t(r) for r in prev["rows"][:n]]                     and any(any(row_t(r)) for r in b["rows"][:n]):
                 rep = n                     # повтор шапки на новом листе
+            elif len(b["rows"]) > 1 and row_t(b["rows"][0]) == row_t(prev["rows"][0]) and all(row_t(b["rows"][0])):
+                rep = 1                     # шапка без TH (JPDS), дословный повтор первой строки
         if prev is not None and prev["k"] == "table" and b["k"] == "table" and prev["rows"] and b["rows"] \
                 and (rep or not all(c["th"] for c in b["rows"][0]) or _tail_pairs(prev["rows"][-1], b["rows"][0])) \
-                and (max(map(len, b["rows"])) == max(map(len, prev["rows"])) or _tail_pairs(prev["rows"][-1], b["rows"][0])) \
+                and (rep or max(map(len, b["rows"])) == max(map(len, prev["rows"]))
+                     or _tail_pairs(prev["rows"][-1], b["rows"][0])) \
                 and (b.get("geom") or {}).get("page", 0) > (prev.get("geom") or {}).get("page", 0):
-            out[-1] = dict(prev, rows=_cut_rows(prev["rows"] + b["rows"][rep:]))
+            rows = b["rows"][rep:]
+            # картинки, что Word вложил в повтор шапки (значки строк прошлого листа, JPDS табл. 15), — не прочь:
+            # их по месту на листе переселит adopt
+            strays = [x for r in b["rows"][:rep] for c in r for x in c.get("blocks", [])
+                      if x["k"] == "p" and not text_of(x.get("runs") or []).strip()
+                      and any("img" in q for q in x.get("runs") or [])]
+            out[-1] = dict(prev, rows=_cut_rows(prev["rows"] + rows))
+            if strays:
+                out[-1]["strays"] = prev.get("strays", []) + strays
             continue
         if b["k"] == "table":
             b = dict(b, rows=_cut_rows(b["rows"]))
@@ -284,8 +343,9 @@ def attach_notes(bs):
             for par in _host_paras(x):
                 sizes = [r.get("size") or 0 for r in par.get("runs", []) if "t" in r and r["t"].strip()]
                 big = max(sizes, default=0)
-                k = next((i for i in range(len(par["runs"]) - 1, -1, -1)
-                          if num and "t" in par["runs"][i] and par["runs"][i]["t"].strip() == num
+                k = next((i for i in range(len(par["runs"]) - 1, -1, -1)       # знак ссылки бывает и «¹» (индекс)
+                          if num and "t" in par["runs"][i]
+                          and unicodedata.normalize("NFKC", par["runs"][i]["t"].strip()) == num
                           and (par["runs"][i].get("size") or big) < 0.85 * big), None)
                 if k is not None:
                     host, ref = par, k
@@ -337,6 +397,92 @@ def _flat_paras(b):
     return [y for it in b["items"] for x in it for y in _flat_paras(x)]
 
 
+def adopt(bs):
+    """Абзац вне таблицы, что на листе лежит внутри её строки: Word разметил надписи и подложки ячеек (образцы «Текст
+    строки» в таблице 16 ТЭ357) отдельными абзацами до таблицы — печатались строкой над рисунком, ячейки пустые
+    (17.10), — в ячейку по строке и столбцу, по месту среди её блоков. Картинка в ячейке с листа раньше текста своей
+    строки (значки строк прошлого листа в повторе шапки, JPDS табл. 15) — так же, по месту."""
+    out = []
+    for b in bs:
+        out.append(b)
+        if b["k"] != "table":
+            continue
+        out += b.pop("strays", [])                          # из повтора шапки (join_tables)
+        for r in b["rows"]:
+            home = min((x["geom"]["page"] for c in r for y in c.get("blocks", []) for x in _flat_paras(y)
+                        if (x.get("geom") or {}).get("page") and text_of(x.get("runs") or []).strip()), default=None)
+            for c in r:
+                far = [x for x in c.get("blocks", []) if home and x["k"] == "p" and (x.get("geom") or {}).get("page")
+                       and x["geom"]["page"] < home and not text_of(x.get("runs") or []).strip()
+                       and any("img" in q for q in x.get("runs") or [])]
+                if far:
+                    c["blocks"] = [x for x in c["blocks"] if x not in far]
+                    out += far
+    for t in [b for b in out if b["k"] == "table"]:
+        rows = t["rows"]
+
+        def places(bs_):                                    # места блоков ячейки (геометрия ячейки — до evict)
+            for y in bs_:
+                if y["k"] == "list":
+                    for it in y["items"]:
+                        yield from places(it)
+                elif (y.get("geom") or {}).get("bottom") and y["geom"].get("x1") is not None:
+                    yield y["geom"]
+        cg = [[list(places(c["blocks"])) for c in r] for r in rows]
+        span = []                                           # (лист, верх, низ) содержимого строки на первом её листе
+        for gr in cg:
+            gs = [g for gc in gr for g in gc]
+            pn = min((g["page"] for g in gs), default=None)
+            gs = [g for g in gs if g["page"] == pn]
+            span.append((pn, min(g["top"] for g in gs), max(g["bottom"] for g in gs)) if gs else None)
+        cols = {}                                           # число ячеек строки → {столбец: (лево, право)}
+        for r, gr in zip(rows, cg):
+            for k, gc in enumerate(gr):
+                if gc:
+                    lo, hi = cols.setdefault(len(r), {}).get(k, (gc[0]["x0"], gc[0]["x1"]))
+                    cols[len(r)][k] = (min([lo] + [g["x0"] for g in gc]), max([hi] + [g["x1"] for g in gc]))
+        if not cols:
+            continue
+        X0 = min(v[0] for cs in cols.values() for v in cs.values())
+        X1 = max(v[1] for cs in cols.values() for v in cs.values())
+        for x in list(out):
+            g = x.get("geom") or {}
+            if x["k"] != "p" or not g.get("bottom") or g.get("x1") is None:
+                continue
+            cx, cy = (g["x0"] + g["x1"]) / 2, (g["top"] + g["bottom"]) / 2
+            if not X0 - 2 <= cx <= X1 + 2:
+                continue
+            row = None
+            for i, s in enumerate(span):
+                if not s or s[0] != g["page"]:
+                    continue
+                prev = next((span[j] for j in range(i - 1, -1, -1) if span[j]), None)
+                nxt = next((span[j] for j in range(i + 1, len(span)) if span[j]), None)
+                y0 = (prev[2] + s[1]) / 2 if prev and prev[0] == s[0] else s[1] - 2
+                y1 = (s[2] + nxt[1]) / 2 if nxt and nxt[0] == s[0] else s[2] + 2
+                if y0 <= cy < y1:
+                    row = i
+                    break
+            if row is None or len(rows[row]) < 1:
+                continue
+            r = rows[row]
+            cs = dict(cols.get(len(r), {}))
+            for k in range(len(r)):                         # столбец без места — между соседями
+                if k not in cs:
+                    lo = cs[k - 1][1] + 1 if k - 1 in cs else X0
+                    hi = next((cs[q][0] for q in range(k + 1, len(r)) if q in cs), X1) - 1
+                    cs[k] = (lo, max(lo, hi))
+            bounds = [(cs[k][1] + cs[k + 1][0]) / 2 for k in range(len(r) - 1)]
+            k = sum(cx >= b for b in bounds)
+            blocks = r[k]["blocks"]
+            key = (g["top"], g["x0"])
+            at = next((n for n, y in enumerate(blocks) if (y.get("geom") or {}).get("bottom")
+                       and (y["geom"]["top"], y["geom"].get("x0", 0)) > key), len(blocks))
+            blocks.insert(at, x)
+            out.remove(x)
+    return out
+
+
 def evict(bs):
     """Чужое в ячейке: Word вкладывает в список последней ячейки таблицы текст со следующего листа (подпись «Рисунок 1
     – …» листа 13 — в ячейке таблицы листов 11–12, JPDS 16.10), и в DOCX он пропадал. Блок ячейки, стоящий на листе
@@ -353,22 +499,28 @@ def evict(bs):
         lim = min(after) if after else None
         moved = []
 
-        def clean(blocks, cpage):
+        def clean(blocks, cpage, prev):
             keep = []
             for x in blocks:
                 q = _pos(x)
-                if lim and q and q > lim and q[0] > cpage:      # и на более позднем листе, чем сама ячейка
+                # и на более позднем листе, чем сама ячейка, или на том же, но между ним и прошлым блоком ячейки — то,
+                # что идёт после таблицы (подпись «Рисунок 60» под рисунком — в последней ячейке таблицы над ним, JPDS
+                # л. 69: печаталась в таблице, 17.10)
+                if lim and q and q > lim and (q[0] > cpage or prev[0] and prev[0][0] == q[0] and any(
+                        a[0] == q[0] and prev[0][1] <= a[1] < q[1] for a in after)):
                     moved.extend(_flat_paras(x))
                     continue
                 if x["k"] == "list":
-                    items = [clean(it, cpage) for it in x["items"]]
+                    items = [clean(it, cpage, prev) for it in x["items"]]
                     items = [it for it in items if it]
                     if not items:
                         continue
                     x = dict(x, items=items)
+                elif q and (x.get("geom") or {}).get("bottom"):
+                    prev[0] = (q[0], x["geom"]["bottom"])
                 keep.append(x)
             return keep
-        rows = [[dict(c, blocks=clean(c.get("blocks", []), (c.get("geom") or {}).get("page") or 0)) for c in r]
+        rows = [[dict(c, blocks=clean(c.get("blocks", []), (c.get("geom") or {}).get("page") or 0, [None])) for c in r]
                 for r in t["rows"]]
         if not moved:
             i += 1
@@ -477,8 +629,26 @@ def join_tocs(bs):
             if len(n.get("bold", [])) > len(a.get("bold", [])):
                 a["bold"], a["indent"] = n["bold"], n["indent"]
             continue
+        # заголовок оглавления вне элемента TOC (абзац «TARTALOMJEGYZÉK» перед ним на том же листе, OAH 4.22) — его
+        # заголовком: сборка ставила свой «Содержание», и выходило два (18.10)
+        if b["k"] == "toc" and not b["info"].get("title") and prev is not None and prev["k"] in ("p", "h"):
+            t = text_of(prev.get("runs") or []).strip()
+            ink = [r for r in prev.get("runs") or [] if "t" in r and r["t"].strip()]
+            if t and len(t) <= 40 and not re.search(r"\d\s*$", t) and ink and \
+                    (prev.get("geom") or {}).get("page") == b["info"].get("page"):
+                r0 = ink[0]
+                b["info"]["title"] = {"t": t, "font": r0.get("font"), "size": r0.get("size"), "b": r0.get("b"),
+                                      "i": r0.get("i"), "color": r0.get("color"),
+                                      "center": prev.get("align") == "center" or _centered_geom(prev)}
+                out.remove(prev)
         out.append(b)
     return out
+
+
+def _centered_geom(b):
+    """Абзац по центру листа A4/Letter (по середине своей строки)."""
+    g = b.get("geom") or {}
+    return g.get("x1") is not None and abs((g["x0"] + g["x1"]) / 2 - 297.6) < 30
 
 
 def _paras(bs):
@@ -514,6 +684,7 @@ def attach_icons(blocks, imgs, height):
 NUMBERED = {"Decimal", "LowerAlpha", "UpperAlpha", "LowerRoman", "UpperRoman"}
 LABEL = re.compile(r"^\s*(\d{1,3}|[A-Za-z]|[ivxIVX]{2,5})(\.\)|[.)])(?=\s|$)\s*")
 DASH = re.compile(r"^\s*[–—\-](?=\s)")
+OWN_LABEL = re.compile(r"^\s*(?:\(\w{1,3}\)|[a-z]{2}\)|\d{1,3}[a-z]\))\s")      # «(a)», «(5a)», «ba)», «12a)»
 
 
 def text_labels(bs):
@@ -745,6 +916,11 @@ def relist(bs):
                 it["kind"] = _label_kind(ml.group(1))
                 if ml.group(2) in (")", ".)"):
                     it["suffix"] = ml.group(2)
+            # своя метка в тексте, которую автонумерация не выразит («ba)», «(a)», «(5a)»; OAH T0.7, N3a), а метки Word
+            # нет — пункт без маркера, метка остаётся текстом (был лишний «•» перед «ga)», 18.10)
+            elif it["kind"] == "Disc" and not m and not it["lbl"] and p0 and p0["runs"] \
+                    and OWN_LABEL.match(text_of(p0["runs"])):
+                it["kind"] = "Label"
             if it["kind"] in NUMBERED:
                 p = next((x for x in it["body"] if x["k"] == "p"), None)
                 it["label"] = (_strip_label(p) if p else None) or \
@@ -873,16 +1049,20 @@ def load(path):
                 cg = c.get("geom")
                 if not cg or cg["page"] != g["page"]:
                     continue
-                lx = [x for x in xs if x <= cg["first_x0"] + 0.5]
+                # край текста — по самой левой строке: у многострочного текста по центру первая строка короче, и её
+                # отступ шёл «полем» — 27,9 pt с каждой стороны, слова рвались («kötelezettsé g», N3a ABOS, 18.10)
+                lx = [x for x in xs if x <= cg["x0"] + 0.5]
                 rx = [x for x in xs if x >= cg["x1"] - 0.5]
                 above = [y for y in ys if y <= cg["top"] + 0.5]
                 below = [y for y in ys if y >= cg["bottom"] - 0.5]
                 # поле слева — у ячеек с текстом влево: у текста по центру «поле» — половина свободного места (N3a:
                 # 30 pt с каждой стороны, слова рвались посередине, 17.10)
-                if lx and not (rx and abs((cg["first_x0"] - lx[-1]) - (rx[0] - cg["x1"])) < 4):
-                    pads["left"].append(cg["first_x0"] - lx[-1])
+                if lx and not (rx and abs((cg["x0"] - lx[-1]) - (rx[0] - cg["x1"])) < 4):
+                    pads["left"].append(cg["x0"] - lx[-1])
                 if above and below:
                     pads["top"].append(cg["top"] - above[-1]); pads["bottom"].append(below[0] - cg["bottom"])
+        # больше 14 pt — отступ текста в ячейке (вложенный пункт, выравнивание), а не поле
+        pads["left"] = [v for v in pads["left"] if v <= 14] or pads["left"][:0]
         for k, v in pads.items():
             if v:                                           # поле слева — нижняя четверть: отступ бывает и больше поля
                 v.sort(); out["pad_" + k] = round(v[len(v) // 4 if k == "left" else len(v) // 2], 1)
@@ -954,7 +1134,26 @@ def load(path):
         """Содержимое LBody/TD/TH: свой текст, затем вложенные блоки."""
         return own(el) + sum((block(x, depth + 1) for x in el.children), [])
 
-    thin_of = {}
+    thin_of, fill_of = {}, {}
+
+    def fills(pn):
+        """Заливки листа (не линии, не белое, не во весь лист): [(x0, top, x1, bottom, цвет "RRGGBB")]."""
+        if pn not in fill_of:
+            pg = pdf.pages[pn - 1]
+            area = float(pg.width) * float(pg.height)
+            out = []
+            for o in pg.rects:
+                x0, x1, t0, t1 = float(o["x0"]), float(o["x1"]), float(o["top"]), float(o["bottom"])
+                col = o.get("non_stroking_color")
+                if not o.get("fill") or x1 - x0 < 5 or t1 - t0 < 5 or (x1 - x0) * (t1 - t0) > 0.3 * area:
+                    continue
+                v = [float(c) for c in ((col,) * 3 if isinstance(col, (int, float)) else
+                                        tuple(col) * 3 if isinstance(col, (list, tuple)) and len(col) == 1 else
+                                        col if isinstance(col, (list, tuple)) and len(col) == 3 else ())]
+                if len(v) == 3 and min(v) < 0.97:
+                    out.append((x0, t0, x1, t1, "%02X%02X%02X" % tuple(int(round(c * 255)) for c in v)))
+            fill_of[pn] = out
+        return fill_of[pn]
 
     def thin(pn):
         """Линии листа (не заливки): (горизонтальные, вертикальные) как (поз., от, до)."""
@@ -1012,6 +1211,7 @@ def load(path):
                      "bottom": max(c.get("bottom", c["top"] + 12) for c in cells if c["page"] == cells[0]["page"])}
             if g:
                 cell_edges(rows, thin)
+                cell_fills(rows, fills)
             return [{"k": "table", "rows": rows, "geom": g, "borders": borders(g), "frame": frame(g, rows) if g else {}}]
         if t in ("TOC", "TOCI"):
             if t != "TOC":
@@ -1044,14 +1244,21 @@ def load(path):
     page = pdf.pages[0]
     attach_icons(blocks, artifacts["imgs"], float(page.height))
     text_labels(blocks)
-    blocks = toc_headings(evict(join_tocs(join_tables(place_captions(unlist_captions(relist(para_lists(join_pages(
-        reflow(attach_notes(blocks)))))))))))
+    blocks = inline_pictures(toc_headings(real_headings(adopt(evict(join_tocs(join_tables(figures_in_place(place_captions(unlist_captions(list_tails(relist(
+        para_lists(join_pages(reflow(attach_notes(blocks))))))))))))))))
     tops, bots = {}, {}
     for pg in pdf.pages:
         ys = [(float(c["top"]), float(c["bottom"])) for c in pg.chars if c.get("mcid") is not None and c["text"].strip()]
         ys += [(float(i["top"]), float(i["bottom"])) for i in pg.images if i.get("mcid") is not None]
         if ys:
             tops[pg.page_number], bots[pg.page_number] = min(y[0] for y in ys), max(y[1] for y in ys)
+        else:
+            # лист без текста тела (пустая таблица листа ознакомления, ИН-1065) — низ по линиям между колонтитулами,
+            # иначе разрыв перед следующим листом не ставился (18.10)
+            H = float(pg.height)
+            ls = [float(o["bottom"]) for o in pg.rects + pg.lines if 0.12 * H < float(o["top"]) and float(o["bottom"]) < 0.92 * H]
+            if ls:
+                bots[pg.page_number] = max(ls)
     mark_breaks(blocks, tops, bots)
     page = pdf.pages[0]
     info = {"width": float(page.width), "height": float(page.height), "pages": len(pdf.pages),
@@ -1073,6 +1280,33 @@ def list_geo(blocks):
                 b["geo"] = {"marker": median(g["first_x0"] for g in firsts), "text": median(texts)}
             for it in b["items"]:
                 list_geo(it)
+
+
+HEAD_NUM = re.compile(r"^\s*(\d+(?:\.\d+)*)\.?(?=[\s\t])")
+
+
+def real_headings(blocks):
+    """Заголовки по смыслу, а не по стилю Word. Абзац тела с тегом заголовка (у ИН-1172 стиль обычного текста с уровнем
+    структуры 2: 334 абзаца шли заголовками и в оглавление, 18.10) — абзацем: без номера, не полужирный и длинный (от
+    80 знаков, от двух строк или с двоеточием в конце). Уровень — глубиной номера («1.1.» — 2-й), если уровни тегов с
+    номерами расходятся у трети и больше заголовков (у ИН-1172 «1.1.» — H1, а «6.» — H3)."""
+    hs = [b for b in blocks if b["k"] == "h"]
+    for b in hs:
+        t = text_of(b.get("runs") or []).strip()
+        ink = [r for r in b.get("runs") or [] if "t" in r and r["t"].strip()]
+        lines = (b.get("geom") or {}).get("lines") or 1
+        # с номером — пункт текста («1.1. Настоящая инструкция предназначена …» на три строки, ИН-1065), если длинный
+        long_ = (len(t) >= 150 or lines >= 3 or t.endswith(":")) if HEAD_NUM.match(t) else \
+            (len(t) >= 80 or lines >= 2 or t.endswith(":"))
+        if ink and not all(r.get("b") for r in ink) and long_:
+            b["k"] = "p"
+            b.pop("level", None)
+    num = [(b, len(HEAD_NUM.match(text_of(b["runs"])).group(1).split("."))) for b in blocks
+           if b["k"] == "h" and HEAD_NUM.match(text_of(b.get("runs") or []))]
+    if num and sum(b["level"] != d for b, d in num) * 3 >= len(num):
+        for b, d in num:
+            b["level"] = min(d, 6)
+    return blocks
 
 
 def toc_headings(blocks):
@@ -1106,6 +1340,48 @@ CAPTION_ANY = re.compile(r"^\s*(?:(?:Рис(?:унок|\.)|Таблица|Figure
                          r"|\d+\.\s*(?:ábra|táblázat))", re.I)
 
 
+def list_tails(bs):
+    """Хвост последнего пункта (рисунок, подпись), который на листе ниже абзаца, идущего за списком: Word разметил их
+    в пункте, абзац между ними — после списка (JPDS л. 42: «– Файлы.», «Соответствие данных…:», рисунок 37 — фраза
+    печаталась под подписью, 17.10), — за этот абзац, по месту на листе."""
+    out = []
+    for i, b in enumerate(bs):
+        if b["k"] == "list":
+            for it in b["items"]:
+                it[:] = list_tails(it)
+        out.append(b)
+    i = 0
+    while i < len(out):
+        b = out[i]
+        i += 1
+        if b["k"] != "list" or not b["items"] or i >= len(out):
+            continue
+        last, n = b["items"][-1], out[i]
+        gn = n.get("geom") or {}
+        if n["k"] not in ("p", "h") or not gn.get("page") or not gn.get("bottom"):
+            continue
+        def geoms(x):                                       # места блока; вложенный список (подпись-пункт) — его блоков
+            if x["k"] == "list":
+                return [g for it in x["items"] for y in it for g in geoms(y)] or [{}]
+            return [x.get("geom") or {}]
+        # хвост — ниже абзаца на его листе или дальше (подпись следующего рисунка, вложенная в подпись-пункт)
+        after = lambda x: all(g.get("page") and g.get("bottom") and (g["page"] > gn["page"] or g["page"] == gn["page"]
+                                                                       and g["top"] >= gn["bottom"] - 2) for g in geoms(x))
+        s = next((k for k in range(1, len(last)) if all(after(x) for x in last[k:])), None)
+        if s is None or any(g.get("page") != gn["page"] or g.get("bottom", 1e9) > gn["top"] + 2
+                            for g in geoms(last[s - 1])) or geoms(last[s])[0].get("page") != gn["page"]:
+            continue
+        top = min(g["top"] for g in geoms(last[s]) if g["page"] == gn["page"])
+        j = i                                               # абзацы за списком, что выше хвоста
+        while j < len(out) and out[j]["k"] in ("p", "h") and (out[j].get("geom") or {}).get("page") == gn["page"] \
+                and (out[j]["geom"].get("bottom") or 1e9) <= top + 2:
+            j += 1
+        tail = last[s:]
+        del last[s:]
+        out[j:j] = tail
+    return out
+
+
 def unlist_captions(bs):
     """Подпись рисунка или таблицы, размеченная пунктом списка (JPDS: «Рисунок 42 – …» — пункт вложенного списка, в DOCX
     «a. Рисунок 42», «i. Рисунок 43», 17.10), — не пункт: абзацы пункта — на своё место, список рвётся вокруг них,
@@ -1119,7 +1395,10 @@ def unlist_captions(bs):
         start = b.get("start", 1)
         for it in b["items"]:
             it = unlist_captions(it)
-            if it and it[0]["k"] == "p" and CAPTION_ANY.match(text_of(it[0].get("runs") or [])):
+            # пункт — подпись, перед ней разве что картинки (рисунок с подписью в пункте: «а. Рисунок 25», JPDS)
+            first = next((x for x in it if x["k"] != "p" or text_of(x.get("runs") or []).strip()), None)
+            pics = it[:it.index(first)] if first is not None else []
+            if first is not None and first["k"] == "p" and CAPTION_ANY.match(text_of(first.get("runs") or []))                     and all(x["k"] == "p" and all("img" in r for r in x.get("runs") or []) for x in pics):
                 if cur:
                     out.append(dict(b, items=cur, start=start + n - len(cur)))
                     cur = []
@@ -1129,6 +1408,35 @@ def unlist_captions(bs):
                 n += 1
         if cur:
             out.append(dict(b, items=cur, start=start + n - len(cur)))
+    return out
+
+
+def inline_pictures(bs):
+    """Значок в строке абзаца, который Word разметил отдельным рисунком после абзаца (клавиша ESC в ИН-1065: в тексте
+    на его месте табуляция с позицией у края значка, значок шёл отдельным абзацем под текстом, 17.10), — в абзац на
+    место этой табуляции: прогон {"img", "at_tab"}; сборка ставит его на первую табуляцию текста (нет её в переводе —
+    в конец абзаца)."""
+    out = []
+    for b in bs:
+        for it in b.get("items") or []:
+            it[:] = inline_pictures(it)
+        prev = out[-1] if out else None
+        g, pg = b.get("geom") or {}, (prev or {}).get("geom") or {}
+        runs = b.get("runs") or []
+        if prev is not None and prev["k"] == "p" and b["k"] == "p" and len(runs) == 1 and "img" in runs[0]                 and g.get("page") and g.get("page") == pg.get("page") and pg.get("bottom") and g.get("bottom")                 and g["top"] >= pg["top"] - 2 and g["bottom"] <= pg["bottom"] + 2:
+            im = runs[0]["img"]
+            k = next((i for i, r in enumerate(prev["runs"]) if "	" in r.get("t", "") and any(
+                min(abs(x - float(im["x1"])), abs(x - float(im["x0"]))) < 8 for x in r.get("tabs") or [])), None)
+            if k is not None:
+                r = dict(prev["runs"][k])
+                r.pop("tabs", None)
+                prev["runs"][k] = r
+                # табуляция после маркера пункта («•⇥[значок] : …», UTS) — значок в начале текста пункта, не на
+                # табуляции: маркер с табуляцией сборка снимает, и значок уезжал в конец пункта (18.10)
+                lead = not re.search(r"\w", text_of(prev["runs"][:k]) + r.get("t", "").split("\t")[0])
+                prev["runs"].insert(k + 1, {"img": im} if lead else {"img": im, "at_tab": True})
+                continue
+        out.append(b)
     return out
 
 
@@ -1172,6 +1480,60 @@ def place_captions(blocks):
         prune(blocks)
         blocks[:] = [b for b in blocks if b["k"] != "list" or b["items"]]
     return blocks
+
+
+def figures_in_place(bs):
+    """Рисунки и их подписи — по месту на листе среди текста. Word кладёт цепочку «рисунок, подпись» вложенными пунктами
+    одного пункта списка, текст между ними — после списка (JPDS л. 109–111: три рисунка с подписями шли пачкой перед
+    абзацами, что на листе выше них; л. 51 — рисунок раньше «Для переноса…», 17.10). Слияние двух последовательностей:
+    текст (и таблицы) — в своём порядке, рисунок и подпись тоже; рисунок раньше текста, если целиком выше него на листе,
+    позже — если целиком ниже; рядом по высоте (значок в строке, обтекание) — как в разметке."""
+    for b in bs:
+        for it in b.get("items") or []:
+            it[:] = figures_in_place(it)
+    # рисунок — картинка, разве что с короткой надписью (выноски «а 1» составного рисунка ТЭ357 — его же части)
+    fig = lambda b: b["k"] == "p" and ((any("img" in r for r in b.get("runs") or [])
+                                        and len(text_of(b.get("runs") or []).strip()) <= 40)
+                                       or FIG_CAPTION.match(text_of(b.get("runs") or [])))
+    placed = lambda b: (b.get("geom") or {}).get("page") and (b.get("geom") or {}).get("bottom") is not None
+    # пустой абзац без места на листе участок не рвёт — идёт со своим предыдущим блоком
+    empty = lambda b: b["k"] == "p" and not placed(b) and not text_of(b.get("runs") or []).strip() \
+        and not any("img" in r for r in b.get("runs") or [])
+    out, i = [], 0
+    while i < len(bs):                                      # участки подряд идущих блоков с местом на листе
+        if bs[i]["k"] not in ("p", "h", "table") or not placed(bs[i]):
+            out.append(bs[i]); i += 1
+            continue
+        units = []
+        while i < len(bs) and bs[i]["k"] in ("p", "h", "table") and placed(bs[i]):
+            units.append([bs[i]]); i += 1
+            while i < len(bs) and empty(bs[i]):
+                units[-1].append(bs[i]); i += 1
+        T = [u for u in units if not fig(u[0])]
+        order = {id(u[0]): k for k, u in enumerate(units)}
+
+        def above(u, v):                                    # u целиком выше v на листе (или на листе раньше)
+            gu, gv = u[0]["geom"], v[0]["geom"]
+            return gu["page"] < gv["page"] or gu["page"] == gv["page"] and gu["bottom"] <= gv["top"] + 2
+
+        def follows(t, f):                                  # текст t — после рисунка f
+            if above(f, t):
+                return True
+            return not above(t, f) and t[0]["geom"]["page"] == f[0]["geom"]["page"] and order[id(f[0])] < order[id(t[0])]
+        slots = [[] for _ in range(len(T) + 1)]             # рисунки перед T[k]
+        for u in units:
+            if fig(u[0]):
+                g = slots[next((k for k, t in enumerate(T) if follows(t, u)), len(T))]
+                j = len(g)                                  # в своём промежутке — выше того, что целиком под ним
+                while j and above(u, g[j - 1]):
+                    j -= 1
+                g.insert(j, u)
+        for k in range(len(T) + 1):
+            for u in slots[k]:
+                out += u
+            if k < len(T):
+                out += T[k]
+    return out
 
 
 FIG_CAPTION = re.compile(r"^\s*(?:(?:Рис(?:унок|\.)|Figure|Fig\.|Abbildung|Abb\.)\s*\d|\d+\.\s*ábra)", re.I)
@@ -1434,8 +1796,10 @@ def _cell_pictures(t, doc, blocks):
             got, changed, pic0 = [], True, None
             while changed:
                 changed = False
-                for q in draws:
-                    if q.intersects(G + (-2, -2, 2, 2)) and not G.contains(q) and x0 <= (q.x0 + q.x1) / 2 < x1:
+                for q in draws:     # в своей полосе строки: заливки соседних строк легенды JPDS касаются друг друга —
+                    # и каждая ячейка росла на весь столбец, 9 копий столбца по листу (+9 листов, 17.10)
+                    if q.intersects(G + (-2, -2, 2, 2)) and not G.contains(q) and x0 <= (q.x0 + q.x1) / 2 < x1 \
+                            and y0 <= (q.y0 + q.y1) / 2 < y1:
                         G |= q
                         changed = True
                 if pic0 is None:
@@ -1476,11 +1840,22 @@ def mark_breaks(blocks, tops, bots):
     bl_ = sorted(bots.values())
     low = bl_[len(bl_) * 4 // 5] if bl_ else 0
     img_only = lambda b: b["k"] == "p" and all("img" in r for r in b.get("runs") or [{"img": 1}])
+
+    def first_row_bottom(t):
+        """Низ первой строки таблицы на её листе: Word переносит таблицу по строкам, и с листа её уводит только
+        неуместившаяся первая строка, а не вся таблица (лист согласования ИН-1065, 18.10)."""
+        pn = t["geom"]["page"]
+        for r in t.get("rows") or []:
+            bs = [c["geom"]["bottom"] for c in r if (c.get("geom") or {}).get("page") == pn and c["geom"].get("bottom")]
+            if bs:
+                return max(bs)
+        return t["geom"].get("bottom") or 0
     for i, b in enumerate(blocks):
         g = b.get("geom") or {}
         pn = g.get("page")
-        # и абзац («FŐIGAZGATÓI ELŐSZÓ» OAH — абзац, не заголовок); картинка — нет: её сдвигает нехватка места
-        if not ((b["k"] == "h" or b["k"] == "p" and not img_only(b))
+        # и абзац («FŐIGAZGATÓI ELŐSZÓ» OAH — абзац, не заголовок), и таблица («УТВЕРЖДАЮ» листа изменений ИН-1065);
+        # картинка — нет: её сдвигает нехватка места
+        if not ((b["k"] in ("h", "table") or b["k"] == "p" and not img_only(b))
                 and pn and pn - 1 in bots and pn in tops and abs(g["top"] - tops[pn]) < 2):
             continue
         gap = low - bots[pn - 1]
@@ -1488,10 +1863,26 @@ def mark_breaks(blocks, tops, bots):
         # не влезали в остаток прошлого листа — не разрыв (UTS: «см. рисунок» + снимок экрана, 60 ложных разрывов)
         chain = next((x for x in blocks[i:i + 4] if (x.get("geom") or {}).get("page") == pn
                       and (x["k"] == "table" or img_only(x))), None)
-        if chain is not None and (chain["geom"].get("bottom") or 0) - tops[pn] > gap:
+        if chain is not None and ((first_row_bottom(chain) if chain["k"] == "table" else chain["geom"].get("bottom"))
+                                  or 0) - tops[pn] > gap:
             continue
         if gap > 72:
             b["break"] = True
+
+
+def cell_fills(rows, fills):
+    """Заливка ячейки, как в оригинале: c["fill"] = "RRGGBB" — цветной прямоугольник под всем текстом ячейки
+    (наименьший такой). Серая шапка таблицы ICS OAH 4.22 — ячейки TD, не TH, и заливка шапки по TH её не видела;
+    заливка строк и отдельных ячеек терялась совсем (18.10). fills(лист) → [(x0, top, x1, bottom, цвет)]."""
+    for row in rows:
+        for c in row:
+            g = c.get("geom")
+            if not g or g.get("bottom") is None or g.get("x1") is None:
+                continue
+            under = [f for f in fills(g["page"]) if f[0] - 1.5 <= g["x0"] and g["x1"] <= f[2] + 1.5
+                     and f[1] - 1.5 <= g["top"] and g["bottom"] <= f[3] + 1.5]
+            if under:
+                c["fill"] = min(under, key=lambda f: (f[2] - f[0]) * (f[3] - f[1]))[4]
 
 
 def cell_edges(rows, thin):
@@ -1596,6 +1987,7 @@ def layout(path, blocks, content=None):
     foot_chars = [c for c in arts if c["top"] >= ftop]
     head_imgs = [{"xref": i["stream"].objid, "x0": float(i["x0"]), "x1": float(i["x1"]), "top": float(i["top"]),
                   "bottom": float(i["bottom"])} for i in page.images if i.get("mcid") is None and float(i["top"]) < body_top]
+    head_imgs += _vector_logos(page, body_top, head_chars)
     hw = pdfplumber.utils.extract_words(head_chars, x_tolerance=2.5, y_tolerance=2) if head_chars else []
     lines = {}
     for w in hw:
@@ -1670,7 +2062,7 @@ def layout(path, blocks, content=None):
         art = [c for c in pg.chars if c.get("mcid") is None and _upright(c)]
         ft = _foot_top(art, pg.rects + pg.lines, H, cbot(pg))
         hc, fc = [c for c in art if c["top"] < body_top], [c for c in art if c["top"] >= ft]
-        him = [img_of(i) for i in pg.images if i.get("mcid") is None and float(i["top"]) < body_top]
+        him = [img_of(i) for i in pg.images if i.get("mcid") is None and float(i["top"]) < body_top]             + _vector_logos(pg, body_top, hc)
         fim = [img_of(i) for i in pg.images if i.get("mcid") is None and float(i["top"]) >= min(ft, H * 0.8)]
         return (sig(hc), sig(fc), len(him), len(fim)), hc, fc, ft, him, fim
     body_key = (sig(head_chars), body_sig, len(head_imgs), len(foot_imgs))
@@ -1729,6 +2121,35 @@ def layout(path, blocks, content=None):
         first = (out["front"]["to"] + 1) if "front" in out else 1 if out["first_is_body"] else 2   # 1-й лист тела
         out["num_start"] = {"page": first, "value": first - 1 + page_off}
     out["font_class"] = font_classes(path)
+    return out
+
+
+def _vector_logos(pg, body_top, chars):
+    """Логотип шапки, нарисованный векторами (ONS: значок и название кривыми — в шапке обложки пропадал, 17.10):
+    скопление от трёх фигур (не тонкие линии, не белое) выше тела листа, не на тексте шапки, — снимком области
+    ({"clip"}, как составные рисунки docx_struct.compose_figures)."""
+    W = float(pg.width)
+    objs = []
+    for o in list(pg.curves) + list(pg.rects):
+        x0, x1, top, bottom = float(o["x0"]), float(o["x1"]), float(o["top"]), float(o["bottom"])
+        col = o.get("non_stroking_color")
+        white = isinstance(col, (list, tuple)) and col and min(float(c) for c in col) > 0.95 and not o.get("stroke")
+        if bottom < body_top and x1 - x0 > 1.5 and bottom - top > 1.5 and x1 - x0 < 0.6 * W and not white:
+            objs.append([x0, top, x1, bottom, 1])
+    groups = []
+    for b in objs:
+        hit = [g for g in groups if g[0] - 6 <= b[2] and b[0] <= g[2] + 6 and g[1] - 6 <= b[3] and b[1] <= g[3] + 6]
+        for g in hit:
+            groups.remove(g)
+            b = [min(b[0], g[0]), min(b[1], g[1]), max(b[2], g[2]), max(b[3], g[3]), b[4] + g[4]]
+        groups.append(b)
+    out = []
+    for x0, top, x1, bottom, n in groups:
+        if n < 3 or x1 - x0 < 15 or bottom - top < 8 or any(
+                x0 <= float(c["x0"]) <= x1 and top <= float(c["top"]) <= bottom for c in chars if c["text"].strip()):
+            continue
+        out.append({"xref": None, "clip": [x0 - 1, top - 1, x1 + 1, bottom + 1], "page_number": pg.page_number,
+                    "x0": x0 - 1, "x1": x1 + 1, "top": top - 1, "bottom": bottom + 1})
     return out
 
 
