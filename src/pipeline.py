@@ -14,7 +14,7 @@
 
 Рабочая папка: <work>/ocr (кэш OCR), <work>/json/<док>.json (состояние), <work>/out (результаты).
 Ответы портала кэшируются (cache/), перезапуск после обрыва дешёвый."""
-import re, json, time, difflib, threading, collections
+import os, re, json, time, difflib, threading, collections
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
@@ -220,6 +220,12 @@ def extract(inputs, work, progress=_quiet):
             # Прежде — DOCX из оригинала через pdf2docx (docx_src): рамки и строки вразброс, Eskom 13 листов → 23
             struct = {"mode": "text"}
             log(f"извлечение: {f.name} — PDF без разметки: DOCX по сегментам листа и шрифтам текстового слоя")
+            if os.environ.get("HU_ROLES", "1") != "0":
+                # границы абзацев и роли строк (заголовок, пункт) — метками портала (roles.py, замер 18.10: F1 абзацев
+                # 0,86 → 0,97, заголовков 0,36 → 0,86, пунктов 0,57 → 0,90); распознавание листов — из кэша
+                segs, info = S.pdf_segments(f, roles=True)
+                struct["roles"] = sum(1 for s in segs if s["loc"].get("roles")) > 0
+                log(f"извлечение: {f.name} — роли строк порталом: {'да' if struct['roles'] else 'нет (сбой портала)'}")
         jf.write_text(json.dumps({"file": str(f.resolve()), "segs": segs, "res": {}, "info": info, "docx": dplan,
                                   "struct": struct}, ensure_ascii=False), encoding="utf-8")
         log(f"извлечение: {f.name} — сегментов {len(segs)}, OCR-страниц {len(info.get('ocr_pages', []))}, {time.time() - t0:.0f} с")

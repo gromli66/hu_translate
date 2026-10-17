@@ -1251,6 +1251,44 @@ def test_icon_after_list_marker_tab_stays_at_item_start():
     assert got[0]["runs"][1].get("at_tab")
 
 
+def test_portal_roles_split_merge_and_mark_paragraphs():
+    """Гибрид (roles.apply): абзац правил делится на строке, которую портал начал новым абзацем; два абзаца правил
+    склеиваются, если портал продолжает строкой подряд; роль — первой строки; колонтитул и таблица — не трогаются."""
+    import roles as R
+    from layout import join_lines
+    ln = lambda i, y, t: {"id": i, "x0": 70.0, "x1": 500.0, "top": y, "bottom": y + 12, "size": 10, "bold": False, "text": t}
+    fr = lambda y, t: {"t": t, "bbox": [70.0, y, 500.0, y + 12], "size": 10, "bold": False}
+    lines = [ln(0, 100, "4.2 Kezelés"), ln(1, 114, "A kezelő a panelen"), ln(2, 128, "dolgozik."),
+             ln(3, 142, "a) első pont"), ln(4, 156, "folytatás"), ln(5, 800, "12. oldal")]
+    labels = {0: {"new": True, "role": "heading"}, 1: {"new": True, "role": "body"}, 2: {"new": False, "role": "body"},
+              3: {"new": True, "role": "list"}, 4: {"new": False, "role": "list"}, 5: {"new": True, "role": "header"}}
+    pars = [{"frags": [fr(100, "4.2 Kezelés"), fr(114, "A kezelő a panelen")]},          # правила склеили заголовок
+            {"frags": [fr(128, "dolgozik.")]},                                         # и разорвали абзац
+            {"frags": [fr(142, "a) első pont"), fr(156, "folytatás")]}, {"frags": [fr(800, "12. oldal")]}]
+    got = R.apply(pars, lines, labels, join_lines)
+    assert [p["text"] for p in got] == ["4.2 Kezelés", "A kezelő a panelen dolgozik.", "a) első pont folytatás",
+                                        "12. oldal"]
+    assert [p.get("role") for p in got] == ["heading", None, "list", None]
+    assert R.apply(pars, lines, {}, join_lines) is pars                     # нет меток — как у правил
+
+
+def test_portal_roles_running_header_needs_same_height():
+    """Колонтитул по повтору — только строка на одной высоте у края на многих листах; подзаголовок «Korlátozó feltétel:»
+    вверху разных листов на разной высоте — не колонтитул."""
+    import roles as R
+    doc = fitz.open()
+    for k in range(6):
+        pg = doc.new_page()
+        pg.insert_text((70, 40), "Üzemeltetési Feltételek és Korlátok", fontsize=9)
+        pg.insert_text((70, 70 + 9 * k), "Korlátozó feltétel:", fontsize=10)
+        pg.insert_text((70, 400), f"Szöveg {k}", fontsize=10)
+    rep = R.repeats(doc)
+    lines = R.page_lines(doc[2])
+    H = doc[2].rect.height
+    flags = {l["text"]: R.is_rep(l, rep, H) for l in lines}
+    assert flags["Üzemeltetési Feltételek és Korlátok"] and not flags["Korlátozó feltétel:"]
+
+
 def test_cell_fill_legend_stays_in_its_row(tmp_path):
     """Легенда цветов: заливки соседних строк касаются — картинка ячейки только своей строки, не весь столбец (JPDS:
     9 копий столбца, +9 листов, 17.10)."""

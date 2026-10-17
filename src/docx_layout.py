@@ -876,9 +876,14 @@ def load(src, segs, text=False):
         runs = _runs_of(group, bold, font, size, mono, right)
         text = "".join(r["t"] for r in runs).strip()
         m = NUM.match(text)
-        # заголовок: короткий полужирный по центру; в текстовом слое — и у левого края, если с номером («2.1.1 Purpose»)
-        if len(group) == 1 and len(runs) == 1 and (loc.get("align") == "center" or text_mode and m and len(loc.get(
-                "frags") or [1]) == 1 and re.search(r"[^\W\d_]{3}", text[m.end(1):])) and runs[0]["b"] and len(text) < 120:
+        # заголовок: короткий полужирный по центру; в текстовом слое — и у левого края, если с номером («2.1.1 Purpose»);
+        # или по метке портала (roles.py: правила находили 16 % заголовков, портал — 57 % при точности 0,88)
+        # (лист с метками портала — заголовок только по метке: правило брало и подписи «5. ábra …» по центру, и
+        # полужирные «Korlátozó feltétel:», 18.10)
+        if len(group) == 1 and (not loc.get("roles") and len(runs) == 1 and (loc.get("align") == "center" or text_mode
+                and m and len(loc.get("frags") or [1]) == 1 and re.search(r"[^\W\d_]{3}", text[m.end(1):]))
+                and runs[0]["b"] and len(text) < 120
+                or loc.get("role") == "heading" and len(text) < 200 and re.search(r"[^\W\d_]{3}", text)):
             level = min(len(m.group(1).split(".")) if m else 1, 5)
             norm = re.sub(r"\s+", " ", text)
             if last_head.get(level) == norm:
@@ -902,9 +907,13 @@ def load(src, segs, text=False):
             mark = ch
         kind = ("Dash" if ch in "–-" or "\uf020" <= ch <= "\uf0ff" and chr(ord(ch) - 0xF000) in "-–" else "Disc") \
             if ch else "Dash"
+        if not mark and loc.get("role") == "list":
+            # пункт по метке портала без знака маркера («a) …», «1. …», «ba) …») — пункт без маркера, метка — в тексте
+            mark, kind = True, "Label"
         para = {"k": "p", "runs": runs, "geom": geom, "seg": True}    # seg — абзац собран, merge_inline не клеит
         last = cur["items"][-1][-1] if cur is not None and cur["items"] else (blocks[-1] if blocks else None)
-        if not mark and len(group) == 1 and last is not None and _continues(last, s, lh):
+        # границы абзацев листа по меткам портала (loc["roles"]) уже верные: строки по правилам не клеим
+        if not mark and len(group) == 1 and last is not None and not loc.get("roles") and _continues(last, s, lh):
             _join(last, runs, geom)
             continue
         if mark:

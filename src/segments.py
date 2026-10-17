@@ -552,13 +552,16 @@ def page_rules(page, dpi=300):
     return hs + ih, vs + iv
 
 
-def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, ratio=0.85, progress=None, shots=True):
+def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, ratio=0.85, progress=None, shots=True,
+                 roles=False):
     """ocr: 'auto' — страница идёт через OCR, если в текстовом слое < ratio слов Tesseract и заметной доли
     настоящих слов Tesseract в слое нет (page_missing_share > 15 %).
     progress(доля 0..1) — ход по страницам: первая половина — Tesseract, вторая — чтение сканов порталом
     (на 146 сканах это 10 минут, а процент стоял на нуле — «зависло», 07.10).
     shots — надписи скриншотов на страницах с текстовым слоем (shots.shot_segments): сегменты идут сразу после
-    текста своей страницы, номера сегментов — по порядку."""
+    текста своей страницы, номера сегментов — по порядку.
+    roles — листы с текстовым слоем: границы абзацев и роли строк (заголовок, пункт, подпись) — метками портала
+    (roles.py; PDF без разметки, режим "text"); сбой портала — лист по правилам."""
     import fitz
     from concurrent.futures import ThreadPoolExecutor
     from layout import frags_from_text, rules, rules_from_image, group, avail_rects, aligns
@@ -632,6 +635,11 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
     with ThreadPoolExecutor(4) as ex:
         pr = dict(zip(ocr_pages, ex.map(counted(portal, "p", 0.5, len(ocr_pages) or 1), ocr_pages)))
 
+    labels = {}
+    if roles:
+        import roles as R
+        text_pg = [p for p in rng if not plan[p]]
+        labels = R.doc_labels(path, text_pg)
     segs, errors, lost = [], [], {}
     for pno in rng:
         page = doc[pno]
@@ -646,6 +654,9 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
             pars = group(ocr_frags(words, vs), hs, vs, form=True)
         else:
             pars = group(frags_from_text(page, vs), hs, vs)
+            if labels.get(pno) and labels[pno][1]:
+                from layout import join_lines
+                pars = R.apply(pars, labels[pno][0], labels[pno][1], join_lines)
         avail_rects(pars, hs, vs, page.rect)
         aligns(pars, vs)
         for p in pars:
@@ -655,6 +666,10 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
                                  "frags": [[round(v, 2) for v in f["bbox"]] for f in p["frags"]],
                                  "size": p["size"], "bold": p["bold"], "family": p.get("family", "serif"),
                                  "ocr": plan[pno]}})
+            if labels.get(pno) and labels[pno][1]:
+                segs[-1]["loc"]["roles"] = True             # абзацы листа — по меткам портала
+                if p.get("role"):
+                    segs[-1]["loc"]["role"] = p["role"]
     n_shots = 0
     text_pages = {p for p in rng if not plan[p]}
     if shots and text_pages:
