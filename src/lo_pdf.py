@@ -5,6 +5,7 @@ PDF из DOCX набран как документ, написанный по-р
 
 Запускается интерпретатором с модулем uno (системный python3 в образе, python LibreOffice на Windows), не python
 приложения:  python3 lo_pdf.py вход.docx выход.pdf   — код выхода 0 и готовый PDF, иначе причина в stderr.
+Выход .docx — сохранение в DOCX без обновления полей (старый .doc заказчика → DOCX для перевода).
 Обычный «soffice --convert-to pdf» оглавление не обновляет — в PDF осталась бы заглушка поля."""
 import os
 import shutil
@@ -47,13 +48,18 @@ def convert(src, dst, soffice="soffice"):
         desktop = ctx.ServiceManager.createInstanceWithContext("com.sun.star.frame.Desktop", ctx)
         doc = desktop.loadComponentFromURL(uno.systemPathToFileUrl(os.path.abspath(src)), "_blank", 0,
                                            (_prop("Hidden", True),))
+        if doc is None:                                     # LibreOffice не открыл файл (бывает разово) — понятной ошибкой
+            raise RuntimeError(f"LibreOffice не открыл {os.path.basename(src)}")
         try:
-            idx = doc.getDocumentIndexes()
-            for _ in range(2):              # второй проход — номера страниц после того, как оглавление заняло место
-                for i in range(idx.getCount()):
-                    idx.getByIndex(i).update()
-                doc.getTextFields().refresh()
-            doc.storeToURL(uno.systemPathToFileUrl(os.path.abspath(dst)), (_prop("FilterName", "writer_pdf_Export"),))
+            if dst.lower().endswith(".docx"):      # .doc → DOCX; без return — LibreOffice ниже закрывается и тут
+                doc.storeToURL(uno.systemPathToFileUrl(os.path.abspath(dst)), (_prop("FilterName", "MS Word 2007 XML"),))
+            else:
+                idx = doc.getDocumentIndexes()
+                for _ in range(2):          # второй проход — номера страниц после того, как оглавление заняло место
+                    for i in range(idx.getCount()):
+                        idx.getByIndex(i).update()
+                    doc.getTextFields().refresh()
+                doc.storeToURL(uno.systemPathToFileUrl(os.path.abspath(dst)), (_prop("FilterName", "writer_pdf_Export"),))
         finally:
             doc.close(True)
         try:

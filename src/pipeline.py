@@ -94,7 +94,7 @@ def set_vocab(tr, segs):
 
 
 # ------------------------------------------------------------------ 1. извлечение
-DOC_SUFFIXES = (".docx", ".pdf")
+DOC_SUFFIXES = (".docx", ".pdf", ".doc")
 
 
 def unpack_portfolio(f, dest):
@@ -157,6 +157,18 @@ def extract(inputs, work, progress=_quiet):
     files = []
     while queue:                                         # портфолио внутри портфолио тоже раскрывается
         f = queue.pop(0)
+        if f.suffix.lower() == ".doc":
+            # старый .doc — в DOCX LibreOffice'ом и дальше как DOCX (перевод на месте); без LibreOffice — пропуск
+            conv = work / "converted" / f"{f.stem}.docx"
+            conv.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                if not conv.exists():
+                    __import__("assemble").lo_convert(f, conv)
+                log(f"извлечение: {f.name} — старый формат Word, переведён в DOCX")
+                f = conv
+            except (OSError, RuntimeError, __import__("subprocess").SubprocessError) as e:
+                log(f"извлечение: {f.name} — .doc не открыт ({type(e).__name__}: {e})"[:300])
+                continue
         inner = unpack_portfolio(f, work / "unpacked" / f.stem) if f.suffix.lower() == ".pdf" else None
         if inner is None:
             files.append(f)
@@ -203,18 +215,11 @@ def extract(inputs, work, progress=_quiet):
             # выделенными словами — переводом с метками начертания (struct_fill), как у размеченного
             struct = {"mode": "layout"}
         if f.suffix.lower() == ".pdf" and not info.get("ocr_pages") and not struct:
-            # PDF с текстовым слоем: DOCX — из оригинала, его абзацы без пары в PDF переводятся своими сегментами
-            import docx_src
-            try:
-                extra, dplan = docx_src.plan(f, segs, work / "docx" / f"{f.stem}.docx", len(segs))
-            except Exception as e:                      # noqa: BLE001 — DOCX тогда прежним путём, перевод не страдает
-                extra, dplan = None, f"{type(e).__name__}: {e}"[:200]
-            if extra is None:
-                log(f"извлечение: {f.name} — DOCX из оригинала не собран ({dplan}); DOCX будет из переведённого PDF")
-                dplan = None
-            else:
-                segs += extra
-                info["docx_own"] = len(extra)
+            # PDF с текстовым слоем без разметки (Word без тегов, виртуальный принтер): DOCX — по сегментам листа,
+            # начертание — по шрифтам слоя, колонтитулы — правилами размеченного (docx_layout, режим "text").
+            # Прежде — DOCX из оригинала через pdf2docx (docx_src): рамки и строки вразброс, Eskom 13 листов → 23
+            struct = {"mode": "text"}
+            log(f"извлечение: {f.name} — PDF без разметки: DOCX по сегментам листа и шрифтам текстового слоя")
         jf.write_text(json.dumps({"file": str(f.resolve()), "segs": segs, "res": {}, "info": info, "docx": dplan,
                                   "struct": struct}, ensure_ascii=False), encoding="utf-8")
         log(f"извлечение: {f.name} — сегментов {len(segs)}, OCR-страниц {len(info.get('ocr_pages', []))}, {time.time() - t0:.0f} с")

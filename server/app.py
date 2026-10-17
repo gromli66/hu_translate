@@ -26,7 +26,7 @@ from server.web import HERE, COOKIE, NeedLogin, NotAllowed, need_user, page, own
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 SCHED = jobs.Scheduler()
-ALLOWED = (".docx", ".pdf")
+ALLOWED = (".docx", ".pdf", ".doc")
 MAX_UPLOAD = int(os.environ.get("HUT_MAX_UPLOAD_MB", "").strip() or 200) * 1024 * 1024
 FAILS, FAIL_WINDOW, FAIL_LIMIT = {}, 600, 5          # неудачные входы: (логин, адрес) -> времена попыток
 

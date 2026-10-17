@@ -46,6 +46,21 @@ def _flat(blocks, ctx="body", depth=0):
                     yield from _flat(c["blocks"], "th" if c["th"] else "td", depth)
 
 
+def _list_firsts(blocks, depth=0, cell=False):
+    """(вид списка, первый абзац пункта, глубина, в ячейке ли) по всем спискам, и в ячейках таблиц."""
+    for b in blocks:
+        if b["k"] == "list":
+            for it in b["items"]:
+                first = next((x for x in it if x["k"] == "p"), None)
+                if first is not None:
+                    yield b.get("kind"), first, depth + 1, cell
+                yield from _list_firsts([x for x in it if x["k"] != "p"], depth + 1, cell)
+        elif b["k"] == "table":
+            for r in b["rows"]:
+                for c in r:
+                    yield from _list_firsts(c["blocks"], depth, True)
+
+
 def _font(runs):
     c = Counter()
     for r in runs:
@@ -190,22 +205,27 @@ def extract(path, blocks, L):
         if tab and nums:
             tab = max(tab, round(max(_text_w(n, role) for n in nums) + 4, 1))
         P["heads"][str(lv)] = {"page_break": first == len(hs) and len(hs) >= 2, "tab": tab}
-    # списки: маркер и текст от поля по уровням
-    lv_x = {}
-    for r, b, depth in items:
-        if r != "list" or not (b.get("geom") or {}).get("page"):
+    # списки: маркер и текст от поля по уровням — и по виду списка: у ÜFK пункты «a.)» — от поля, а «–» — с отступом,
+    # и буквенный список брал отступ тире (17.10)
+    lv_x, kind_x = {}, {}
+    for kind, b, depth, cell in _list_firsts(blocks):
+        if not (b.get("geom") or {}).get("page"):
             continue
         g = b["geom"]
         if g["page"] not in words:
             words[g["page"]] = pdf.pages[g["page"] - 1].extract_words(x_tolerance=1.5)
         ws = sorted((w for w in words[g["page"]] if abs(float(w["top"]) - g["top"]) < 3
                      and float(w["x0"]) >= g["first_x0"] - 1), key=lambda w: w["x0"])
-        # маркер — первое слово строки пункта («•», «1.», «a.»), текст — следующее
+        # маркер — первое слово строки пункта («•», «1.», «a.», «a.)», «(a)»), текст — следующее
         if len(ws) >= 2 and abs(float(ws[0]["x0"]) - g["first_x0"]) < 2 \
-                and re.fullmatch(r"[•▪◦·o\-–]|\d+[.)]|[a-zA-Z][.)]", ws[0]["text"]):
-            lv_x.setdefault(depth - 1, []).append((float(ws[0]["x0"]) - L["left"], float(ws[1]["x0"]) - L["left"]))
-    P["lists"] = {str(lv): {"marker": round(median(a for a, _ in v), 1), "text": round(median(t for _, t in v), 1)}
-                  for lv, v in sorted(lv_x.items()) if len(v) >= 2}
+                and re.fullmatch(r"[•▪◦·o\-–\uf0a7\uf0b7]|\(?(?:\d+|[a-zA-Z])\.?\)|\d+\.|[a-zA-Z]\.", ws[0]["text"]):
+            x = (float(ws[0]["x0"]) - L["left"], float(ws[1]["x0"]) - L["left"])
+            lv_x.setdefault(depth - 1, []).append(x)
+            if not cell:        # в ячейке отступ — от края столбца, не от поля (ТЭ357: «•» почти все в таблицах)
+                kind_x.setdefault(kind, {}).setdefault(depth - 1, []).append(x)
+    mid = lambda v: {"marker": round(median(a for a, _ in v), 1), "text": round(median(t for _, t in v), 1)}
+    P["lists"] = {str(lv): mid(v) for lv, v in sorted(lv_x.items()) if len(v) >= 2}
+    P["lists_kind"] = {k: {str(lv): mid(v) for lv, v in sorted(d.items()) if len(v) >= 2} for k, d in kind_x.items()}
     # рисунки и подписи
     fig = [b for r, b, _ in items if r == "figure"]
     caps = [b for r, b, _ in items if r.startswith("cap_")]
@@ -305,7 +325,9 @@ def check(docx_path, P, blocks, L):
                 continue
             text = int(ind.get(qn("w:left"))) / 20
             mark = text - int(ind.get(qn("w:hanging"))) / 20
-            if abs(text - want["text"]) > 2 or abs(mark - want["marker"]) > 2:
+            # отступ своего вида списка (lists_kind) — тоже по оригиналу
+            ok = [want] + [d[lv] for d in (P.get("lists_kind") or {}).values() if lv in d]
+            if all(abs(text - w["text"]) > 2 or abs(mark - w["marker"]) > 2 for w in ok):
                 bad("Ф7", f"список {a.get(qn('w:abstractNumId'))}, уровень {int(lv) + 1}", f"{mark}/{text}",
                     f"{want['marker']}/{want['text']}")
     if P["figure"]["center"] and int(st["Figure UTS"].paragraph_format.alignment or 0) != 1:

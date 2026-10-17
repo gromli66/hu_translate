@@ -493,7 +493,10 @@ def test_spans_autonum_text_labels_and_continuation_note():
     """Шапка над «A. | текст» — по столбцам; автонумерация — только если повторяет номера оригинала; номера и тире
     в тексте пунктов — вид списка; пометка о переносе между частями таблицы — прочь."""
     row = [{"geom": {"x0": 110, "x1": 174}}, {"geom": {"x0": 291, "x1": 398}}, {"geom": {"x0": 471, "x1": 531}}]
-    assert B._span_starts(row, [58, 80, 231, 267, 464, 537], 5) == [0, 2, 4]
+    assert B._span_starts(row, [58, 80, 231, 267, 464, 537], 5) == [(0, 1), (2, 3), (4, 4)]
+    # вторая строка двухъярусной шапки: «Описание» сверху занимает и её первый столбец (ИН-1172, 17.10)
+    sub = [{"geom": {"x0": 407 + 41 * i, "x1": 430 + 41 * i}} for i in range(4)]
+    assert B._span_starts(sub, [62, 398, 440, 482, 520, 560], 5) == [(1, 1), (2, 2), (3, 3), (4, 4)]
     h = lambda t, lv: {"k": "h", "level": lv, "runs": [{"t": t}]}
     assert B._autonum_ok([h("1 Bevezetés", 1), h("1.1 Cél", 2), h("2 Rendszer", 1)])
     assert not B._autonum_ok([h("1. Bevezetés", 1), h("DF 1.1. Cél", 2), h("DF 1.2. Más", 2)])
@@ -985,3 +988,191 @@ def test_word_2007_pdf_counts_as_word(tmp_path):
     finally:
         D.load = orig
     assert seen
+
+
+def test_word_footnote_goes_to_its_paragraph_as_real_footnote(tmp_path):
+    """Сноска Word (Note внизу листа) — настоящей сноской своего абзаца: знак ссылки (мелкая «1») из текста прочь,
+    текст сноски — в часть сносок DOCX, а не в абзац (ТЗ ВШЭ, 16.10)."""
+    import zipfile
+    host = p("Szöveg a lábjegyzettel", 3, 200)
+    host["runs"] += [dict(host["runs"][0], t="1", size=6), dict(host["runs"][0], t=" és folytatás.")]
+    note = {"k": "note", "runs": [dict(host["runs"][0], t="1 A megjegyzés szövege.", size=8)],
+            "geom": dict(host["geom"], top=760)}
+    got = D.attach_notes([host, note])
+    assert len(got) == 1 and B.text_of(got[0]["runs"]) == "Szöveg a lábjegyzettel és folytatás."
+    assert B.text_of(got[0]["notes"][0]["runs"]).strip() == "A megjegyzés szövege."
+    out = tmp_path / "fn.docx"
+    B.Builder(B.Memory([]), lambda img: None, PROFILE).build(got, str(out), dict(LAYOUT, first_is_body=True))
+    with zipfile.ZipFile(out) as z:
+        assert "A megjegyzés szövege." in z.read("word/footnotes.xml").decode("utf-8")
+        assert "footnoteReference" in z.read("word/document.xml").decode("utf-8")
+
+
+def test_code_rows_are_cells_and_title_after_number_starts_new_paragraph():
+    """Перечень кодов без линеек (3PR42 л. 112): строки столбца — каждая сама по себе, код и значение — разные куски;
+    оглавление с номером отдельным куском (3SZ19): название пункта не приклеивается к названию пункта выше, а перенос
+    названия без номера слева — приклеивается."""
+    import layout as LY
+    assert LY.code_line("03/A TJ22D001 KM2/1") and LY.code_line("30BW07")
+    assert not LY.code_line("FOT szintcsökkenés") and not LY.code_line("RENDELLENES ÁLLAPOTOK")
+    f = lambda t, x0, y0, x1: {"t": t, "bbox": [x0, y0, x1, y0 + 8], "size": 10, "bold": False}
+    pars = LY.group([f("04.TH10D001", 100, 158, 168), f("02.TK42D001", 100, 171, 168)], [], [])
+    assert len(pars) == 2
+    toc = [f("1.3.", 93, 238, 112), f("Generátor teherledobás névleges teljesítményről", 145, 238, 398),
+           f("üresjáratig", 145, 250, 200), f("1.5.", 93, 273, 112), f("Gravitációs olajtartályban a szint", 145, 273, 372),
+           f("1.6.", 93, 285, 112), f("FOT szintcsökkenés", 145, 284, 242)]
+    texts = [x["text"] for x in LY.group(toc, [], [])]
+    assert "Generátor teherledobás névleges teljesítményről üresjáratig" in texts
+    assert "FOT szintcsökkenés" in texts and "Gravitációs olajtartályban a szint" in texts
+
+
+def test_grid_without_rules_becomes_borderless_table_toc_line_does_not():
+    """Строки из нескольких коротких кусков в общих столбцах (от трёх подряд) — таблица без рамок с кеглем, при котором
+    куски влезают в столбцы; строки оглавления (в конце номер листа) — нет."""
+    import docx_layout as DL
+    def seg(i, x0, y0, t, page=0):
+        return {"id": i, "page": page, "text": t, "loc": {"bbox": [x0, y0, x0 + 6 * len(t), y0 + 9]}}
+    rows = [[seg(10 * r + k, x, 100 + 14 * r, t) for k, (x, t) in enumerate(
+        [(100, "04.TH10D001"), (190, "KM1/1"), (261, "02.TK42D001"), (353, "KM1/1")])] for r in range(3)]
+    items = [(g[0]["id"], 0, g) for g in rows]
+    got = DL._grids(items, {}, "Times New Roman", 12.0, False)
+    assert len(got) == 1 and got[0][1] == 1 and got[0][2]["k"] == "table" and len(got[0][2]["rows"]) == 3
+    assert len(got[0][2]["rows"][0]) == 4 and got[0][2]["font_size"] < 12
+    toc = [[seg(10 * r, 93, 200 + 12 * r, f"1.{r}."), seg(10 * r + 1, 145, 200 + 12 * r, "Turbina üzemzavar"),
+            seg(10 * r + 2, 500, 200 + 12 * r, str(5 + r))] for r in range(4)]
+    assert all(it[1] == 0 for it in DL._grids([(g[0]["id"], 0, g) for g in toc], {}, "Times New Roman", 12.0, False))
+
+
+def test_heading_drawn_as_images_takes_text_of_its_toc_entry():
+    """Заголовок картинками (номер и текст — растры; JPDS: 71 заголовок) — текстом своего пункта оглавления по порядку;
+    уровень должен совпасть."""
+    toc = {"k": "toc", "info": {"figures": False, "entries": [("1 Bevezetés", 1), ("1.1 A cél", 2), ("1.2 Hatály", 2)]}}
+    img = {"img": {"x0": 1, "x1": 2, "top": 1, "bottom": 2}}
+    h = lambda lv, runs: {"k": "h", "level": lv, "runs": runs, "geom": {"page": 5, "top": 100}}
+    blocks = [toc, h(1, [{"t": "1 Bevezetés"}]), h(2, [img, {"t": " "}, img]), h(2, [img])]
+    D.toc_headings(blocks)
+    assert B.text_of(blocks[2]["runs"]) == "1.1 A cél" and B.text_of(blocks[3]["runs"]) == "1.2 Hatály"
+
+
+def test_list_at_margin_keeps_its_own_indent(tmp_path):
+    """Буквенный список у поля, когда тот же вид в документе обычно с отступом (ÜFK: «a.)» и у поля, и на 30 pt) —
+    отступы абзацу по своему месту: метка у поля, текст на висячем отступе."""
+    from docx import Document
+    def item(t, top):
+        x = p(t, 4, top, x0=62.4)
+        x["geom"].update(rest_x0=90.4, lines=2)
+        return [x]
+    b = lst("LowerAlpha", [item("Ha egy korlátozó feltétel nem teljesül, akkor be kell lépni.", 200),
+                           item("Az előírt művelet bármikor befejezhető, függetlenül attól.", 240)])
+    b["suffix"] = ".)"
+    D.list_geo([b])
+    assert b["geo"] == {"marker": 62.4, "text": 90.4}
+    out = tmp_path / "l.docx"
+    B.Builder(B.Memory([]), lambda img: None, PROFILE).build([b], str(out), dict(LAYOUT, first_is_body=True))
+    par = next(x for x in Document(out).paragraphs if x.text.startswith("Ha egy"))
+    assert abs(par.paragraph_format.left_indent.pt - 28) < 0.5
+    assert abs(par.paragraph_format.first_line_indent.pt + 28) < 0.5
+
+
+def test_ocr_sub_sup_tags_become_indices(tmp_path):
+    """«N<sub>R</sub>» распознавания портала — нижний индекс, а не теги в тексте (3PR42)."""
+    from docx import Document
+    out = tmp_path / "s.docx"
+    B.Builder(B.Memory([]), lambda img: None, PROFILE).build([p("Az N<sub>R</sub> = 10 % szinten, m<sup>3</sup>.", 3)],
+                                                             str(out), dict(LAYOUT, first_is_body=True))
+    par = next(x for x in Document(out).paragraphs if x.text.startswith("Az N"))
+    assert par.text == "Az NR = 10 % szinten, m3."
+    assert [r.text for r in par.runs if r.font.subscript] == ["R"] and [r.text for r in par.runs if r.font.superscript] == ["3"]
+
+
+def test_notes_of_both_halves_survive_page_join():
+    """Абзац, разрезанный листом, — сноски обеих половин остаются, место — долей общего текста (ревью 17.10)."""
+    a = dict(p("Első fele", 3, 700), notes=[{"runs": [{"t": "A"}], "pos": 1.0}])
+    b = dict(p("második fele.", 4, 100), notes=[{"runs": [{"t": "B"}], "pos": 0.5}])
+    got = D.join_notes(a, b)["notes"]
+    assert [B.text_of(n["runs"]) for n in got] == ["A", "B"]
+    assert got[0]["pos"] < got[1]["pos"] < 1.0
+    assert D.join_notes(p("x"), p("y")) == {}
+
+
+def test_cell_picture_ignores_page_background_takes_small_icon(tmp_path):
+    """Картинка ячейки — только своя и мелкая: фон во весь лист (водяной знак) текст ячеек не заменяет, значок без
+    разметки в левой ячейке — картинкой ячейки (ревью 17.10)."""
+    pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 8, 8), False)
+    pix.clear_with(120)
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_image(fitz.Rect(40, 80, 560, 760), stream=pix.tobytes("png"))     # фон
+    page.insert_image(fitz.Rect(70, 290, 100, 310), stream=pix.tobytes("png"))    # значок строки 2
+    f = tmp_path / "bg.pdf"
+    doc.save(f)
+    def cell(t, x0, x1, top):
+        g = {"page": 1, "top": top, "bottom": top + 12, "x0": x0, "x1": x1, "first_x0": x0, "size": 10}
+        return {"blocks": [dict(p(t, 1, top, x0=x0), geom=g)], "th": False, "geom": g}
+    rows = [[cell("Kapcsoló", 110, 160, 200), cell("A kapcsoló hosszú leírása, amely a cellát kitölti.", 300, 540, 200)],
+            [cell("Jelző", 110, 150, 295), cell("A jelző hosszú leírása, amely a cellát kitölti egészen.", 300, 540, 295)],
+            [cell("Gomb", 110, 150, 400), cell("A gomb hosszú leírása, amely a cellát kitölti egészen.", 300, 540, 400)]]
+    t = {"k": "table", "rows": rows, "geom": {"page": 1, "top": 200, "bottom": 412, "x0": 110, "x1": 540}}
+    with fitz.open(f) as d2:
+        D._cell_pictures(t, d2, [t])
+    clip = lambda c: [r["img"]["clip"] for x in c["blocks"] for r in x["runs"] if "img" in r]
+    assert not clip(rows[0][0]) and not clip(rows[2][0]) and not clip(rows[0][1])
+    assert clip(rows[1][0]) and B.text_of(rows[2][1]["blocks"][0]["runs"]).startswith("A gomb")
+
+
+def test_heading_number_dot_follows_original(tmp_path):
+    """Точка после номера заголовка — по уровню, как в оригинале: «1. Introduction», а «2.1 Scope» — без (Eskom)."""
+    from docx import Document
+    h = lambda lv, t, top: {"k": "h", "level": lv, "runs": [{"t": t, "font": "Arial", "size": 12, "b": True}],
+                            "geom": {"page": 2, "top": top, "bottom": top + 12, "x0": 62.4, "x1": 300, "first_x0": 62.4,
+                                     "size": 12}}
+    blocks = [h(1, "1. Introduction", 100), h(2, "1.1 Scope", 140), h(1, "2. Supporting Clauses", 180),
+              h(2, "2.1 Purpose", 220)]
+    out = tmp_path / "h.docx"
+    B.Builder(B.Memory([]), lambda img: None, PROFILE).build(blocks, str(out), dict(LAYOUT, first_is_body=True))
+    num = Document(out).part.numbering_part.element
+    lv = {l.get(W + "ilvl"): l.find(W + "lvlText").get(W + "val")
+          for a in num.findall(W + "abstractNum") if a.get(W + "abstractNumId") == "900" for l in a.findall(W + "lvl")}
+    assert lv["0"] == "%1." and lv["1"] == "%1.%2"
+    assert [p.text for p in Document(out).paragraphs if p.text][:2] == ["Introduction", "Scope"]
+
+
+def test_vector_chart_with_axis_labels_becomes_one_picture(tmp_path):
+    """График Word из векторов (области, рамки) с подписями осей абзацами — одной картинкой области листа; подписи из
+    потока прочь; рамка вокруг обычного абзаца — не рисунок (ÜFK I, л. 48)."""
+    doc = fitz.open()
+    page = doc.new_page()
+    page.draw_rect(fitz.Rect(100, 300, 400, 500), color=(0.5, 0.5, 0.5), width=1)
+    page.draw_rect(fitz.Rect(100, 300, 400, 420), color=None, fill=(0.6, 0.8, 0.3))
+    page.draw_rect(fitz.Rect(100, 420, 400, 500), color=None, fill=(0.9, 0.95, 0.85))
+    page.draw_rect(fitz.Rect(90, 600, 500, 700), color=(0.5, 0.5, 0.5), width=1)        # рамка вокруг абзаца
+    f = tmp_path / "chart.pdf"
+    doc.save(f)
+    blocks = [p("Az alábbi ábra szerinti tartományon belül kell lennie.", 1, 270, x0=90),
+              p("250", 1, 296, x0=80), p("0", 1, 495, x0=88), p("1,E-04 10 20 30 40 50 60 70 80 90 100", 1, 503, x0=95),
+              p("Hosszú szöveg a keretben, amely nem ábra, hanem közönséges bekezdés a dokumentumban.", 1, 640, x0=95)]
+    for b in blocks:
+        b["geom"]["x1"] = b["geom"]["x0"] + 6 * len(B.text_of(b["runs"])) if len(B.text_of(b["runs"])) < 40 else 480
+        b["geom"]["bottom"] = b["geom"]["top"] + 9
+    got = D.compose_figures(blocks, str(f))
+    figs = [b for b in got if b.get("vector")]
+    assert len(figs) == 1 and figs[0]["geom"]["top"] <= 300 and figs[0]["geom"]["bottom"] >= 505
+    texts = [B.text_of(b["runs"]) for b in got if not b.get("vector")]
+    assert "250" not in texts and texts[0].startswith("Az alábbi") and texts[-1].startswith("Hosszú")
+
+
+def test_table_column_not_narrower_than_its_picture(tmp_path):
+    """Значок в ячейке шире столбца по левым краям текста — столбец расширяется (JPDS: значки окна срезались)."""
+    from docx import Document
+    img = {"img": {"x0": 130, "x1": 154, "top": 540, "bottom": 564, "page_number": 3}}
+    def cell(runs, x0, x1):
+        g = {"page": 3, "top": 540, "bottom": 564, "x0": x0, "x1": x1, "first_x0": x0, "size": 10}
+        return {"blocks": [{"k": "p", "runs": runs, "geom": g}], "th": False, "geom": g}
+    rows = [[cell([img], 130, 154), cell([{"t": "«развернуть» – окно на весь экран", "font": "Arial", "size": 10}],
+                                         148, 500)] for _ in range(2)]
+    t = {"k": "table", "rows": rows, "borders": False, "frame": {"xs": []},
+         "geom": {"page": 3, "top": 540, "bottom": 600, "x0": 130, "x1": 500, "size": 10}}
+    out = tmp_path / "t.docx"
+    B.Builder(B.Memory([]), lambda im: png(), PROFILE).build([t], str(out), dict(LAYOUT, first_is_body=True))
+    grid = Document(out).tables[0]._tbl.tblGrid.findall(W + "gridCol")
+    assert int(grid[0].get(W + "w")) / 20 >= 24 + 12 - 0.5

@@ -395,7 +395,7 @@ def _p2d_child(pdf, out):
         print(" ".join(f"ERR {type(e).__name__}: {e}"[:200].split()), flush=True)
 
 
-def build_struct_docx(src, out, segs, res, rules=None, progress=None, mode="struct"):
+def build_struct_docx(src, out, segs, res, rules=None, progress=None, mode="struct", overlay=None):
     """DOCX размеченного PDF (экспорт Word со StructTreeRoot, pipeline.extract → d["struct"]): блоки — по дереву
     разметки (docx_struct), оформление — профилем оригинала (docx_profile), сборка — docx_build.Builder; перевод — из
     сегментов задачи (после проверки, шлифовки и правок редактора), скриншоты — переведённые (shots.render).
@@ -405,18 +405,11 @@ def build_struct_docx(src, out, segs, res, rules=None, progress=None, mode="stru
     import conventions as C
     import docx_build as B
     import docx_profile as F
-    import docx_struct as D
     import shots as SH
     from docx import Document
     from docx.text.paragraph import Paragraph
     tick = progress or (lambda x: None)
-    if mode == "layout":                # распознанный PDF без разметки: блоки — по сегментам листа (docx_layout)
-        import docx_layout as DL
-        blocks, info = DL.load(str(src), segs)
-        L = DL.layout(str(src), blocks, segs, info)
-    else:
-        blocks, _ = D.load(str(src))
-        L = D.layout(str(src), blocks)
+    blocks, L = B.blocks_layout(src, segs, mode)   # по разметке / по сегментам листа (распознанный, текстовый слой)
     prof = F.extract(str(src), blocks, L)
     tick(0.4)
     mem = B.job_memory(segs, res)
@@ -429,8 +422,26 @@ def build_struct_docx(src, out, segs, res, rules=None, progress=None, mode="stru
             shot_items.setdefault(sh["xref"], []).append((sh, ru))
     cache = {}
 
+    ov = fitz.open(overlay) if overlay and Path(overlay).exists() else None
+
     def image(img):
+        if img.get("clip"):                 # составной рисунок (docx_struct.compose_figures): область листа целиком,
+            try:                            # с переведённого PDF — надписи выносок переводом
+                pg = (ov or doc)[img["page_number"] - 1]
+                return pg.get_pixmap(dpi=200, clip=fitz.Rect(img["clip"])).tobytes("png")
+            except (RuntimeError, ValueError, IndexError) as e:
+                print(f"DOCX: область рисунка не снята: {type(e).__name__}: {e}"[:200], flush=True)
+                return None
         if img.get("png"):                  # рисунок распознанного листа — уже снимок (docx_layout)
+            x = img.get("xref")             # снимок — ровно картинка PDF без разметки: скриншот с переводом надписей
+            if x in shot_items:
+                if x not in cache:
+                    try:
+                        cache[x] = SH.render(doc, x, shot_items[x]).tobytes("png")
+                    except Exception as e:                                      # noqa: BLE001 — тогда снимок листа
+                        print(f"DOCX: скриншот {x} не переведён: {type(e).__name__}: {e}"[:200], flush=True)
+                        cache[x] = None
+                return cache[x] or img["png"]
             return img["png"]
         x = img["stream"].objid
         if x in cache:
@@ -455,7 +466,11 @@ def build_struct_docx(src, out, segs, res, rules=None, progress=None, mode="stru
         cache[x] = data
         return data
 
-    B.Builder(mem, image, prof).build(blocks, str(out), L)
+    try:
+        B.Builder(mem, image, prof).build(blocks, str(out), L)
+    finally:
+        if ov is not None:
+            ov.close()                      # PDF из DOCX ляжет на его место (Windows держит открытый файл)
     tick(0.8)
     viol = F.check(str(out), prof, blocks, L)
     dx, lang = Document(str(out)), []
@@ -466,7 +481,7 @@ def build_struct_docx(src, out, segs, res, rules=None, progress=None, mode="stru
     rows = [("", v["rule"], f"оформление: {v['where']} — {v['was']} (нужно: {v['need']})", "") for v in viol] \
         + [("", r, f"в DOCX: {why}", t) for r, why, t in lang]
     tick(1.0)
-    return {"converter": "разметка PDF" if mode != "layout" else "сегменты листа", "missed": len(set(mem.missing)),
+    return {"converter": {"layout": "сегменты листа", "text": "текстовый слой"}.get(mode, "разметка PDF"), "missed": len(set(mem.missing)),
             "format": len(viol), "lang": len(lang)}, rows
 
 
@@ -550,10 +565,9 @@ def source_path(d):
     return Path(d["file"])
 
 
-def pdf_from_docx(docx, pdf, timeout=900):
-    """PDF перевода из готового DOCX (lo_pdf.py: LibreOffice без окна, оглавление и поля обновлены) — решение
-    Максима 16.10 вместо PDF «на месте», где не помещающийся русский текст ужимался. Нет LibreOffice или python
-    с модулем uno — OSError (остаётся PDF в вёрстке оригинала)."""
+def lo_convert(src, dst, timeout=900):
+    """LibreOffice без окна (lo_pdf.py): src → dst, вид — по расширению dst (.pdf — с обновлёнными оглавлением и полями,
+    .docx — сохранение в DOCX). Нет LibreOffice или python с модулем uno — OSError."""
     import os, shutil, subprocess
     soffice = shutil.which("soffice") or shutil.which("libreoffice")
     win = Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "LibreOffice" / "program" / "soffice.exe"
@@ -566,13 +580,20 @@ def pdf_from_docx(docx, pdf, timeout=900):
          if Path(p).exists()), None)
     if not py:
         raise FileNotFoundError("нет python с модулем uno (python3-uno)")
-    tmp = Path(pdf).with_name(Path(pdf).stem + ".lo.tmp.pdf")
-    r = subprocess.run([py, str(Path(__file__).with_name("lo_pdf.py")), str(docx), str(tmp), soffice],
+    tmp = Path(dst).with_name(Path(dst).stem + ".lo.tmp" + Path(dst).suffix)
+    r = subprocess.run([py, str(Path(__file__).with_name("lo_pdf.py")), str(src), str(tmp), soffice],
                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
     if r.returncode != 0 or not tmp.exists():
         tmp.unlink(missing_ok=True)
         raise RuntimeError("LibreOffice: " + ((r.stderr or r.stdout).strip()[-300:] or f"код {r.returncode}"))
-    os.replace(tmp, pdf)
+    os.replace(tmp, dst)
+
+
+def pdf_from_docx(docx, pdf, timeout=900):
+    """PDF перевода из готового DOCX (lo_pdf.py: LibreOffice без окна, оглавление и поля обновлены) — решение
+    Максима 16.10 вместо PDF «на месте», где не помещающийся русский текст ужимался. Нет LibreOffice или python
+    с модулем uno — OSError (остаётся PDF в вёрстке оригинала)."""
+    lo_convert(docx, pdf, timeout)
     import fitz
     with fitz.open(pdf) as doc:
         return {"from": "DOCX (LibreOffice)", "pages": doc.page_count}
@@ -597,7 +618,8 @@ def assemble_all(jf, d, out_dir=None, progress=None):
                 info["docx"], rows = build_struct_docx(src, outd / f"{stem}_RU.docx", d["segs"], d["res"],
                                                        (d.get("polish") or {}).get("rules"),
                                                        progress=lambda x: tick(0.4 + 0.6 * x),
-                                                       mode=d["struct"].get("mode") or "struct")
+                                                       mode=d["struct"].get("mode") or "struct",
+                                                       overlay=outd / f"{stem}_RU.pdf")
                 import subprocess
                 try:                                    # PDF — из этого DOCX; без LibreOffice — в вёрстке оригинала
                     info["pdf"] = pdf_from_docx(outd / f"{stem}_RU.docx", outd / f"{stem}_RU.pdf")

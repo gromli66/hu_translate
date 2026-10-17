@@ -20,7 +20,20 @@ def family(font):
     if any(k in f for k in ("arial", "helvetica", "sans", "verdana", "tahoma", "calibri")):
         return "sans-serif"
     return "serif"
-MARK = re.compile(r"^\s*(\(?\d+(\.\d+)*\.?\)?|[a-zA-Z]\.?\)|[A-Z]\.\d*\.?|[-–•▪]|\d+/\d+\.|\d+\./)\s")
+MARK = re.compile(r"^\s*(\(?\d+(\.\d+)*\.?\)?|[a-zA-Z]\.?\)|[A-Z]\.\d*\.?|[-–•▪]|\d+/\d+\.|\d+\./|\[\d+\])\s")
+
+
+def code_line(t):
+    """Строка из кодов («04.TH10D001 KM1/1», «30BW07», «03/A TJ22D001»): каждое слово — с цифрой или аббревиатура до
+    4 прописных, слов с цифрами не меньше половины. Такие строки — ячейки перечня без линеек, а не строки абзаца:
+    столбец кодов склеивался в один абзац, код и его значение — в один кусок (3PR42 л. 112, 17.10)."""
+    toks = [x for x in t.split() if re.search(r"\w", x)]
+    dig = [x for x in toks if re.search(r"\d", x)]
+    return bool(toks) and 2 * len(dig) >= len(toks) and all(
+        re.search(r"\d", x) or (x.isupper() and len(re.sub(r"\W", "", x)) <= 4) for x in toks)
+
+
+CODE_GAP = 8.0      # код и значение в строке перечня («TK41D001 ⇥ KM2/1»: 10–24 pt, слова прозы — 3–4 pt) — разные куски
 
 
 def _union(bbs):
@@ -114,6 +127,7 @@ def frags_from_text(page, vs=()):
                 bold = bool(s["flags"] & 16) or "Bold" in s["font"]
                 marker = cur is not None and bool(BULLET.match(cur["t"].strip())) and bb[0] - cur["bbox"][2] > 3
                 if cur is not None and bb[0] - cur["bbox"][2] <= GAP and not marker \
+                        and not (bb[0] - cur["bbox"][2] >= CODE_GAP and code_line(cur["t"]) and code_line(txt)) \
                         and not _vrule_in(vs, cur["bbox"][2], bb[0], bb[1], bb[3]) \
                         and not (_lead(cur["t"]) and _image_between(icons, cur["bbox"][2], bb[0], bb[1], bb[3])):
                     cur["t"] += txt
@@ -134,6 +148,7 @@ def frags_from_text(page, vs=()):
         m = merged[-1] if merged else None
         if m is not None and abs(m["bbox"][1] - f["bbox"][1]) < 2.5 and abs(m["bbox"][3] - f["bbox"][3]) < 2.5 \
                 and 0 <= f["bbox"][0] - m["bbox"][2] <= GAP and not _vrule_in(vs, m["bbox"][2], f["bbox"][0], f["bbox"][1], f["bbox"][3]) \
+                and not (f["bbox"][0] - m["bbox"][2] >= CODE_GAP and code_line(m["t"]) and code_line(f["t"])) \
                 and not (_lead(m["t"]) and _image_between(icons, m["bbox"][2], f["bbox"][0], f["bbox"][1], f["bbox"][3])) \
                 and not (BULLET.match(m["t"].strip()) and f["bbox"][0] - m["bbox"][2] > 3):
             m["t"] = m["t"].rstrip() + " " + f["t"].lstrip()
@@ -227,12 +242,22 @@ def group(frags, hs, vs=(), form=False):
     """form=True (скан формы): строка, кончающаяся двоеточием, — подпись поля, к ней не приклеивается следующая."""
     page_right = max((f["bbox"][2] for f in frags), default=0)
     frags = sorted(frags, key=lambda f: (round(f["bbox"][1] / 3), f["bbox"][0]))
+    # слева на той же строке — номер пункта отдельным куском («1.6.» ⇥ «FOT szintcsökkenés» в оглавлении 3SZ19): кусок
+    # начинает новый абзац — иначе название приклеивалось к названию пункта выше, а у «1.6.» оставалось пустым (17.10)
+    label = re.compile(r"^\(?\d+(\.\d+)*\.?\)?$|^[a-zA-Z][.)]$")
+    nums = [f["bbox"] for f in frags if label.match(f["t"].strip())]
+    numbered = lambda bb: any(n[2] < bb[0] and bb[0] - n[2] < 120 and min(n[3], bb[3]) - max(n[1], bb[1]) > 0.5 * (
+        bb[3] - bb[1]) for n in nums)
     pars = []
     for f in frags:
         x0, y0, x1, y1 = f["bbox"]
         best = None
-        if not MARK.match(f["t"]) and not f.get("item"):
+        # маркер пункта отдельным фрагментом — сам по себе: маркеры соседних пунктов слипались в один «• •», и пункт
+        # оставался без своего (Eskom 331-165, 17.10)
+        if not MARK.match(f["t"]) and not f.get("item") and not BULLET.match(f["t"].strip()) and not numbered(f["bbox"]):
             for p in reversed(pars[-12:]):
+                if len(p["frags"]) == 1 and BULLET.match(p["frags"][0]["t"].strip()):
+                    continue
                 px0, py0, px1, py1 = p["bbox"]
                 last = p["frags"][-1]["bbox"]
                 gap = y0 - last[3]
@@ -247,6 +272,8 @@ def group(frags, hs, vs=(), form=False):
                     continue
                 if form and p["frags"][-1]["t"].rstrip().endswith(":"):
                     continue
+                if code_line(p["frags"][-1]["t"]) and code_line(f["t"]):
+                    continue                                # строки перечня кодов — каждая своим куском
                 # короткая строка (до преграды справа далеко) закрывает абзац — если первое слово следующей строки
                 # в остаток влезло бы: в узкой ячейке строка коротка, потому что слово не поместилось
                 # («Teszt / szüneteltetése», таблица 1 UTS — ячейка переводилась по строкам, 15.10)
@@ -294,7 +321,8 @@ def join_lines(lines):
         if not out:
             out = ln
         elif out.endswith("-") and ln[:1].islower():
-            keep = re.search(r"[A-ZÁÉÍÓÖŐÚÜŰ0-9]-$", out)
+            # дефис — часть слова: после прописной или цифры, и в составном через дефис («loss-of-» + «coolant», Eskom)
+            keep = re.search(r"[A-ZÁÉÍÓÖŐÚÜŰ0-9]-$", out) or re.search(r"\w-\w+-$", out)
             out = (out if keep else out[:-1]) + ln
         else:
             out += " " + ln

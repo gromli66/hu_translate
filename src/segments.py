@@ -358,7 +358,7 @@ def ocr_frags(words, vs=()):
     """Фрагменты OCR-страницы: слова одной строки Tesseract подряд, без большого разрыва и без линейки между ними.
     Кегль — по высоте слов без выносных вниз и без прописных с диакритикой (высота такого слова ≈ 0,72 кегля),
     жирность — по плотности краски относительно слов той же высоты."""
-    from layout import GAP, _vrule_in, _union
+    from layout import GAP, CODE_GAP, _vrule_in, _union, code_line
     inks = sorted(w["ink"] for w in words if "ink" in w)
     # рамка слова, задетого рукописной подписью, раздута по высоте («Aláírás:» 9,4 pt вместо 3,8): по вертикали —
     # как у обычных слов той же строки, иначе и кегль перевода, и белая плашка вырастают и затирают подпись
@@ -377,7 +377,8 @@ def ocr_frags(words, vs=()):
     out, cur = [], None
     for w in words:
         if cur is not None and cur["line"] == w["line"] and w["box"][0] - cur["bbox"][2] <= GAP \
-                and not _vrule_in(vs, cur["bbox"][2], w["box"][0], w["box"][1], w["box"][3]):
+                and not _vrule_in(vs, cur["bbox"][2], w["box"][0], w["box"][1], w["box"][3]) \
+                and not (w["box"][0] - cur["bbox"][2] >= CODE_GAP and code_line(cur["t"]) and code_line(w["t"])):
             cur["t"] += " " + w["t"]; cur["bbox"] = _union([cur["bbox"], w["box"]]); cur["ws"].append(w)
         else:
             if cur is not None:
