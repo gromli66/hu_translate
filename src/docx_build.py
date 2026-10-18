@@ -200,7 +200,10 @@ def _span_starts(row, xs, ncol):
             return 5.0 * (z - a)                             # пустая ячейка — по столбцу, если ничто не мешает
         gl, gr = xs[a], xs[z + 1]
         inside = 0 if gl - 3 <= g["x0"] and g["x1"] <= gr + 3 else 1000
-        return inside + min(abs((gl + gr) / 2 - (g["x0"] + g["x1"]) / 2), abs(g["x0"] - gl - 5))
+        # столбец, до которого текст ячейки не доходит, — дороже ничьего: ничей закроет ячейка сверху (объединение по
+        # вертикали, OAH 1.1 «MEGJEGYZÉS»: описание растягивалось на два столбца, 19.10)
+        wide = sum(30 for c in range(a + 1, z + 1) if g["x1"] < xs[c] + 3)
+        return inside + wide + min(abs((gl + gr) / 2 - (g["x0"] + g["x1"]) / 2), abs(g["x0"] - gl - 5))
 
     @lru_cache(None)
     def best(i, a):
