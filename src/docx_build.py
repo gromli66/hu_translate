@@ -1395,9 +1395,24 @@ class Builder:
                    "[Оглавление: в Word — правой кнопкой → «Обновить поле»]")
         self._toc_n += 1
 
+    def _shrink_tail(self):
+        """Перед разрывом листа: пустой абзац Word после таблицы — в 1 pt. Таблица кончалась у низа листа, этот абзац
+        уходил на следующий лист один, а за ним текст «с новой страницы» — пустой лист (ÜFK I л. 75, 18.10)."""
+        from docx.shared import Pt
+        body = self.doc.element.body
+        last = next((e for e in reversed(body) if e.tag != W + "sectPr"), None)
+        prev = last.getprevious() if last is not None else None
+        if last is not None and last.tag == W + "p" and not "".join(last.itertext()).strip()                 and prev is not None and prev.tag == W + "tbl":
+            par = self.doc.paragraphs[-1]
+            if par._p is last:
+                par.paragraph_format.space_before = par.paragraph_format.space_after = Pt(0)
+                par.paragraph_format.line_spacing = Pt(1)
+
     def block(self, b):
         k = b["k"]
         fresh, self.fresh = getattr(self, "fresh", False), False
+        if b.get("break") and not fresh:
+            self._shrink_tail()
         if k == "h":
             self.heading(b)
         elif k == "p":
