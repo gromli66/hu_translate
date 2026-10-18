@@ -61,18 +61,43 @@ def _sig(t):
     return re.sub(r"[\d\W]+", "", t.lower())[:40]
 
 
-def repeats(doc):
+def repeats_of(pages):
     """Колонтитулы: (подпись строки, высота с шагом 3 pt) у края листа (верхняя или нижняя седьмая часть), что стоят на
     одной и той же высоте на 3 и больше листах и не меньше чем на 30 % листов. Высота — обязательно: «Korlátozó
-    feltétel:» ÜFK стоит вверху многих листов (разделы с нового листа), но на разной высоте — это не колонтитул (18.10)."""
+    feltétel:» ÜFK стоит вверху многих листов (разделы с нового листа), но на разной высоте — это не колонтитул (18.10).
+    pages — {лист: (строки, высота листа)}; всего листов — len(pages)."""
     cnt = {}
-    for p in doc:
-        H = p.rect.height
-        for l in page_lines(p):
+    for pno, (lines, H) in pages.items():
+        for l in lines:
             if (l["bottom"] < H / 7 or l["top"] > H * 6 / 7) and _sig(l["text"]):
-                cnt.setdefault((_sig(l["text"]), round(l["top"] / 3)), set()).add(p.number)
-    need = max(3, 0.3 * len(doc))
+                cnt.setdefault((_sig(l["text"]), round(l["top"] / 3)), set()).add(pno)
+    need = max(3, 0.3 * len(pages))
     return {k for k, v in cnt.items() if len(v) >= need}
+
+
+def repeats(doc):
+    return repeats_of({p.number: (page_lines(p), p.rect.height) for p in doc})
+
+
+def frag_lines(frags):
+    """Строки распознанного листа (скан, контуры) из кусков OCR в формате page_lines: куски, перекрытые по высоте больше
+    чем на половину меньшего, — одна строка слева направо; строки — сверху вниз."""
+    rows = []
+    for f in sorted(frags, key=lambda f: ((f["bbox"][1] + f["bbox"][3]) / 2, f["bbox"][0])):
+        b = f["bbox"]
+        r = rows[-1] if rows else None
+        if r and min(b[3], r["bottom"]) - max(b[1], r["top"]) > 0.5 * min(b[3] - b[1], r["bottom"] - r["top"]):
+            r["fr"].append(f); r["top"], r["bottom"] = min(r["top"], b[1]), max(r["bottom"], b[3])
+        else:
+            rows.append({"fr": [f], "top": b[1], "bottom": b[3]})
+    out = []
+    for r in rows:
+        fr = sorted(r["fr"], key=lambda f: f["bbox"][0])
+        out.append({"id": len(out), "x0": round(min(f["bbox"][0] for f in fr), 1),
+                    "x1": round(max(f["bbox"][2] for f in fr), 1), "top": round(r["top"], 1),
+                    "bottom": round(r["bottom"], 1), "size": round(max(f.get("size") or 10 for f in fr), 1),
+                    "bold": all(f.get("bold") for f in fr), "text": " ".join(f["t"].strip() for f in fr).strip()})
+    return out
 
 
 def is_rep(l, rep, H):
@@ -131,17 +156,30 @@ def ask(lines, W, H, rep=frozenset()):
     return got if len(got) >= MIN_COVER * len(lines) else {}
 
 
-def doc_labels(path, pages, workers=4):
-    """{лист от 0: (строки, метки)} для листов pages документа."""
-    import fitz
+def _ask_all(lines, size, rep, workers=4):
     from concurrent.futures import ThreadPoolExecutor
+    pages = list(lines)
+    with ThreadPoolExecutor(workers) as ex:
+        labs = dict(zip(pages, ex.map(lambda p: ask(lines[p], *size[p], rep), pages)))
+    return {p: (lines[p], labs[p]) for p in pages}
+
+
+def doc_labels(path, pages, workers=4):
+    """{лист от 0: (строки, метки)} для листов pages документа с текстовым слоем."""
+    import fitz
     with fitz.open(str(path)) as doc:
         rep = repeats(doc)
         lines = {p: page_lines(doc[p]) for p in pages}
         size = {p: (doc[p].rect.width, doc[p].rect.height) for p in pages}
-    with ThreadPoolExecutor(workers) as ex:
-        labs = dict(zip(pages, ex.map(lambda p: ask(lines[p], *size[p], rep), pages)))
-    return {p: (lines[p], labs[p]) for p in pages}
+    return _ask_all(lines, size, rep, workers)
+
+
+def frag_labels(frags, size, workers=4):
+    """То же для распознанных листов: frags — {лист: куски OCR}, size — {лист: (ширина, высота)}; колонтитулы по
+    повтору — среди распознанных листов."""
+    lines = {p: frag_lines(f) for p, f in frags.items()}
+    rep = repeats_of({p: (lines[p], size[p][1]) for p in lines})
+    return _ask_all(lines, size, rep, workers)
 
 
 def _line_of(bb, lines):
@@ -207,7 +245,8 @@ def apply(pars, lines, labels, join_lines):
         p = {"frags": frags, "bbox": bb, "size": max(f["size"] for f in frags),
              "bold": all(f["bold"] for f in frags), "text": join_lines([f["t"] for f in frags]),
              "family": max(fam, key=fam.get) if fam else "serif"}
-        if lab is not None and lab["role"] in ("heading", "list", "caption"):
+        # колонтитул — роль для распознанных листов (docx_layout._portal_running); на текстовом слое — правилами
+        if lab is not None and lab["role"] in ("heading", "list", "caption", "header"):
             p["role"] = lab["role"]
         res.append(p)
     return res

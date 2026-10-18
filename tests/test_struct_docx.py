@@ -1253,7 +1253,8 @@ def test_icon_after_list_marker_tab_stays_at_item_start():
 
 def test_portal_roles_split_merge_and_mark_paragraphs():
     """Гибрид (roles.apply): абзац правил делится на строке, которую портал начал новым абзацем; два абзаца правил
-    склеиваются, если портал продолжает строкой подряд; роль — первой строки; колонтитул и таблица — не трогаются."""
+    склеиваются, если портал продолжает строкой подряд; роль — первой строки; колонтитул и таблица не делятся и не
+    склеиваются (роль колонтитула — для распознанных листов)."""
     import roles as R
     from layout import join_lines
     ln = lambda i, y, t: {"id": i, "x0": 70.0, "x1": 500.0, "top": y, "bottom": y + 12, "size": 10, "bold": False, "text": t}
@@ -1268,7 +1269,7 @@ def test_portal_roles_split_merge_and_mark_paragraphs():
     got = R.apply(pars, lines, labels, join_lines)
     assert [p["text"] for p in got] == ["4.2 Kezelés", "A kezelő a panelen dolgozik.", "a) első pont folytatás",
                                         "12. oldal"]
-    assert [p.get("role") for p in got] == ["heading", None, "list", None]
+    assert [p.get("role") for p in got] == ["heading", None, "list", "header"]      # колонтитул — для сканов
     assert R.apply(pars, lines, {}, join_lines) is pars                     # нет меток — как у правил
 
 

@@ -74,6 +74,13 @@ def _is_running(s, keys, H):
     return bool(z) and ((z, _sig(s["text"])) in keys or (z, round(s["loc"]["bbox"][1] / 4)) in keys)
 
 
+def _portal_running(s):
+    """Колонтитул распознанного листа по метке портала (roles.py): OCR читает шапку по-разному на разных листах («T0.7. sz.
+    útmutató» / «3.7. sz. útmutató»), и повтор по тексту её не узнаёт — шапка печаталась посреди текста (замер на сканах
+    18.10: колонтитулы правилами 0,27)."""
+    return bool(s["loc"].get("ocr")) and s["loc"].get("role") == "header"
+
+
 def _layer(doc):
     """Маркеры пунктов «-»/«–» текстового слоя (текст нарисован контурами, маркеры — шрифтом): {лист: {"dash":
     [(x1, y_середина, высота)]}}."""
@@ -797,7 +804,7 @@ def load(src, segs, text=False):
     W, H = doc[0].rect.width, doc[0].rect.height
     body = [s for s in segs if "shot" not in s["loc"] and s["loc"].get("bbox") and s["text"].strip()]
     run_keys = _running(body, H, len(doc))
-    content = [s for s in body if not _is_running(s, run_keys, H)]
+    content = [s for s in body if not _is_running(s, run_keys, H) and not _portal_running(s)]
     # бегущее название раздела в рамке сверху листа (3PR42: «1.15. Átfolyás …» на каждом листе раздела) — то же, что
     # вверху предыдущего листа, — не текст (на всех листах сразу его не найти: у каждого раздела своё)
     # название — от 6 знаков с буквами: короткое значение («3», «N/A» титульных сведений Eskom) повторяется само по себе
@@ -829,6 +836,16 @@ def load(src, segs, text=False):
     content_all = content
     bold = _text_style(doc, body) if text else _pixel_style(doc, body, layer)   # и колонтитулы: шапка 3SZ19 — жирная
     regions = _regions(doc, content, bold, font, size, mono, mask=body if text else None)
+    # рисунок из краски колонтитула (шапка с линией под ней на скане): колонтитул снят с текста, а его краска уходила
+    # картинкой посреди текста следующего листа (сканы, 18.10) — рисунок без своих сегментов, накрывающий колонтитул, — прочь
+    import fitz as _f
+    off = {}
+    for s_ in body:
+        if s_ not in content:
+            off.setdefault(s_["page"], []).append(_f.Rect(s_["loc"]["bbox"]))
+    for pno, regs in regions.items():
+        regs[:] = [g for g in regs if g["ids"] or not any((g["rect"] & r).get_area() > 0.5 * max(r.get_area(), 1)
+                                                          for r in off.get(pno, []))]
     # порядок: абзацы — по сегментам (порядок чтения OCR), таблица или рисунок — на месте первого своего сегмента;
     # рисунок без сегментов — перед первым сегментом листа ниже его верха
     taken = {i for regs in regions.values() for g in regs for i in g["ids"]}
@@ -1071,7 +1088,7 @@ def layout(src, blocks, segs, info):
     W, H = doc[0].rect.width, doc[0].rect.height
     body = [s for s in segs if "shot" not in s["loc"] and s["loc"].get("bbox") and s["text"].strip()]
     run_keys = _running(body, H, len(doc))
-    runs = [s for s in body if _is_running(s, run_keys, H)]
+    runs = [s for s in body if _is_running(s, run_keys, H) or _portal_running(s)]
     geoms = [b["geom"] for b in blocks if b.get("geom") and b["k"] in ("p", "h")] + \
         [p["geom"] for b in blocks if b["k"] == "list" for it in b["items"] for p in it if p.get("geom")]
     left = sorted(g["x0"] for g in geoms)[len(geoms) // 10] if geoms else 62

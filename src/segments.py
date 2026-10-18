@@ -635,11 +635,20 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
     with ThreadPoolExecutor(4) as ex:
         pr = dict(zip(ocr_pages, ex.map(counted(portal, "p", 0.5, len(ocr_pages) or 1), ocr_pages)))
 
-    labels = {}
+    labels, pre = {}, {}
     if roles:
         import roles as R
         text_pg = [p for p in rng if not plan[p]]
         labels = R.doc_labels(path, text_pg)
+        # распознанные листы — по кускам OCR (строки собираются из кусков: текстового слоя у скана нет)
+        for pno in [p for p in rng if plan[p]]:
+            hs_, vs_ = rules(doc[pno])
+            hs_, vs_ = hs_ + [tuple(x) for x in tpage[pno]["hs"]], vs_ + [tuple(x) for x in tpage[pno]["vs"]]
+            words_, lost_ = ocr_words(_dehyphen(tw[pno]), pr[pno].get("text") or "")
+            pre[pno] = (hs_, vs_, lost_, ocr_frags(words_, vs_))
+        if pre:
+            labels.update(R.frag_labels({p: v[3] for p, v in pre.items()},
+                                        {p: (doc[p].rect.width, doc[p].rect.height) for p in pre}))
     segs, errors, lost = [], [], {}
     for pno in rng:
         page = doc[pno]
@@ -650,8 +659,15 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
             hs, vs = hs + [tuple(x) for x in tpage[pno]["hs"]], vs + [tuple(x) for x in tpage[pno]["vs"]]
             if not r.get("text"):
                 errors.append((pno, r.get("error")))
-            words, lost[pno] = ocr_words(_dehyphen(tw[pno]), r.get("text") or "")
-            pars = group(ocr_frags(words, vs), hs, vs, form=True)
+            if pno in pre:
+                hs, vs, lost[pno], frags = pre[pno]
+            else:
+                words, lost[pno] = ocr_words(_dehyphen(tw[pno]), r.get("text") or "")
+                frags = ocr_frags(words, vs)
+            pars = group(frags, hs, vs, form=True)
+            if labels.get(pno) and labels[pno][1]:
+                from layout import join_lines
+                pars = R.apply(pars, labels[pno][0], labels[pno][1], join_lines)
         else:
             pars = group(frags_from_text(page, vs), hs, vs)
             if labels.get(pno) and labels[pno][1]:

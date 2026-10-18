@@ -214,6 +214,12 @@ def extract(inputs, work, progress=_quiet):
             # распознанный PDF (текст листа — контурами, не скан): DOCX по сегментам листа (docx_layout); абзацы с
             # выделенными словами — переводом с метками начертания (struct_fill), как у размеченного
             struct = {"mode": "layout"}
+            if os.environ.get("HU_ROLES", "1") != "0":
+                # роли строк и колонтитулы распознанных листов — метками портала (roles.py; замер на сканах 18.10:
+                # правила не находят ни заголовков, ни пунктов, гибрид — 0,84 и 0,89); распознавание — из кэша
+                segs, info = S.pdf_segments(f, roles=True)
+                struct["roles"] = sum(1 for s in segs if s["loc"].get("roles")) > 0
+                log(f"извлечение: {f.name} — роли строк порталом: {'да' if struct['roles'] else 'нет (сбой портала)'}")
         if f.suffix.lower() == ".pdf" and not info.get("ocr_pages") and not struct:
             # PDF с текстовым слоем без разметки (Word без тегов, виртуальный принтер): DOCX — по сегментам листа,
             # начертание — по шрифтам слоя, колонтитулы — правилами размеченного (docx_layout, режим "text").
