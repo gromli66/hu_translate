@@ -765,9 +765,13 @@ class Builder:
             after.addprevious(el) if after is not None else ppr.append(el)
         # табуляция — позиции по оригиналу (пары «подпись ⇥ значение» на титуле, колонки в абзаце)
         from docx.shared import Pt
+        # в ячейке — от левого края текста ячейки, не от поля листа: табулятор за краем узкой ячейки уводил текст после
+        # него («A.1. ⇥ Helyre kell állítani…» ÜFK II — пропадало, 18.10)
+        base = getattr(self, "_tab_base", None)
+        base = self.left if base is None else base
         for x in sorted({round(x) for r in runs for x in r.get("tabs", [])}):
-            if x - self.left > 6:
-                par.paragraph_format.tab_stops.add_tab_stop(Pt(x - self.left))
+            if x - base > 6:
+                par.paragraph_format.tab_stops.add_tab_stop(Pt(x - base))
         if self.L and any(r.get("rtab") for r in runs):
             # номер листа в конце строки оглавления — к правому полю: русское название длиннее, и номер
             # по позиции оригинала перескакивал на следующую строку (3SZ19, 16.10)
@@ -1232,6 +1236,9 @@ class Builder:
                 t.rows[ri]._tr.get_or_add_trPr().append(_el("w:cantSplit"))
             for ci, cell in enumerate(row):
                 dc = t.cell(ri, starts[ci])
+                self._tab_base = min((float(x["geom"]["x0"]) for x in cell["blocks"]
+                                      if (x.get("geom") or {}).get("x0") is not None),
+                                     default=(cell.get("geom") or {}).get("x0"))
                 if own_edges:
                     self._cell_borders(dc, cell["edges"], fr.get("line") or "000000")
                 first = dc.paragraphs[0]
@@ -1269,6 +1276,7 @@ class Builder:
                 fill = fill or cell.get("fill")                     # заливка ячейки по оригиналу (docx_struct)
                 if fill:
                     dc._tc.get_or_add_tcPr().append(_el("w:shd", w__val="clear", w__color="auto", w__fill=fill))
+        self._tab_base = None
         self.doc.add_paragraph(style="Table Text")        # Word: после таблицы — абзац
 
     def _cell_borders(self, dc, edges, color):
