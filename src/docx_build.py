@@ -838,6 +838,10 @@ class Builder:
         if tgt is self.doc and ink and all(r.get("b") for r in ink) and len(text) <= 160 \
                 and not text.endswith((".", ",", ";", ":")) and re.search(r"[^\W\d_]{3}", text):
             par.paragraph_format.keep_with_next = True
+        # абзац, вводящий то, что следует («… az alábbi hibaüzenet jelenik meg:» + рисунок), — с ним на одном листе:
+        # рисунок уходил на следующий лист один, а заголовок с вводной фразой оставался внизу (UTS 10.6, 18.10)
+        if tgt is self.doc and text.endswith(":") and len(text) <= 400:
+            par.paragraph_format.keep_with_next = True
         for n in b.get("notes") or []:
             self._footnote(par, n)
         return par
