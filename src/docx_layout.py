@@ -567,7 +567,7 @@ def _vector_figures(page, pno, drawings, segs, masked, tabs, figs):
     import fitz
     W, H = page.rect.width, page.rect.height
     off = [fitz.Rect(s["loc"]["bbox"]) for s in masked if s not in segs]       # колонтитулы
-    rs = [fitz.Rect(d["rect"]) for d in drawings]
+    rs = [fitz.Rect(d["rect"]) + (-0.5, -0.5, 0.5, 0.5) for d in drawings]   # линия без толщины — не пустая рамка
     rs = [r for r in rs if r.width < 0.75 * W and r.height < 0.75 * H and (r.width > 0.5 or r.height > 0.5)
           and not any(r.intersects(t) for t in tabs) and not any(r.intersects(f) for f in figs)
           and not any(r.intersects(o) for o in off)]
@@ -585,7 +585,8 @@ def _vector_figures(page, pno, drawings, segs, masked, tabs, figs):
         if n < 6 or R.width < 80 or R.height < 60:
             continue
         boxes = [fitz.Rect(s["loc"]["bbox"]) for s in segs]
-        inside = [b for b in boxes if (b & R).get_area() >= 0.8 * max(b.get_area(), 1)]
+        # подпись — серединой в области (с запасом 10 pt) и не шире её; длинная строка текста, задетая краем, — помеха
+        inside = [b for b in boxes if (R + (-10, -10, 10, 10)).contains((b.tl + b.br) / 2) and b.width <= R.width + 20]
         cut = [b for b in boxes if b.intersects(R) and b not in inside]
         if len(inside) < 2 or cut:
             continue

@@ -1312,7 +1312,7 @@ def test_vector_tree_with_labels_is_figure_text_paragraph_is_not():
     page = doc.new_page()
     page.draw_line((150, 100), (150, 300))
     for y in (100, 150, 200, 250, 300):
-        page.draw_line((150, y), (170, y))
+        page.draw_line((150, y), (250, y))
     page.draw_line((130, 200), (150, 200))
     seg = lambda i, r, t: {"id": i, "page": 0, "text": t, "loc": {"bbox": list(r)}}
     segs = [seg(0, (60, 194, 120, 206), "1. Scope"), seg(1, (175, 94, 240, 106), "General"),
