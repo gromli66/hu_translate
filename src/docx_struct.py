@@ -257,6 +257,46 @@ def insert_imgs(runs, imgs):
     return out
 
 
+def fit_rows(bs):
+    """Строка, где ячеек больше, чем столбцов рамки таблицы: Word отдаёт вложенную в ячейку табличку («значок ⚠ + текст»
+    в «Описании» JPDS табл. 15) лишними ячейками строки — вся таблица получала лишний столбец, текст сжимался в узкий
+    (19.10). Ячейки, что лежат в одном столбце рамки (по середине текста), — одной ячейкой, блоки по порядку."""
+    for b in bs:
+        for it in b.get("items") or []:
+            fit_rows(it)
+        if b["k"] != "table":
+            continue
+        xs = (b.get("frame") or {}).get("xs") or []
+        k = len(xs) - 1
+        if k < 2:
+            continue
+        col = lambda c: (lambda g: None if not g or g.get("x1") is None else
+                         sum((g["x0"] + g["x1"]) / 2 >= x for x in xs[1:-1]))(c.get("geom"))
+        rows = []
+        for r in b["rows"]:
+            if len(r) <= k:
+                rows.append(r)
+                continue
+            cs = [col(c) for c in r]
+            if any(x is None for x in cs[1:]) or cs[1:] != sorted(cs[1:]):
+                rows.append(r)
+                continue
+            out = []
+            for c, ci in zip(r, cs):
+                if out and ci is not None and out[-1][1] == ci:
+                    prev = out[-1][0]
+                    g0, g1 = prev.get("geom") or {}, c.get("geom") or {}
+                    geom = dict(g0, x0=min(g0.get("x0", g1["x0"]), g1["x0"]), x1=max(g0.get("x1", g1["x1"]), g1["x1"]),
+                                top=min(g0.get("top", g1["top"]), g1["top"]),
+                                bottom=max(g0.get("bottom", g1["bottom"]), g1["bottom"])) if g1 else g0
+                    out[-1] = (dict(prev, blocks=prev["blocks"] + c["blocks"], geom=geom), ci)
+                else:
+                    out.append((c, ci))
+            rows.append([c for c, _ in out] if len(out) <= k else r)
+        b["rows"] = rows
+    return bs
+
+
 def join_tables(bs):
     """Таблица, которую Word при экспорте разрезал по листам (продолжение — отдельная таблица сразу за ней, без шапки,
     с тем же числом столбцов, на следующем листе), — снова одна: в DOCX она переносится сама и повторяет шапку
@@ -1050,6 +1090,12 @@ def load(path):
         for x in sorted((float(o["x0"]) + float(o["x1"])) / 2 for o in vert):
             if not xs or x - xs[-1] > 3:
                 xs.append(x)
+        # граница столбца — вертикаль хотя бы на половину высоты таблицы на листе: линия вложенной таблички в одной
+        # строке («⚠ + текст» в «Описании» JPDS табл. 15) давала таблице лишний столбец, текст сжимался (19.10)
+        span = max(1.0, min(float(g.get("bottom") or 0), bot) - max(float(g["top"]), top))
+        cover = lambda x: sum(float(o["height"]) for o in vert if abs((float(o["x0"]) + float(o["x1"])) / 2 - x) <= 3)
+        if len(xs) > 2:
+            xs = [x for i, x in enumerate(xs) if i in (0, len(xs) - 1) or cover(x) >= 0.5 * span]
         ys = []
         for y in sorted((float(o["top"]) + float(o["bottom"])) / 2 for o in horiz):
             if not ys or y - ys[-1] > 2:
@@ -1273,8 +1319,8 @@ def load(path):
     page = pdf.pages[0]
     attach_icons(blocks, artifacts["imgs"], float(page.height))
     text_labels(blocks)
-    blocks = inline_pictures(toc_headings(real_headings(adopt(evict(join_tocs(join_tables(figures_in_place(place_captions(unlist_captions(list_tails(relist(
-        para_lists(join_pages(reflow(attach_notes(blocks))))))))))))))))
+    blocks = inline_pictures(toc_headings(real_headings(adopt(evict(join_tocs(fit_rows(join_tables(figures_in_place(place_captions(unlist_captions(list_tails(relist(
+        para_lists(join_pages(reflow(attach_notes(blocks)))))))))))))))))
     tops, bots = {}, {}
     for pg in pdf.pages:
         ys = [(float(c["top"]), float(c["bottom"])) for c in pg.chars if c.get("mcid") is not None and c["text"].strip()]
