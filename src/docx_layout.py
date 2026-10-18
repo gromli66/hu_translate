@@ -957,7 +957,9 @@ def load(src, segs, text=False):
         if b["k"] == "list":
             x = b.pop("x0")
             b["level"] = min(min(range(len(steps)), key=lambda i: abs(steps[i] - x)), 3)
-    if text:            # разрывы листа — правилом PDF с разметкой (docx_struct.mark_breaks): верх и низ тела листов
+    # разрывы листа — правилом PDF с разметкой (docx_struct.mark_breaks): верх и низ тела листов; и для распознанных
+    # листов — разделы 3SZ19 с нового листа шли подряд (18.10)
+    if True:
         import docx_struct
         tops, bots = {}, {}
         ys = [(s["page"] + 1, s["loc"]["bbox"][1], s["loc"]["bbox"][3]) for s in content_all]
