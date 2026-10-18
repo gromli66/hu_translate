@@ -1304,6 +1304,25 @@ def test_code_paragraph_keeps_keys_translates_comments(tmp_path):
     assert any(par.text == "LogFile=/tmp/canframes.log" for par in Document(out).paragraphs)
 
 
+def test_vector_tree_with_labels_is_figure_text_paragraph_is_not():
+    """Схема из линий с подписями (дерево Eskom) на текстовом слое — рисунок областью листа; абзац текста, задетый
+    скоплением, — не рисунок."""
+    import docx_layout as DL
+    doc = fitz.open()
+    page = doc.new_page()
+    page.draw_line((150, 100), (150, 300))
+    for y in (100, 150, 200, 250, 300):
+        page.draw_line((150, y), (170, y))
+    page.draw_line((130, 200), (150, 200))
+    seg = lambda i, r, t: {"id": i, "page": 0, "text": t, "loc": {"bbox": list(r)}}
+    segs = [seg(0, (60, 194, 120, 206), "1. Scope"), seg(1, (175, 94, 240, 106), "General"),
+            seg(2, (175, 244, 260, 256), "Normative"), seg(3, (60, 400, 500, 412), "Body text paragraph.")]
+    got = DL._vector_figures(page, 0, page.get_cdrawings(), segs, segs, [], [])
+    assert len(got) == 1 and got[0][1]["page_number"] == 1 and got[0][0].y1 < 400
+    segs.append(seg(4, (100, 140, 400, 160), "A long body line crossing the drawing"))
+    assert DL._vector_figures(page, 0, page.get_cdrawings(), segs, segs, [], []) == []
+
+
 def test_cell_fill_legend_stays_in_its_row(tmp_path):
     """Легенда цветов: заливки соседних строк касаются — картинка ячейки только своей строки, не весь столбец (JPDS:
     9 копий столбца, +9 листов, 17.10)."""

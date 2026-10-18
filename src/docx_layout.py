@@ -560,6 +560,43 @@ def _figures(page, segs, drawings, scan=False):
     return out
 
 
+def _vector_figures(page, pno, drawings, segs, masked, tabs, figs):
+    """Скопления векторных фигур (от 6, не во весь лист, не в таблицах и не в найденных рисунках), от 80×60 pt, с двумя
+    и больше подписями внутри и без обычного текста, задетого краем: [(рамка, img)], img — область листа
+    ({"clip", "page_number"}: сборка снимет её с переведённого PDF, надписи — переводом)."""
+    import fitz
+    W, H = page.rect.width, page.rect.height
+    off = [fitz.Rect(s["loc"]["bbox"]) for s in masked if s not in segs]       # колонтитулы
+    rs = [fitz.Rect(d["rect"]) for d in drawings]
+    rs = [r for r in rs if r.width < 0.75 * W and r.height < 0.75 * H and (r.width > 0.5 or r.height > 0.5)
+          and not any(r.intersects(t) for t in tabs) and not any(r.intersects(f) for f in figs)
+          and not any(r.intersects(o) for o in off)]
+    groups = []
+    for r in rs:                                            # 20 pt: надписи-рамки стоят в 18 pt от скобки (Eskom)
+        hit = [g for g in groups if g[0].intersects(r + (-20, -20, 20, 20))]
+        R, n = fitz.Rect(r), 1
+        for g in hit:
+            groups.remove(g)
+            R |= g[0]
+            n += g[1]
+        groups.append((R, n))
+    out = []
+    for R, n in groups:
+        if n < 6 or R.width < 80 or R.height < 60:
+            continue
+        boxes = [fitz.Rect(s["loc"]["bbox"]) for s in segs]
+        inside = [b for b in boxes if (b & R).get_area() >= 0.8 * max(b.get_area(), 1)]
+        cut = [b for b in boxes if b.intersects(R) and b not in inside]
+        if len(inside) < 2 or cut:
+            continue
+        for b in inside:
+            R |= b
+        R = (R + (-3, -3, 3, 3)) & page.rect
+        out.append((R, {"clip": [R.x0, R.y0, R.x1, R.y1], "page_number": pno + 1, "x0": R.x0, "x1": R.x1, "top": R.y0,
+                        "bottom": R.y1}))
+    return out
+
+
 def _runs_of(group, bold, font, size, mono, right=None):
     """Прогоны абзаца из сегментов одной строки: части — через табуляцию по месту оригинала (оглавление «1.4.» ⇥
     «Tengelyelmozdulás …» ⇥ «13»: память переводит части по отдельности, 16.10); полужирные слова (по картинке,
@@ -772,6 +809,10 @@ def _regions(doc, content, bold, font, size, mono, mask=None):
                     q = fitz.Rect(im["bbox"])
                     if im["xref"] and (q & r).get_area() >= 0.9 * max(r.get_area(), q.get_area()):
                         img["xref"] = im["xref"]
+            # схема из линий с подписями (дерево «Layout format» Eskom: линии короче порога краски — рисунок не
+            # находился, подписи перемешивались между разделами, 19.10) — областью листа с переведённого PDF
+            tabs = [fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1]) for t in _tables(hs, vs)]
+            figs += _vector_figures(page, pno, draw[pno], segs, masks.get(pno, []), tabs, [f for f, _ in figs])
         regs, used = [], set()
         for t in _tables(hs, vs):
             r = fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1])
