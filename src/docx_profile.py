@@ -97,6 +97,17 @@ def extract(path, blocks, L):
     """Профиль оформления по оригиналу: блоки и раскладка из docx_struct. Значения в pt."""
     import pdfplumber
     pdf = pdfplumber.open(path)
+    seen = {}
+
+    def page(n):
+        """(строки, слова) листа n (с 1): лист разбирается один раз и сразу освобождается — pdfplumber держит
+        разобранные объекты каждого прочитанного листа до закрытия файла (у 3PR42 текст нарисован контурами: ~3000
+        путей и ~50 МБ на лист, на 146 листах — 6,4 ГБ, 19.10)."""
+        if n not in seen:
+            pg = pdf.pages[n - 1]
+            seen[n] = (pg.extract_text_lines(), pg.extract_words(x_tolerance=1.5))
+            pg.close()
+        return seen[n]
     items = list(_flat(blocks))
     fonts = {r: Counter() for r in ROLES}
     for role, b, _ in items:
@@ -116,20 +127,18 @@ def extract(path, blocks, L):
     # выключке по ширине) с любого листа, кроме титула: строк ровно от поля с 3-го листа в коротком документе меньше
     # десятка, а пункт списка с отступом 18 pt не считался ни телом, ни списком — выходило «влево» (синтетика, 16.10)
     x1s = {"body": [], "list": []}
-    tl, width = {}, L["W"] - L["left"] - L["right"]
+    width = L["W"] - L["left"] - L["right"]
     for role, b, _ in items:
         g = b.get("geom") or {}
         if role not in x1s or not g.get("page") or (g.get("lines") or 1) < 2 \
                 or g["page"] == 1 and not L.get("first_is_body"):
             continue
-        if g["page"] not in tl:
-            tl[g["page"]] = pdf.pages[g["page"] - 1].extract_text_lines()
-        own = sorted((ln for ln in tl[g["page"]] if g["top"] - 2 <= float(ln["top"]) <= g["bottom"]
+        own = sorted((ln for ln in page(g["page"])[0] if g["top"] - 2 <= float(ln["top"]) <= g["bottom"]
                       and float(ln["x0"]) >= g["x0"] - 2 and float(ln["x1"]) <= g["x1"] + 2), key=lambda ln: float(ln["top"]))
         x1s[role] += [round(float(ln["x1"])) for ln in own[:-1] if float(ln["x1"]) - float(ln["x0"]) > 0.6 * width]
     step = []
-    for pg in pdf.pages[2:]:
-        lines = [ln for ln in pg.extract_text_lines() if L["top"] < float(ln["top"]) < L["H"] - L["bottom"]]
+    for n in range(3, len(pdf.pages) + 1):
+        lines = [ln for ln in page(n)[0] if L["top"] < float(ln["top"]) < L["H"] - L["bottom"]]
         for a, b2 in zip(lines, lines[1:]):
             d = float(b2["top"]) - float(a["top"])
             if 1.1 * s0 < d < 1.6 * s0:
@@ -176,7 +185,6 @@ def extract(path, blocks, L):
         P["first_line"] = round(median(pos), 1)
     # заголовки: с новой страницы, расстояние номер → текст
     P["heads"] = {}
-    words = {}
     # «с нового листа» — заголовок, первый на своём листе (а не в 24 pt от верха тела: «2.1.» в 20 pt под «2.» на
     # том же листе считался первым, и весь уровень получал разрыв листа, ÜFK 16.10)
     page_first = {}
@@ -191,9 +199,7 @@ def extract(path, blocks, L):
         tabs = []
         for b in hs[:20]:
             g = b["geom"]
-            if g["page"] not in words:
-                words[g["page"]] = pdf.pages[g["page"] - 1].extract_words(x_tolerance=1.5)
-            ws = sorted((w for w in words[g["page"]] if abs(float(w["top"]) - g["top"]) < 3), key=lambda w: w["x0"])
+            ws = sorted((w for w in page(g["page"])[1] if abs(float(w["top"]) - g["top"]) < 3), key=lambda w: w["x0"])
             if len(ws) >= 2 and re.fullmatch(r"\d+(\.\d+)*\.?", ws[0]["text"]):
                 tabs.append(float(ws[1]["x0"]) - float(ws[0]["x0"]))
         first = sum(1 for b in hs if abs(b["geom"]["top"] - page_first.get(b["geom"]["page"], -99)) < 2)
@@ -212,9 +218,7 @@ def extract(path, blocks, L):
         if not (b.get("geom") or {}).get("page"):
             continue
         g = b["geom"]
-        if g["page"] not in words:
-            words[g["page"]] = pdf.pages[g["page"] - 1].extract_words(x_tolerance=1.5)
-        ws = sorted((w for w in words[g["page"]] if abs(float(w["top"]) - g["top"]) < 3
+        ws = sorted((w for w in page(g["page"])[1] if abs(float(w["top"]) - g["top"]) < 3
                      and float(w["x0"]) >= g["first_x0"] - 1), key=lambda w: w["x0"])
         # маркер — первое слово строки пункта («•», «1.», «a.», «a.)», «(a)»), текст — следующее
         if len(ws) >= 2 and abs(float(ws[0]["x0"]) - g["first_x0"]) < 2 \
@@ -245,6 +249,7 @@ def extract(path, blocks, L):
                   if any(f.get("fill") for f in frames) else None,
                   "line": Counter(f["line"] for f in frames if f.get("line")).most_common(1)[0][0]
                   if any(f.get("line") for f in frames) else "000000"}
+    pdf.close()
     return P
 
 
