@@ -1605,6 +1605,11 @@ def _compose_figures(blocks, doc):
             if r.width <= 1.5 or r.height <= 1.5 or r.width > 0.8 * W or r.height > 0.8 * H or white                     or any(r.intersects(t) for t in tables):
                 continue                                    # линии таблиц, рамка листа, белое на белом
             draws.append((r, len(d["items"])))
+        # тонкие линии — только указатели выносок: начинаются на рисунке (проверка в grow), не во весь лист, не таблица
+        # (ТЭ357 рис. 37: линия от снимка к рамке с мышкой толщиной 1 pt отбрасывалась как линейка, 19.10)
+        leads = [d["rect"] for d in page.get_drawings()
+                 if (d["rect"].width <= 1.5) != (d["rect"].height <= 1.5) and max(d["rect"].width, d["rect"].height) >= 10
+                 and d["rect"].width < 0.6 * W and d["rect"].height < 0.6 * H and not any(d["rect"].intersects(t) for t in tables)]
         if not draws and not any(img_only(blocks[i]) for i in idx):
             continue
         def big_img(b):
@@ -1624,21 +1629,33 @@ def _compose_figures(blocks, doc):
             while changed:
                 changed = False
                 for r, _ in draws:
-                    if r.intersects(R + (-2, -2, 2, 2)):
+                    # 6 pt: линия-указатель кончается в 4 pt от рамки выноски (ТЭ357 рис. 37–38: мышки выносок
+                    # оставались справа от снимка отдельными картинками, 19.10)
+                    if r.intersects(R + (-6, -6, 6, 6)):
                         shapes = True
                         if not R.contains(r):
                             R |= r
                             changed = True
+                for r in leads:                             # указатель, начатый внутри области
+                    if not R.contains(r) and (R.contains(r.tl) or R.contains(r.br)):
+                        R |= r
+                        changed = True
                 for j in sats:
                     if j not in got and j not in drop and box(blocks[j]["geom"]).intersects(R + (-near, -near, near, near)):
                         R |= box(blocks[j]["geom"])
                         got.add(j)
                         changed = True
-            others = [box(x["geom"]) for j, y in enumerate(blocks) if j != me and j not in got and j not in drop
+            others = [(box(x["geom"]), bool(FIG_CAPTION.match(text_of(x.get("runs") or []))))
+                      for j, y in enumerate(blocks) if j != me and j not in got and j not in drop
                       for x in ([y] if y["k"] in ("h", "table") else _paras([y]))
                       if (x.get("geom") or {}).get("page") == pn and x["geom"].get("bottom")
                       and x["geom"].get("x1") is not None and not img_only(x)]
-            if any(min(q.y1, R.y1) - max(q.y0, R.y0) > 2 and min(q.x1, R.x1) - max(q.x0, R.x0) > 2 for q in others):
+            # подпись рисунка, задетая низом области на несколько pt (буквы выносок «а б в» над «Рисунок 40», ТЭ357), —
+            # не помеха: область обрезается по её верху
+            for q, cap in others:
+                if cap and min(q.x1, R.x1) - max(q.x0, R.x0) > 2 and 0 < R.y1 - q.y0 <= 6 and q.y0 > R.y0 + 0.5 * R.height:
+                    R.y1 = q.y0
+            if any(min(q.y1, R.y1) - max(q.y0, R.y0) > 2 and min(q.x1, R.x1) - max(q.x0, R.x0) > 2 for q, _ in others):
                 return None
             return R & page.rect, got, shapes
 
@@ -1659,6 +1676,17 @@ def _compose_figures(blocks, doc):
                     R |= fitz.Rect(float(r["img"]["x0"]), float(r["img"]["top"]), float(r["img"]["x1"]),
                                    float(r["img"]["bottom"]))
             if R.width < 60 or R.height < 40:
+                # мелкая картинка — рисунок, только если к ней сходятся выноски: фигуры-стрелки и хотя бы две надписи,
+                # и вместе это не меньше 60×40 (индикатор 114×39 с номерами 1–6, ТЭ357 рис. 11–12: номера рассыпались
+                # строками под картинкой, 19.10)
+                res = grow(fitz.Rect(R), i) if R.width >= 30 and R.height >= 12 else None
+                if res is None or not res[2] or len(res[1]) < 2 or res[0].width < 60 or res[0].height < 40:
+                    done.append(R)
+                    continue
+                R, got, _ = res
+                b["runs"] = clip(R)
+                b["geom"] = dict(b["geom"], x0=R.x0, x1=R.x1, top=R.y0, bottom=R.y1)
+                drop |= got - {i}                           # сама мелкая картинка — среди «надписей», её не выкидывать
                 done.append(R)
                 continue
             res = grow(fitz.Rect(R), i)
