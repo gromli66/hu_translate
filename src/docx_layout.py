@@ -960,12 +960,22 @@ def load(src, segs, text=False):
         ch = None
         if text_mode:
             tm = re.match(r"\s*([•▪◦·●○■□–\-\uf020-\uf0ff])\s", text)
-            ch = tm.group(1) if tm else next((t for bb, t in marks.get(s["page"], ())
-                                              if abs((bb[1] + bb[3]) / 2 - (first[1] + first[3]) / 2) < 0.6 * lh
-                                              and 0 < first[0] - bb[2] < 40), None)
+            mk = None if tm else next(((bb, t) for bb, t in marks.get(s["page"], ())
+                                       if abs((bb[1] + bb[3]) / 2 - (first[1] + first[3]) / 2) < 0.6 * lh
+                                       and 0 < first[0] - bb[2] < 40), None)
+            ch = tm.group(1) if tm else (mk[1] if mk else None)
             mark = ch
+            if mk:
+                # отступ пункта — от маркера, как у пункта с маркером в тексте: у Eskom один пункт с «•» отдельным
+                # куском считался ступенью глубже соседнего («o» вместо «•», 19.10)
+                x0 = mk[0][0]
         kind = ("Dash" if ch in "–-" or "\uf020" <= ch <= "\uf0ff" and chr(ord(ch) - 0xF000) in "-–" else "Disc") \
             if ch else "Dash"
+        # знак маркера оригинала: «o»/«◦» — кружок, «▪»/«■» — квадрат (Symbol и Wingdings — частная область)
+        if ch and kind == "Disc" and ch in "o◦○":
+            kind = "Circle"
+        elif ch and kind == "Disc" and ch in "▪■□":
+            kind = "Square"
         if not mark and loc.get("role") == "list":
             # пункт по метке портала без знака маркера («a) …», «1. …», «ba) …») — пункт без маркера, метка — в тексте
             mark, kind = True, "Label"
@@ -977,7 +987,8 @@ def load(src, segs, text=False):
             continue
         if mark:
             if cur is None or abs(cur["x0"] - x0) > 6 or cur["kind"] != kind:
-                cur = {"k": "list", "kind": kind, "items": [], "x0": x0}
+                # знак — с листа (текстовый слой): сборка ставит его на любом уровне, не «o» второго уровня (Eskom)
+                cur = {"k": "list", "kind": kind, "items": [], "x0": x0, "own": bool(text_mode and ch)}
                 blocks.append(cur)
             cur["items"].append([para])
             continue

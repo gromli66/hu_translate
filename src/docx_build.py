@@ -580,11 +580,11 @@ class Builder:
         stepx = (v["text"] - lists[str(known[0])]["text"]) / top if top else 36
         return v["marker"] + stepx * (lv - top), v["text"] + stepx * (lv - top)
 
-    def _list_num(self, kind, start=1, level=0, suffix="."):
+    def _list_num(self, kind, start=1, level=0, suffix=".", own=False):
         """Новый экземпляр списка вида kind: нумерация — с номера первого пункта оригинала (start, на уровне level;
         список после рисунка продолжает «7.»), вид метки — как в оригинале («a.» / «a.)»), маркеры уровней • o ▪."""
         num = self.doc.part.numbering_part.element
-        key = (kind, suffix or ".")
+        key = (kind, suffix or ".", own)
         if key not in self._abstract:
             aid = 901 + len(self._abstract)
             an = _el("w:abstractNum", w__abstractNumId=aid)
@@ -601,7 +601,8 @@ class Builder:
                     l.append(_el("w:lvlText", w__val=f"%{lv + 1}" + ((suffix or ".") if lv == 0 else ".")))
                 else:
                     # тире — на всех уровнях (у 3SZ19, 3PR42 вложенные пункты — тоже «-», а не «o»)
-                    ch, fontn = BULLETS.get(kind if lv == 0 or kind == "Dash" else ["Circle", "Square", "Disc"][(lv - 1) % 3],
+                    # own — знак с листа (текстовый слой): тот же на любом уровне
+                    ch, fontn = BULLETS.get(kind if lv == 0 or kind == "Dash" or own else ["Circle", "Square", "Disc"][(lv - 1) % 3],
                                             BULLETS["Disc"])
                     l.append(_el("w:numFmt", w__val="bullet")); l.append(_el("w:lvlText", w__val=ch))
                 l.append(_el("w:lvlJc", w__val="left"))
@@ -1058,7 +1059,7 @@ class Builder:
 
     def list_(self, b, level=0, tgt=None):
         from docx.shared import Pt
-        nid = self._list_num(b["kind"], b.get("start", 1), level, b.get("suffix") or ".")
+        nid = self._list_num(b["kind"], b.get("start", 1), level, b.get("suffix") or ".", bool(b.get("own")))
         tgt = tgt if tgt is not None else self.doc
         # свой список стоит иначе, чем вид списка по документу (больше 3 pt), — отступы абзацу, по оригиналу
         own = None
