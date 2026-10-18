@@ -178,6 +178,18 @@ def _text_w(text, size):
 from docx.exceptions import InvalidSpanError
 
 
+_TRPR = ["cnfStyle", "divId", "gridBefore", "gridAfter", "wBefore", "wAfter", "cantSplit", "trHeight", "tblHeader",
+         "tblCellSpacing", "jc", "hidden"]
+
+
+def _trpr_put(tr, el):
+    """Свойство строки таблицы — на место по схеме (Word строг к порядку элементов trPr)."""
+    pr = tr.get_or_add_trPr()
+    k = _TRPR.index(el.tag.split("}")[1])
+    nxt = next((c for c in pr if c.tag.split("}")[1] in _TRPR and _TRPR.index(c.tag.split("}")[1]) > k), None)
+    nxt.addprevious(el) if nxt is not None else pr.append(el)
+
+
 def _span_starts(row, xs, ncol):
     """Ячейки неполной строки — по столбцам рамки (xs): каждой ячейке — группа соседних столбцов, текст ячейки внутри
     своей группы и ближе всего к её середине или левому краю. Шапка ÜFK «Eltérő állapot» стоит над двумя столбцами
@@ -1261,11 +1273,16 @@ class Builder:
             # повтор шапки на новом листе — как в оригинале: таблица, разрезанная листом без повтора шапки, — без него
             # (JPDS «Перечень сокращений»: «БД База данных» печаталась второй раз вверху следующего листа, 18.10)
             if head and len(rows) > 3 and (b.get("head_repeat") or not b.get("split")):
-                t.rows[ri]._tr.get_or_add_trPr().append(_el("w:tblHeader"))
+                _trpr_put(t.rows[ri]._tr, _el("w:tblHeader"))
             # короткая строка не рвётся между листами (в оригинале строки целые; длинная — пусть рвётся, иначе не влезет)
             size = sum(len(text_of(x["runs"])) for c in row for x in c["blocks"] if x["k"] == "p")
             if size < 600 and not any("img" in r for c in row for x in c["blocks"] if x["k"] == "p" for r in x["runs"]):
-                t.rows[ri]._tr.get_or_add_trPr().append(_el("w:cantSplit"))
+                _trpr_put(t.rows[ri]._tr, _el("w:cantSplit"))
+            # пустая строка (графы для подписей листов ознакомления ИН-1065) — не ниже, чем в оригинале: без текста
+            # она схлопывалась в 6 pt, лист ознакомления выходил вдвое короче (19.10); высота — по линиям таблицы
+            ys = fr.get("ys") or []
+            if not size and len(ys) == len(rows) + 1 and ys[ri + 1] - ys[ri] > 6:
+                _trpr_put(t.rows[ri]._tr, _el("w:trHeight", w__val=round((ys[ri + 1] - ys[ri]) * 20), w__hRule="atLeast"))
             for ci, cell in enumerate(row):
                 dc = t.cell(ri, starts[ci])
                 self._tab_base = min((float(x["geom"]["x0"]) for x in cell["blocks"]

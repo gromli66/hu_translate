@@ -1061,7 +1061,7 @@ def load(path):
                 v = [float(c) for c in (tuple(col) * 3 if len(col) == 1 else col)]
                 return "%02X%02X%02X" % tuple(int(round(c * 255)) for c in v)
             return None
-        out = {"xs": [round(x, 1) for x in xs]}
+        out = {"xs": [round(x, 1) for x in xs], "ys": [round(y, 1) for y in ys]}   # линии строк — высота пустых строк
         if vert:
             out["line"] = Counter(hexcol(o.get("non_stroking_color")) for o in vert).most_common(1)[0][0]
         head = rows[0] if rows else []
