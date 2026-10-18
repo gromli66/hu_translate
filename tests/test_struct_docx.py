@@ -321,7 +321,8 @@ def test_toc_like_original_levels_bold_title_and_unnumbered_entry(tmp_path):
     body = doc.element.body.xml
     assert 'TOC \\o "1-3"' in body and '<w:outlineLvl w:val="0"/>' in body
     st = {s.style_id: s for s in doc.styles}
-    assert st["TOC1"].font.bold and not st["TOC2"].font.bold and st["TOC2"].paragraph_format.left_indent.pt == 21
+    pf2 = st["TOC2"].paragraph_format                         # начало первой строки уровня — как в оригинале (висячий)
+    assert st["TOC1"].font.bold and not st["TOC2"].font.bold and pf2.left_indent.pt + pf2.first_line_indent.pt == 21
     assert st["TOC1"].element.get(W + "customStyle") is None      # встроенный «toc 1», иначе Word берёт свой
     assert str(st["TOCTitleUTS"].font.color.rgb) == "365F91"
 

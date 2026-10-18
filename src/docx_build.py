@@ -1434,11 +1434,13 @@ class Builder:
                 pf.alignment = AL.LEFT                  # от «Обычного» по ширине — строка разреживалась по буквам
                 pf.space_before = pf.space_after = Pt(0)
                 ind = info.get("indent") or []
-                pf.left_indent = Pt(ind[i] if i < len(ind) else 0)
                 # позиция сразу за номером пункта («13.1.1» шире ближайшей табуляции — название уезжало к номеру
-                # листа, а номер листа — на новую строку, UTS с переводом, 19.10)
-                # запас — под номер вида «13.1.1» (две цифры главы) шрифтом оглавления: 7 pt на знак и 6 pt зазора
-                pf.tab_stops.add_tab_stop(Pt((ind[i] if i < len(ind) else 0) + 7 * (2 * i + 2) + 6))
+                # листа, а номер листа — на новую строку, UTS с переводом, 19.10); запас — под номер вида «13.1.1»
+                # шрифтом оглавления: 7 pt на знак и 6 pt зазора. Висячий отступ на ту же позицию: вторая строка
+                # длинного пункта — под текстом, не под номером (OAH 1.1)
+                base, num = (ind[i] if i < len(ind) else 0), 7 * (2 * i + 2) + 6
+                pf.left_indent, pf.first_line_indent = Pt(base + num), Pt(-num)
+                pf.tab_stops.add_tab_stop(Pt(base + num))
                 if info.get("pitch"):
                     pf.line_spacing = Pt(info["pitch"])     # шаг строк — как в оглавлении оригинала
                 s.font.bold = bold
