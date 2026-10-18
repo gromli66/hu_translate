@@ -1222,7 +1222,9 @@ class Builder:
                         pass
             in_head = in_head and all(c["th"] for c in row)
             head = in_head and ri < 3 and len(rows) > 1
-            if head and len(rows) > 3:
+            # повтор шапки на новом листе — как в оригинале: таблица, разрезанная листом без повтора шапки, — без него
+            # (JPDS «Перечень сокращений»: «БД База данных» печаталась второй раз вверху следующего листа, 18.10)
+            if head and len(rows) > 3 and (b.get("head_repeat") or not b.get("split")):
                 t.rows[ri]._tr.get_or_add_trPr().append(_el("w:tblHeader"))
             # короткая строка не рвётся между листами (в оригинале строки целые; длинная — пусть рвётся, иначе не влезет)
             size = sum(len(text_of(x["runs"])) for c in row for x in c["blocks"] if x["k"] == "p")

@@ -302,7 +302,9 @@ def join_tables(bs):
             strays = [x for r in b["rows"][:rep] for c in r for x in c.get("blocks", [])
                       if x["k"] == "p" and not text_of(x.get("runs") or []).strip()
                       and any("img" in q for q in x.get("runs") or [])]
-            out[-1] = dict(prev, rows=_cut_rows(prev["rows"] + rows))
+            # таблица через лист: повтор шапки — только если оригинал её повторял (сборщик, w:tblHeader)
+            out[-1] = dict(prev, rows=_cut_rows(prev["rows"] + rows), split=True,
+                           head_repeat=bool(rep) or prev.get("head_repeat", False))
             if strays:
                 out[-1]["strays"] = prev.get("strays", []) + strays
             continue
@@ -429,9 +431,21 @@ def adopt(bs):
                 elif (y.get("geom") or {}).get("bottom") and y["geom"].get("x1") is not None:
                     yield y["geom"]
         cg = [[list(places(c["blocks"])) for c in r] for r in rows]
-        span = []                                           # (лист, верх, низ) содержимого строки на первом её листе
-        for gr in cg:
-            gs = [g for gc in gr for g in gc]
+        # (лист, верх, низ) текста строки на первом её листе: значки — не в счёт (Word кладёт значки нескольких строк
+        # в первую ячейку продолжения таблицы, и они растягивали её строку на соседние, JPDS табл. 65, 18.10)
+        icon = lambda y: y["k"] == "p" and not text_of(y.get("runs") or []).strip() and any(
+            "img" in q for q in y.get("runs") or [])
+
+        def texts(bs_):
+            for y in bs_:
+                if y["k"] == "list":
+                    for it in y["items"]:
+                        yield from texts(it)
+                elif not icon(y) and (y.get("geom") or {}).get("bottom") and y["geom"].get("x1") is not None:
+                    yield y["geom"]
+        span = []
+        for r in rows:
+            gs = [g for c in r for g in texts(c["blocks"])]
             pn = min((g["page"] for g in gs), default=None)
             gs = [g for g in gs if g["page"] == pn]
             span.append((pn, min(g["top"] for g in gs), max(g["bottom"] for g in gs)) if gs else None)
@@ -445,13 +459,14 @@ def adopt(bs):
             continue
         X0 = min(v[0] for cs in cols.values() for v in cs.values())
         X1 = max(v[1] for cs in cols.values() for v in cs.values())
-        for x in list(out):
+        def place(x):
+            """(строка, столбец) таблицы, в которой лежит на листе блок x, или None."""
             g = x.get("geom") or {}
             if x["k"] != "p" or not g.get("bottom") or g.get("x1") is None:
-                continue
+                return None
             cx, cy = (g["x0"] + g["x1"]) / 2, (g["top"] + g["bottom"]) / 2
             if not X0 - 2 <= cx <= X1 + 2:
-                continue
+                return None
             row = None
             for i, s in enumerate(span):
                 if not s or s[0] != g["page"]:
@@ -464,7 +479,7 @@ def adopt(bs):
                     row = i
                     break
             if row is None or len(rows[row]) < 1:
-                continue
+                return None
             r = rows[row]
             cs = dict(cols.get(len(r), {}))
             for k in range(len(r)):                         # столбец без места — между соседями
@@ -473,13 +488,27 @@ def adopt(bs):
                     hi = next((cs[q][0] for q in range(k + 1, len(r)) if q in cs), X1) - 1
                     cs[k] = (lo, max(lo, hi))
             bounds = [(cs[k][1] + cs[k + 1][0]) / 2 for k in range(len(r) - 1)]
-            k = sum(cx >= b for b in bounds)
-            blocks = r[k]["blocks"]
+            return row, sum(cx >= b for b in bounds)
+
+        def put(x, row, k):
+            g = x["geom"]
+            blocks = rows[row][k]["blocks"]
             key = (g["top"], g["x0"])
             at = next((n for n, y in enumerate(blocks) if (y.get("geom") or {}).get("bottom")
                        and (y["geom"]["top"], y["geom"].get("x0", 0)) > key), len(blocks))
             blocks.insert(at, x)
-            out.remove(x)
+        for x in list(out):
+            rk = place(x)
+            if rk is not None:
+                put(x, *rk)
+                out.remove(x)
+        for i, r in enumerate(rows):                        # значок в чужой строке — в свою (по месту на листе)
+            for k, c in enumerate(r):
+                for x in [y for y in c.get("blocks", []) if icon(y)]:
+                    rk = place(x)
+                    if rk is not None and rk[0] != i:
+                        c["blocks"].remove(x)
+                        put(x, *rk)
     return out
 
 
