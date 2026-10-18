@@ -838,9 +838,10 @@ class Builder:
         if tgt is self.doc and ink and all(r.get("b") for r in ink) and len(text) <= 160 \
                 and not text.endswith((".", ",", ";", ":")) and re.search(r"[^\W\d_]{3}", text):
             par.paragraph_format.keep_with_next = True
-        # абзац, вводящий то, что следует («… az alábbi hibaüzenet jelenik meg:» + рисунок), — с ним на одном листе:
-        # рисунок уходил на следующий лист один, а заголовок с вводной фразой оставался внизу (UTS 10.6, 18.10)
-        if tgt is self.doc and text.endswith(":") and len(text) <= 400:
+        # вводная фраза сразу под заголовком («… az alábbi hibaüzenet jelenik meg:» + рисунок) — с тем, что за ней:
+        # заголовок с одной фразой оставался внизу листа, рисунок уходил на следующий (UTS 10.6, 18.10). Только под
+        # заголовком и короткая: у каждой фразы с «:» перед снимком JPDS вырос на 3 листа пустот (18.10)
+        if tgt is self.doc and text.endswith(":") and len(text) <= 250 and getattr(self, "_last_k", None) == "h":
             par.paragraph_format.keep_with_next = True
         for n in b.get("notes") or []:
             self._footnote(par, n)
@@ -1438,6 +1439,13 @@ class Builder:
                 par.paragraph_format.line_spacing = Pt(1)
 
     def block(self, b):
+        k = b["k"]
+        try:
+            self._block(b)
+        finally:
+            self._last_k = k                                # вид прошлого блока (вводная фраза под заголовком)
+
+    def _block(self, b):
         k = b["k"]
         fresh, self.fresh = getattr(self, "fresh", False), False
         if b.get("break") and not fresh:
