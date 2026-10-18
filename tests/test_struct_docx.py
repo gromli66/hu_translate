@@ -1290,6 +1290,20 @@ def test_portal_roles_running_header_needs_same_height():
     assert flags["Üzemeltetési Feltételek és Korlátok"] and not flags["Korlátozó feltétel:"]
 
 
+def test_code_paragraph_keeps_keys_translates_comments(tmp_path):
+    """Абзац-листинг моноширинным: строка без венгерских букв («LogFile=…») — как в оригинале, комментарий с венгерскими
+    — переводом; так же, если весь абзац — одна моноширинная группа (UTS л. 94, 19.10)."""
+    assert B.code_part("LogFile=/tmp/canframes.log", "Файл журнала=/tmp/canframes.log") == "LogFile=/tmp/canframes.log"
+    src = "[Connections]\n;Új alapértékek\nLocalPort=12000"
+    ru = "[Подключения]\n;Новые значения по умолчанию\nЛокальный порт=12000"
+    assert B.code_part(src, ru) == "[Connections]\n;Новые значения по умолчанию\nLocalPort=12000"
+    run = {"t": "LogFile=/tmp/canframes.log", "font": "Courier New", "size": 9, "b": False, "i": False, "color": "000000"}
+    out = tmp_path / "c.docx"
+    B.Builder(B.Memory([("LogFile=/tmp/canframes.log", "Файл журнала=/tmp/canframes.log")]), lambda img: None,
+              PROFILE).build([dict(p("x", 3), runs=[run])], str(out), dict(LAYOUT, first_is_body=True))
+    assert any(par.text == "LogFile=/tmp/canframes.log" for par in Document(out).paragraphs)
+
+
 def test_cell_fill_legend_stays_in_its_row(tmp_path):
     """Легенда цветов: заливки соседних строк касаются — картинка ячейки только своей строки, не весь столбец (JPDS:
     9 копий столбца, +9 листов, 17.10)."""

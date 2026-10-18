@@ -340,6 +340,11 @@ def code_part(src, ru):
     Заполнитель «<beállítani kívánt IP cím>» переводится, но в тех же угловых скобках (портал их терял)."""
     if not HU_LETTERS.search(src):
         return src
+    # листинг из нескольких строк: строка без венгерских букв (ключ=значение, путь, команда) — как в оригинале,
+    # с венгерскими (комментарий) — переводом той же строки (UTS: «LogFile=…» → «Файл журнала=…», 19.10)
+    sl, rl = src.split("\n"), (ru or "").split("\n")
+    if len(sl) > 1 and len(sl) == len(rl):
+        return "\n".join(r if HU_LETTERS.search(a) else a for a, r in zip(sl, rl))
     s = src.strip()
     if s.startswith("<") and s.endswith(">") and not ru.strip().startswith("<"):
         return src[:len(src) - len(src.lstrip())] + "<" + ru.strip() + ">" + src[len(src.rstrip()):]
@@ -680,6 +685,8 @@ class Builder:
         if len(groups) <= 1:
             src = "".join(parts)
             ru = _keep_tab(src, self.tr(src) if src.strip() else src)
+            if groups and groups[0][0][2] and ru is not None:      # весь абзац — код: то же правило, что у кусков кода
+                ru = code_part(src, ru)
             out = [(groups[0][0] if groups else None, ru if ru is not None else src)]
         elif all(p.endswith("	") for p in parts[:-1]):
             # части через табуляцию, у каждой своё начертание (строка оглавления «1.3.» ⇥ «Generátor …» ⇥ «16»,
@@ -1407,6 +1414,10 @@ class Builder:
                 pf.space_before = pf.space_after = Pt(0)
                 ind = info.get("indent") or []
                 pf.left_indent = Pt(ind[i] if i < len(ind) else 0)
+                # позиция сразу за номером пункта («13.1.1» шире ближайшей табуляции — название уезжало к номеру
+                # листа, а номер листа — на новую строку, UTS с переводом, 19.10)
+                # запас — под номер вида «13.1.1» (две цифры главы) шрифтом оглавления: 7 pt на знак и 6 pt зазора
+                pf.tab_stops.add_tab_stop(Pt((ind[i] if i < len(ind) else 0) + 7 * (2 * i + 2) + 6))
                 if info.get("pitch"):
                     pf.line_spacing = Pt(info["pitch"])     # шаг строк — как в оглавлении оригинала
                 s.font.bold = bold
