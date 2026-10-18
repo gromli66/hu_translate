@@ -1124,6 +1124,23 @@ class Builder:
         small = bool(sizes) and sizes.most_common(1)[0][0] <= 9
         cell_style = "Table Text Small" if small else "Table Text"
         head_style = "Table Head Small" if small else "Table Head UTS"
+        fit_size = 9 if small else 10
+        tiny = sizes.most_common(1)[0][0] if sizes else None
+        if tiny is not None and tiny <= 8:
+            # таблица мельче 9 pt (параметры защит МТ-14 на 12 столбцов — 6–7 pt): кегль оригинала стилем, иначе в
+            # узких столбцах слова рвались посередине («отключе|н», 18.10)
+            from docx.shared import Pt
+            from docx.enum.style import WD_STYLE_TYPE
+            names = []
+            for base in ("Table Text Small", "Table Head Small"):
+                name = f"{base} {tiny:g}"
+                if name not in [x.name for x in self.doc.styles]:
+                    st = self.doc.styles.add_style(name, WD_STYLE_TYPE.PARAGRAPH)
+                    st.base_style = self.doc.styles[base]
+                    st.font.size = Pt(max(tiny, 5))
+                names.append(name)
+            cell_style, head_style = names
+            fit_size = max(tiny, 5)
         if b.get("grid"):
             # сетка без линеек (docx_layout._grids): кегль — свой стиль, чтобы влезла (прямой кегль — нарушение
             # оформления); поля ячеек — по 1 pt, как в оригинале
@@ -1190,7 +1207,7 @@ class Builder:
                     if k != c and widths[k] - d >= max(need[k], 20):
                         widths[k] -= d
                         widths[c] = need[c]
-            self._fit_words(rows, widths, 9 if small else 10)
+            self._fit_words(rows, widths, fit_size)
             t.autofit = False
             for c in range(ncol):
                 for cell in t.columns[c].cells:
