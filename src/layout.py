@@ -93,6 +93,36 @@ def _image_between(imgs, xa, xb, y0, y1):
     return any(r.x0 < xb + 1 and r.x1 > xa - 1 and min(y1, r.y1) - max(y0, r.y0) > 0.3 * (y1 - y0) for r in imgs)
 
 
+def _cut_spans(spans, vs, rot):
+    """Куски строки текстового слоя (rawdict) с текстом; кусок поперёк вертикали таблицы («Индекс ПЗОбразец
+    Обозначения» — одна строка PDF через линию столбца, шапка таблицы НГТУ: два столбца сливались в один, 19.10) —
+    частями по линии, по серединам знаков."""
+    out = []
+    for s in spans:
+        chars = s.get("chars") or []
+        bb = fitz.Rect(s["bbox"]) * rot
+        xs = sorted(x for y0, y1, x in vs if bb.x0 + 1 < x < bb.x1 - 1
+                    and min(bb.y1, y1) - max(bb.y0, y0) > 0.5 * (bb.y1 - bb.y0)) if chars else []
+        groups, cur, k = [], [], 0
+        for c in chars:
+            r = fitz.Rect(c["bbox"]) * rot
+            while k < len(xs) and (r.x0 + r.x1) / 2 > xs[k]:
+                groups.append(cur)
+                cur, k = [], k + 1
+            cur.append(c)
+        groups.append(cur)
+        if len([g for g in groups if g]) <= 1:
+            out.append(dict(s, text="".join(c["c"] for c in chars)))
+            continue
+        for g in groups:
+            if g:
+                r = fitz.Rect(g[0]["bbox"])
+                for c in g[1:]:
+                    r |= fitz.Rect(c["bbox"])
+                out.append(dict(s, text="".join(c["c"] for c in g), bbox=tuple(r)))
+    return out
+
+
 def frags_from_text(page, vs=()):
     """Фрагменты из текстового слоя: [{t, bbox, size, bold}]. vs — вертикальные линейки.
     Координаты — как страница видна (с учётом /Rotate), как у слов OCR с картинки: PyMuPDF отдаёт текст в системе
@@ -102,7 +132,7 @@ def frags_from_text(page, vs=()):
     - Маркер пункта (•, o, –), отделённый от текста отступом, — свой фрагмент без перевода: перевод встаёт на место
       текста пункта с висячим отступом (UTS, 15.10: перевод начинался с маркера, отступ терялся). Текст такого пункта
       помечен item — к абзацу выше не приклеивается, как строка с маркером."""
-    d = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_MEDIABOX_CLIP)
+    d = page.get_text("rawdict", flags=fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_MEDIABOX_CLIP)
     rot = page.rotation_matrix
     hidden = hidden_text(page)
     area = page.rect.get_area()
@@ -115,7 +145,7 @@ def frags_from_text(page, vs=()):
             if abs((fitz.Point(ln["dir"]) * rot - fitz.Point(0, 0) * rot).y) > 0.1:   # повёрнутый текст не трогаем
                 continue
             cur = None
-            for s in ln["spans"]:
+            for s in _cut_spans(ln["spans"], vs, rot):
                 txt = s["text"]
                 if hidden and _covered(hidden, s["bbox"]):
                     continue

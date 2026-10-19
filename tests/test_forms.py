@@ -168,3 +168,15 @@ def test_word_across_table_rule_is_split():
     out = S._split_at_rules([glued, cut, plain], vs)
     assert [w["t"] for w in out] == ["blokkvezénylői", "A.1.", "Eltérő", "A.2.1.", "állapotot."]
     assert out[0]["box"][2] < 228 < out[1]["box"][0] and out[2]["box"][2] < 461 < out[3]["box"][0]
+
+
+def test_text_span_across_table_rule_is_cut():
+    """Шапка НГТУ: «Индекс ПЗОбразец Обозначения» — один кусок PDF через линию столбца (x=343) — двумя кусками."""
+    xs = [287.1, 295.8, 302.2, 308.3, 313.6, 319.3, 324.5, 327.5, 336.2, 342.6, 351.3]
+    text = "Индекс ПЗОб"
+    chars = [{"c": ch, "bbox": (x, 365, x + 6, 378)} for ch, x in zip(text, xs)]
+    span = {"bbox": (287.1, 365, 357.3, 378), "chars": chars, "size": 12, "flags": 0, "font": "Times"}
+    out = L._cut_spans([span], [(353, 652, 343.0)], fitz.Identity)
+    assert [s["text"] for s in out] == ["Индекс ПЗ", "Об"]
+    assert out[0]["bbox"][2] <= 343 < (out[1]["bbox"][0] + out[1]["bbox"][2]) / 2
+    assert [s["text"] for s in L._cut_spans([span], [], fitz.Identity)] == ["Индекс ПЗОб"]

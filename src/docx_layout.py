@@ -686,7 +686,9 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=()):
     if head and len(rows) > 1 and all(r.get("b") for p in head for r in p["runs"] if r.get("t", "").strip()):
         for c in rows[0]:
             c["th"] = True                                  # шапка — первая строка, если вся полужирная
-    return {"k": "table", "rows": rows, "borders": True, "frame": {"xs": [round(x, 1) for x in xs]},
+    # линии строк: строки таблицы листа и есть промежутки между ними — высота строки не меньше оригинала (docx_build)
+    return {"k": "table", "rows": rows, "borders": True,
+            "frame": {"xs": [round(x, 1) for x in xs], "ys": [round(y, 1) for y in ys], "row_lines": True},
             "geom": {"page": pno + 1, "top": ys[0], "bottom": ys[-1], "x0": xs[0], "x1": xs[-1], "first_x0": xs[0],
                      "size": size}}
 
