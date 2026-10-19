@@ -165,6 +165,50 @@ def merge_inline(blocks):
 _HELV = None
 
 
+def _hyphen_points(word):
+    """Места переноса русского слова по правилам П. Христова (гласная, согласная, «й/ь/ъ»): «ЖУР-НАЛ», «ЗНА-ЧЕ-НИЕ»."""
+    x, g, c, any_ = "[йьъ]", "[аеёиоуыэюя]", "[бвгджзклмнпрстфхцчшщ]", "[а-яё]"
+    rules = [(x, any_ + any_), (g, g + any_), (c + g, c + g), (g + c, c + g), (c + g, c + c + g), (g + c + c, c + c + g)]
+    w = word
+    for _ in range(2):                      # правила по порядку, каждое — по уже размеченному слову
+        for a, b in rules:
+            w = re.sub(f"({a})({b})", r"\1|\2", w, flags=re.I)
+    cut, k = [], 0
+    for ch in w:
+        if ch == "|":
+            cut.append(k)
+        else:
+            k += 1
+    return [k for k in cut if 2 <= k <= len(word) - 2]
+
+
+def _soft_hyphens(run):
+    """Мягкие переносы (w:softHyphen) в длинных русских словах прогона: узкий столбец, где слово не влезает и при
+    уменьшенном кегле, — перенос по слогам с дефисом, а не по буквам «ЖУР / НАЛ / СОБ / ЫТИ / Й» (30RDIT, 20.10)."""
+    from docx.oxml.ns import qn
+    text = run.text
+    if not re.search(r"[А-Яа-яЁё]{6,}", text):
+        return
+    parts, last = [], 0
+    for m in re.finditer(r"[А-Яа-яЁё]{6,}", text):
+        for k in _hyphen_points(m.group()):
+            parts.append(text[last:m.start() + k])
+            last = m.start() + k
+    parts.append(text[last:])
+    r = run._r
+    for el in list(r):
+        if el.tag in (qn("w:t"), qn("w:tab"), qn("w:br")):
+            r.remove(el)
+    for i, part in enumerate(parts):
+        if i:
+            r.append(_el("w:softHyphen"))
+        if part:
+            t = _el("w:t")
+            t.text = part
+            t.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+            r.append(t)
+
+
 def _style_pt(st):
     """Кегль стиля с учётом базовых, pt; не задан нигде — None."""
     while st is not None:
@@ -1182,7 +1226,7 @@ class Builder:
 
     def table(self, b):
         from docx.shared import Pt
-        self._shrink = {}                               # столбец → доля кегля (_fit_words), своя у каждой таблицы
+        self._shrink, self._hyph = {}, set()            # столбец → доля кегля, столбцы с переносами (_fit_words)
         rows = [r for r in b["rows"] if r]
         if not rows:
             return
@@ -1292,7 +1336,7 @@ class Builder:
                         widths[c] = need[c]
             self._fit_words(rows, widths, fit_size)
             if b.get("grid"):                           # сетка без линеек — свой кегль под ширину и поля 1 pt (3PR42)
-                self._shrink = {}
+                self._shrink, self._hyph = {}, set()
             t.autofit = False
             for c in range(ncol):
                 for cell in t.columns[c].cells:
@@ -1395,6 +1439,9 @@ class Builder:
                         eff = _style_pt(par.style) or fit_size
                         if fit_size * k < eff - 0.25:
                             par.style = self._sized(par.style, round(max(0.6 * eff, fit_size * k) * 2) / 2)
+                        if starts[ci] in self._hyph:
+                            for run in par.runs:
+                                _soft_hyphens(run)
                 if not used and len(dc.paragraphs) > 1:      # ячейка начинается со списка — пустой первый абзац прочь
                     first._p.getparent().remove(first._p)
                 elif not used:                               # пустая ячейка — стилем таблицы: «Обычный» (8 pt после,
@@ -1439,7 +1486,7 @@ class Builder:
         pad = 2 * ((self.P.get("table") or {}).get("pad_left") or 5.4) + 5
         ncol = len(widths)
         need = [0.0] * ncol
-        self._shrink = {}
+        self._shrink, self._hyph = {}, set()
         for row in rows:
             # строка с объединёнными ячейками по сетке линий (docx_layout: span) — её ячейки в один столбец тоже: шапка
             # таблицы параметров 30RDIT в два яруса в счёт не шла, «ЗНАЧЕНИЕ» рвалось по буквам (20.10)
@@ -1470,6 +1517,8 @@ class Builder:
             # запаса нет (много узких столбцов) — кегль ячеек столбца меньше, до 60 %, а не слово по буквам
             if need[c] - widths[c] > 0.5 and need[c] > pad:
                 self._shrink[c] = max(0.6, (widths[c] - pad) / (need[c] - pad))
+                if (widths[c] - pad) / (need[c] - pad) < 0.6:
+                    self._hyph.add(c)                   # не влезло и при 60 % — мягкие переносы (_soft_hyphens)
 
     def _title_styles(self, blocks):
         """Стили крупного, «переднего» и мелкого текста (титул) — шрифтом, кеглем и начертанием оригинала: было

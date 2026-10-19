@@ -253,3 +253,13 @@ def test_title_scan_without_text_is_the_title_not_background(tmp_path):
     out2 = tmp_path / "bg.docx"
     B.Builder(mem, lambda img: png(), PROFILE).build([big, p("Címlap", 1, 300), body], str(out2), dict(LAYOUT))
     assert count(out1) == 1 and count(out2) == 0
+
+
+def test_soft_hyphens_by_syllables():
+    """Места переноса русского слова (правила П. Христова) и мягкие переносы прогона — элементом w:softHyphen."""
+    split = lambda w: "-".join(w[a:b] for a, b in zip([0] + B._hyphen_points(w), B._hyphen_points(w) + [len(w)]))
+    assert split("ЖУРНАЛ") == "ЖУР-НАЛ" and split("ЗНАЧЕНИЕ") == "ЗНА-ЧЕ-НИЕ" and split("СОБЫТИЙ") == "СО-БЫ-ТИЙ"
+    assert split("установки") == "ус-та-нов-ки" and split("мА") == "мА"
+    run = Document().add_paragraph().add_run("ЖУРНАЛ СОБЫТИЙ")
+    B._soft_hyphens(run)
+    assert len(run._r.findall(W + "softHyphen")) == 3 and run.text.replace("-", "") == "ЖУРНАЛ СОБЫТИЙ"
