@@ -2564,11 +2564,11 @@ def _foot_top(arts, rects, H, cbot=None):
     рамки над ней. Порог «ниже 80 % листа» захватывал низ таблицы и пометку «Folytatás a következő oldalon» — их
     линии резали подвал на лишние ячейки (ÜFK I, 16.10). cbot — низ текста тела листа (PDF без разметки): подвал —
     всё ниже него, без счёта разрывов («CONTROLLED DISCLOSURE» Eskom в 20 pt над прочими строками терялся)."""
-    # пробел — не краска: пробел в конце строки тела выходит за её рамку и считался подвалом (32RDGT: верх подвала
-    # на 509 pt, нижнее поле 344 pt, 20.10)
-    arts = [c for c in arts if c["text"].strip()]
     if cbot is not None:
-        low = [float(c["top"]) for c in arts if float(c["top"]) > max(cbot, H * 0.6)]
+        # текстовый слой: пробел — не краска, пробел в конце строки тела выходит за её рамку и считался подвалом
+        # (32RDGT: верх подвала на 509 pt, нижнее поле 344 pt, 20.10). У размеченного — как было: у HSE без подвала
+        # поле считалось по пробелу-артефакту, без него лист переполнялся (регрессия A/B)
+        low = [float(c["top"]) for c in arts if float(c["top"]) > max(cbot, H * 0.6) and c["text"].strip()]
         if low:
             top = min(low)
             border = [float(r["top"]) for r in rects if float(r["bottom"]) - float(r["top"]) < 3
