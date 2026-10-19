@@ -1481,3 +1481,27 @@ def test_blank_continuation_joins_with_row_lines():
     got = D.join_tables([a, b])
     assert len(got) == 1 and len(got[0]["rows"]) == 4
     assert got[0]["frame"]["ys"] == [140, 175, 200, 225, 250]
+
+
+def test_padded_labels_become_sub_rows():
+    """ÜFK «Beavatkozások»: метки «A.1.», «A.2.1.» выровнены пустыми абзацами против своих действий — подстроки по
+    меткам; ячейка условия — одна на все подстроки (vcont), линий между подстроками нет."""
+    def p(t, top):
+        return {"k": "p", "runs": [{"t": t}], "geom": {"top": top, "page": 70}}
+    blank = {"k": "p", "runs": []}
+    e = {"top": True, "bottom": True, "left": True, "right": True}
+    row = [{"blocks": [p("A.", 256)], "th": False, "edges": e},
+           {"blocks": [p("A PVS egyetlen", 256), p("VAGY", 295)], "th": False, "edges": e},
+           {"blocks": [p("A.1.", 256), blank, blank, p("A.2.1.", 295)], "th": False, "edges": e},
+           {"blocks": [p("Helyre kell", 256), p("ÉS", 282), p("A reaktor", 295)], "th": False, "edges": e},
+           {"blocks": [p("A.1. 72 óra", 256), blank, p("A.2.1. 2 óra", 295)], "th": False, "edges": e}]
+    t = {"k": "table", "rows": [row]}
+    D.sub_rows([t])
+    txt = lambda c: [D.text_of(x["runs"]) for x in c["blocks"]]
+    assert len(t["rows"]) == 2
+    assert [txt(c) for c in t["rows"][0]] == [["A."], ["A PVS egyetlen", "VAGY"], ["A.1."], ["Helyre kell", "ÉS"],
+                                              ["A.1. 72 óra"]]
+    assert [c.get("vcont", False) for c in t["rows"][1]] == [True, True, False, False, False]
+    assert [txt(c) for c in t["rows"][1][2:]] == [["A.2.1."], ["A reaktor"], ["A.2.1. 2 óra"]]
+    assert not t["rows"][0][3]["edges"]["bottom"] and not t["rows"][1][3]["edges"]["top"]
+    assert t["rows"][1][0]["edges"]["bottom"] and not t["rows"][0][0]["edges"]["bottom"]

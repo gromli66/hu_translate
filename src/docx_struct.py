@@ -297,6 +297,62 @@ def fit_rows(bs):
     return bs
 
 
+def sub_rows(bs):
+    """Метки, выровненные пустыми абзацами против своих пунктов в соседней ячейке (ÜFK, «Beavatkozások»: «A.1.»,
+    «A.2.1.» … и сроки «A.2.1. 2 óra» — каждая против своего действия), — подстроками таблицы: пустые абзацы пропадали,
+    метки вставали стопкой вверху ячейки и уезжали от своих пунктов (а в переводе длина пунктов другая — отбивкой не
+    выровнять, 19.10). Режутся ячейки-метки (короткие абзацы с пустыми между ними) и ячейка-пара, у которой абзацы
+    начинаются на тех же высотах; прочие ячейки строки — одной ячейкой на все подстроки (c["vcont"] — продолжение
+    сверху). Линий между подстроками нет."""
+    blank = lambda x: x["k"] == "p" and not text_of(x.get("runs") or []).strip()
+    top = lambda x: (x.get("geom") or {}).get("top")
+    for b in bs:
+        for it in b.get("items") or []:
+            sub_rows(it)
+        if b["k"] != "table":
+            continue
+        rows = []
+        for r in b["rows"]:
+            labels, tops = [], None
+            for ci, c in enumerate(r):
+                bl = c.get("blocks") or []
+                full = [x for x in bl if not blank(x)]
+                if len(full) >= 2 and len(full) < len(bl) and all(x["k"] == "p" and top(x) is not None
+                                                                  and len(text_of(x["runs"]).strip()) <= 20 for x in full):
+                    ts = [top(x) for x in full]
+                    if tops is None or len(ts) == len(tops) and all(abs(a - z) < 2 for a, z in zip(ts, tops)):
+                        labels.append(ci)
+                        tops = tops or ts
+            # пара — ячейка сразу за первой ячейкой меток (метка стоит перед своим пунктом); условие слева, чьи абзацы
+            # случайно начаты на тех же высотах, — не пара
+            pair = [ci for ci, c in enumerate(r) if labels and ci == labels[0] + 1 and ci not in labels
+                    and all(any(top(x) is not None and abs(top(x) - t) < 2 for x in c.get("blocks") or [] if not blank(x))
+                            for t in tops)]
+            if not labels or not pair:
+                rows.append(r)
+                continue
+            cut = labels + pair
+            n = len(tops)
+            part = lambda c, k: [x for x in c["blocks"] if not blank(x) and top(x) is not None
+                                 and (k == 0 or top(x) >= tops[k] - 2) and (k == n - 1 or top(x) < tops[k + 1] - 2)]
+            edge = lambda c, k: dict(c.get("edges") or {}, **({"top": False} if k else {}),
+                                     **({"bottom": False} if k < n - 1 else {}))
+            for k in range(n):
+                row = []
+                for ci, c in enumerate(r):
+                    if ci in cut:
+                        g = dict(c.get("geom") or {}, top=tops[k]) if c.get("geom") else None
+                        row.append(dict(c, blocks=part(c, k), geom=g, **({"edges": edge(c, k)} if "edges" in c else {})))
+                    elif k == 0:
+                        row.append(dict(c, **({"edges": edge(c, 0)} if "edges" in c else {})))
+                    else:
+                        row.append({"blocks": [], "th": c.get("th", False), "vcont": True, "geom": None,
+                                    **({"edges": edge(c, k)} if "edges" in c else {})})
+                rows.append(row)
+        b["rows"] = rows
+    return bs
+
+
 def join_tables(bs):
     """Таблица, которую Word при экспорте разрезал по листам (продолжение — отдельная таблица сразу за ней, без шапки,
     с тем же числом столбцов, на следующем листе), — снова одна: в DOCX она переносится сама и повторяет шапку
@@ -1357,8 +1413,8 @@ def load(path):
     page = pdf.pages[0]
     attach_icons(blocks, artifacts["imgs"], float(page.height))
     text_labels(blocks)
-    blocks = inline_pictures(toc_headings(real_headings(adopt(evict(join_tocs(fit_rows(join_tables(figures_in_place(place_captions(unlist_captions(list_tails(relist(
-        para_lists(join_pages(reflow(attach_notes(blocks)))))))))))))))))
+    blocks = inline_pictures(toc_headings(real_headings(adopt(evict(join_tocs(sub_rows(fit_rows(join_tables(figures_in_place(place_captions(unlist_captions(list_tails(relist(
+        para_lists(join_pages(reflow(attach_notes(blocks))))))))))))))))))
     tops, bots = {}, {}
     for pg in pdf.pages:
         ys = [(float(c["top"]), float(c["bottom"])) for c in pg.chars if c.get("mcid") is not None and c["text"].strip()]

@@ -1294,6 +1294,8 @@ class Builder:
                                      default=(cell.get("geom") or {}).get("x0"))
                 if own_edges:
                     self._cell_borders(dc, cell["edges"], fr.get("line") or "000000")
+                if cell.get("vcont"):                       # продолжение ячейки сверху (docx_struct.sub_rows)
+                    continue
                 first = dc.paragraphs[0]
                 used = False
                 style = head_style if head else cell_style
@@ -1332,6 +1334,12 @@ class Builder:
                 fill = fill or cell.get("fill")                     # заливка ячейки по оригиналу (docx_struct)
                 if fill:
                     dc._tc.get_or_add_tcPr().append(_el("w:shd", w__val="clear", w__color="auto", w__fill=fill))
+            for ci, cell in enumerate(row):
+                if cell.get("vcont") and ri > 0:
+                    try:
+                        t.cell(ri - 1, starts[ci]).merge(t.cell(ri, starts[ci]))
+                    except InvalidSpanError:
+                        pass
         self._tab_base = None
         self.doc.add_paragraph(style="Table Text")        # Word: после таблицы — абзац
 
