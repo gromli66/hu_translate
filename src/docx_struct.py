@@ -89,8 +89,8 @@ def _runs(items):
     """Символы и картинки одного элемента → прогоны одинакового начертания. Перенос строки — пробел, широкий
     разрыв в строке (табуляция Word) — «\\t»."""
     runs, prev, base = [], None, None                     # base — последний знак обычного кегля (для индексов)
-    just = _justified_gaps([it["ch"] for it in items if "ch" in it])
     hang = _hanging_tab([it["ch"] for it in items if "ch" in it])
+    just = _justified_gaps([it["ch"] for it in items if "ch" in it], hang)
     bot = lambda c: float(c.get("bottom", float(c["top"]) + float(c["size"])))
     for it in items:
         if "img" in it:
@@ -149,7 +149,7 @@ def _runs(items):
     return [r for r in runs if "img" in r or r["t"]]
 
 
-def _justified_gaps(chars):
+def _justified_gaps(chars, hang=()):
     """Знаки, перед которыми широкий промежуток — растяжка выключки по ширине, а не табуляция: строка не последняя,
     доходит до правого края абзаца, и все промежутки между словами в ней равны (или он один). В узкой ячейке строка из
     двух слов («Агрегат ⇥ работа») давала табуляцию — счёт «три разрыва в абзаце» её не ловил (синтетика, 16.10);
@@ -169,7 +169,11 @@ def _justified_gaps(chars):
     for ln in lines[:-1]:
         if float(ln[-1]["x1"]) < right - 1.5:
             continue
-        gaps = [(float(b["x0"]) - float(a["x1"]), b) for a, b in zip(ln, ln[1:])
+        # Word растягивает только текст после последней табуляции: промежутки кода до табуляции к висячему
+        # отступу («MSZ EN 571-1:2001 ⇥ Roncsolásmentes … vizsgálatok.», OAH 4.22) — обычные пробелы, и с ними
+        # медианой выходила сама табуляция: табуляцией становилась растяжка, 19.10
+        k = max((i for i, c in enumerate(ln) if id(c) in hang), default=0)
+        gaps = [(float(b["x0"]) - float(a["x1"]), b) for a, b in zip(ln[k:], ln[k + 1:])
                 if float(b["x0"]) - float(a["x1"]) > 0.15 * float(a["size"])]
         # растяжка — промежутки, равные медиане строки; заметно больший — настоящая табуляция («MSZ 27003-0:2013 ⇥
         # Nukleáris létesítmények…» перечня OAH: одна табуляция ломала прежнее «все равны», и растяжка шла
@@ -201,7 +205,7 @@ def _hanging_tab(chars):
     if any(abs(float(ln[0]["x0"]) - x) > 1.5 for ln in lines) or x < float(first[0]["x0"]) + 20:
         return set()
     return {id(b) for a, b in zip(first, first[1:])
-            if abs(float(b["x0"]) - x) < 1.5 and float(b["x0"]) - float(a["x1"]) > 0.8 * float(a["size"])}
+            if abs(float(b["x0"]) - x) < 1.5 and float(b["x0"]) - float(a["x1"]) > 0.5 * float(a["size"])}
 
 
 def _tail_pairs(last, r):

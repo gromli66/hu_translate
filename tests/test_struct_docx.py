@@ -1541,3 +1541,23 @@ def test_flush_paragraph_without_red_line(tmp_path):
     B.Builder(mem, lambda img: None, dict(PROFILE, first_line=17.0)).build(blocks, str(out), LAYOUT)
     st = {x.text: x.style.name for x in Document(str(out)).paragraphs}
     assert st["Документ содержит:"] == "Body Flush UTS" and st["Описание приложения UTS."] == "Normal"
+
+
+def test_hanging_tab_and_stretch_after_it():
+    """«MSZ EN 571-1:2001 ⇥ Roncsolásmentes ⟷ vizsgálatok.» (OAH 4.22): табуляция — к висячему отступу (там начаты
+    прочие строки), широкий промежуток после неё — растяжка по ширине, не вторая табуляция."""
+    def word(t, x0, top, size=11.0):
+        out, x = [], x0
+        for ch in t:
+            w = 3.2 if ch == " " else 6.8
+            out.append({"text": ch, "x0": x, "x1": x + w, "top": top, "size": size}); x += w
+        return out
+    line1 = word("MSZ EN 571-1:20", 99.3, 228) + word("Roncsolás ", 241.1, 228) + word("vizsgálatok.", 460.3, 228)
+    line2 = word("Folyadékbehatolásos vizsgálat.", 241.1, 244)
+    line3 = word("alapelvek", 241.1, 260)
+    chars = line1 + line2 + line3
+    for i, c in enumerate(chars):
+        c["fontname"] = "Open Sans"; c["bottom"] = c["top"] + c["size"]
+    runs = D._runs([{"ch": c} for c in chars])
+    t = D.text_of(runs)
+    assert t.startswith("MSZ EN 571-1:20\tRoncsolás vizsgálatok.") and t.count("\t") == 1
