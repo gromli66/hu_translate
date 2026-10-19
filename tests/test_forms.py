@@ -156,3 +156,15 @@ def test_center_only_in_middle_of_own_cell_and_not_for_lists():
     L.aligns([stamp, title, li1, li2], vs)
     assert title["align"] == "center" and title["cell"] == [69.0, 520.0]
     assert li1["align"] == "left" and li2["align"] == "left"
+
+
+def test_word_across_table_rule_is_split():
+    """ÜFK-скан: вертикаль таблицы прочитана буквой и склеила столбцы («blokkvezénylőiJA.1.»); чтение портала
+    отбросило хвост, а рамка прежняя («EltérőlA.2.1.» → «Eltérő») — хвост за линией из сырого слова."""
+    vs = [(0, 500, 228.0), (0, 500, 461.0)]
+    glued = word("blokkvezénylőiJA.1.", 157, 257, w=92)
+    cut = dict(word("Eltérő", 432, 295, w=59), raw="EltérőlA.2.1.")
+    plain = word("állapotot.", 267, 270, w=40)
+    out = S._split_at_rules([glued, cut, plain], vs)
+    assert [w["t"] for w in out] == ["blokkvezénylői", "A.1.", "Eltérő", "A.2.1.", "állapotot."]
+    assert out[0]["box"][2] < 228 < out[1]["box"][0] and out[2]["box"][2] < 461 < out[3]["box"][0]

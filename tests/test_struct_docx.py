@@ -1455,3 +1455,29 @@ def test_heading_from_memory_keeps_its_color(tmp_path):
     B.Builder(B.Memory([]), lambda im: None, PROFILE).build([h], str(out), dict(LAYOUT, first_is_body=True))
     run = next(x for x in Document(out).paragraphs if x.text).runs[0]
     assert str(run.font.color.rgb) == "2E74B5"
+
+
+def test_open_sided_table_edges_from_rules():
+    """Таблица без боковых рамок (ÜFK, скан): внутренние вертикали есть, крайних нет — края по горизонталям, что
+    одинаково выходят за вертикали с обеих сторон; без таких горизонталей (две линии и черта между ними) — не таблица."""
+    import docx_layout as DL
+    hs = [(221, 57, 542), (252, 57, 542), (473, 57, 542), (694, 56, 542)]
+    vs = [(228, 220, 695), (461, 220, 695)]
+    t = DL._tables(hs, vs)
+    assert len(t) == 1 and [round(x) for x in t[0][0]] == [56, 228, 461, 542]
+    assert [round(y) for y in t[0][1]] == [220, 252, 473, 694]
+    assert DL._tables([(221, 57, 542), (473, 200, 300)], vs) == []
+
+
+def test_blank_continuation_joins_with_row_lines():
+    """Продолжение таблицы без текста (пустые графы листа ознакомления ИН-1065) — к своей таблице, линии строк обеих
+    частей — одной рамкой: по ним высота пустых строк."""
+    def cell(t=""):
+        return {"blocks": [{"k": "p", "runs": [{"t": t}]}] if t else [], "th": False}
+    a = {"k": "table", "rows": [[cell("№"), cell("Фамилия")], [cell(), cell()]], "geom": {"page": 84, "top": 149},
+         "frame": {"xs": [70, 106, 248], "ys": [140, 175, 200]}}
+    b = {"k": "table", "rows": [[cell(), cell()], [cell(), cell()]], "geom": {"page": 85, "top": 60},
+         "frame": {"xs": [70, 106, 248], "ys": [60, 85, 110]}}
+    got = D.join_tables([a, b])
+    assert len(got) == 1 and len(got[0]["rows"]) == 4
+    assert got[0]["frame"]["ys"] == [140, 175, 200, 225, 250]

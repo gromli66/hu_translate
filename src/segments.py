@@ -354,11 +354,41 @@ def ocr_words(words, portal_text):
 DESC = re.compile(r"[gjpqyÁÉÍÓÖŐÚÜŰ,;]")
 
 
+def _split_at_rules(words, vs):
+    """Слово Tesseract поперёк вертикали таблицы («blokkvezénylőiJA.1.», «szerintijA.2.2.»: линия прочитана буквой,
+    текст двух столбцов склеен — ÜFK-скан, 19.10) — двумя словами по линии; буква-линия у места разреза (±2 знака
+    от доли ширины) отбрасывается."""
+    out = []
+    for w in words:
+        x0, y0, x1, y1 = w["box"]
+        t = w["t"]
+        xs = [x for ry0, ry1, x in vs if x0 + 2 < x < x1 - 2 and min(y1, ry1) - max(y0, ry0) > 0.5 * (y1 - y0)]
+        if not xs or len(t) < 3:
+            out.append(w)
+            continue
+        x = xs[0]
+        s, n = w.get("raw") or t, len(t.strip())
+        if s != t and s.startswith(t.strip()) and len(s) > n + 1:
+            # чтение портала отбросило хвост за линией («EltérőlA.2.1.» → «Eltérő»), рамка — прежняя: хвост из сырого
+            a, b = t, s[n + 1:] if s[n] in "|Jj[]!lIi1" else s[n:]
+        else:
+            k = round(len(t) * (x - x0) / (x1 - x0))
+            near = sorted((i for i in range(max(0, k - 2), min(len(t), k + 3)) if t[i] in "|Jj[]!lI1"),
+                          key=lambda i: abs(i - k))
+            a, b = (t[:near[0]], t[near[0] + 1:]) if near else (t[:k], t[k:])
+        if a:
+            out.append(dict(w, t=a, box=[x0, y0, x - 1, y1]))
+        if b:
+            out.append(dict(w, t=b, box=[x + 1, y0, x1, y1]))
+    return out
+
+
 def ocr_frags(words, vs=()):
     """Фрагменты OCR-страницы: слова одной строки Tesseract подряд, без большого разрыва и без линейки между ними.
     Кегль — по высоте слов без выносных вниз и без прописных с диакритикой (высота такого слова ≈ 0,72 кегля),
     жирность — по плотности краски относительно слов той же высоты."""
     from layout import GAP, CODE_GAP, _vrule_in, _union, code_line
+    words = _split_at_rules(words, vs)
     inks = sorted(w["ink"] for w in words if "ink" in w)
     # рамка слова, задетого рукописной подписью, раздута по высоте («Aláírás:» 9,4 pt вместо 3,8): по вертикали —
     # как у обычных слов той же строки, иначе и кегль перевода, и белая плашка вырастают и затирают подпись

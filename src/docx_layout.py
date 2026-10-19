@@ -446,11 +446,19 @@ def _tables(hs, vs):
             continue
         x0, x1 = min(v[0] for v in gv), max(v[0] for v in gv)
         y0, y1 = min(v[1] for v in gv), max(v[2] for v in gv)
+        # таблица без боковых рамок (ÜFK, скан: внутренние вертикали есть, крайних нет — шла текстом, 303 строки из
+        # 303) — края по горизонталям, если от двух они одинаково выходят за крайние вертикали с обеих сторон
+        hh = [h for h in gh if y0 - 3 <= h[0] <= y1 + 3]
+        lo, hi = [h[1] for h in hh if h[1] < x0 - 15], [h[2] for h in hh if h[2] > x1 + 15]
+        edges = [min(lo), max(hi)] if len(lo) >= 2 and len(hi) >= 2 and max(lo) - min(lo) <= 6 \
+            and max(hi) - min(hi) <= 6 else []
+        if edges:
+            x0, x1 = edges
         if x1 - x0 < 60 or y1 - y0 < 15 or not any(x0 + 3 < v[0] < x1 - 3 for v in gv):
             continue
-        ys = _cluster([h[0] for h in gh if y0 - 3 <= h[0] <= y1 + 3] + [y0, y1])
+        ys = _cluster([h[0] for h in hh] + [y0, y1])
         ys = [y for i, y in enumerate(ys) if i == 0 or y - ys[i - 1] >= 5]        # двойная линия — одна
-        xs = _cluster([v[0] for v in gv])
+        xs = _cluster([v[0] for v in gv] + edges)
         if len(ys) >= 2 and len(xs) >= 3:
             out.append((xs, ys, gh, gv))
     return out

@@ -286,8 +286,11 @@ def _col_align(rows, xs, page):
     ncol = len(xs) - 1
     votes = {}
     head = True
-    for r in rows:
+    for ri, r in enumerate(rows):
         head = head and all(c["th"] for c in r)
+        # первая строка без пометки шапки — своим голосом: шапка по центру решала за всё тело, и текст ячеек ÜFK
+        # (скан) вставал по центру, 19.10
+        key = "head" if head else "first" if ri == 0 else "body"
         if len(r) != ncol:
             continue
         for ci, c in enumerate(r):
@@ -296,11 +299,11 @@ def _col_align(rows, xs, page):
                 continue
             left, right = g["x0"] - xs[ci], xs[ci + 1] - g["x1"]
             v = "center" if abs(left - right) < 4 and left > 8 else "right" if right < 10 < left - 8 else "left"
-            votes.setdefault(("head" if head else "body", ci), []).append(v)
+            votes.setdefault((key, ci), []).append(v)
     out = {}
     for k, v in votes.items():
         best = Counter(v).most_common(1)[0][0]
-        if best != "left":
+        if best != "left" or k[0] == "first":
             out[k] = best
     return out
 
@@ -1295,6 +1298,9 @@ class Builder:
                 used = False
                 style = head_style if head else cell_style
                 al = aligns.get(("head" if head else "body", ci)) if len(row) == ncol else None
+                if not head and ri == 0 and len(row) == ncol:      # первая строка — по себе, без своих голосов — как тело
+                    al = aligns.get(("first", ci), al)
+                    al = None if al == "left" else al
                 g = cell.get("geom")
                 if al is None and len(row) < ncol and len(bounds) == ncol + 1 and g and g.get("page") ==                         (b.get("geom") or {}).get("page"):
                     # объединённая ячейка (шапка ÜFK «Eltérő állapot» над двумя столбцами) — по своим границам

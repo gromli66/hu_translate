@@ -345,6 +345,12 @@ def join_tables(bs):
             # таблица через лист: повтор шапки — только если оригинал её повторял (сборщик, w:tblHeader)
             out[-1] = dict(prev, rows=_cut_rows(prev["rows"] + rows), split=True,
                            head_repeat=bool(rep) or prev.get("head_repeat", False))
+            # линии строк обеих частей — одной рамкой (по ним высота пустых строк, docx_build): у склеенной таблицы
+            # их число не сходилось со строками, и пустые графы продолжения схлопывались
+            ya, yb = (prev.get("frame") or {}).get("ys") or [], (b.get("frame") or {}).get("ys") or []
+            if not rep and len(ya) == len(prev["rows"]) + 1 and len(yb) == len(b["rows"]) + 1 \
+                    and len(out[-1]["rows"]) == len(prev["rows"]) + len(rows):
+                out[-1]["frame"] = dict(prev["frame"], ys=ya + [round(ya[-1] + y - yb[0], 1) for y in yb[1:]])
             if strays:
                 out[-1]["strays"] = prev.get("strays", []) + strays
             continue
@@ -1057,6 +1063,22 @@ def load(path):
                 "rotated": sum(1 for c in chs if not _upright(c)) > len(chs) / 2,
                 "size": Counter(round(c["size"]) for c in chs).most_common(1)[0][0]}
 
+    def blank_geom(pn):
+        """Место таблицы без текста (продолжение листа ознакомления ИН-1065: одни пустые графы) — по линиям листа между
+        колонтитулами, если на листе нет текста тела. Без места она не склеивалась с началом на прошлом листе и шла
+        отдельной таблицей с равными столбцами (19.10)."""
+        page = pdf.pages[pn - 1]
+        if any(c.get("mcid") is not None and c["text"].strip() for c in page.chars):
+            return None
+        H = float(page.height)
+        ls = [o for o in page.rects + page.lines if 0.12 * H < float(o["top"]) and float(o["bottom"]) < 0.92 * H
+              and (float(o["width"]) < 3 or float(o["height"]) < 3)]
+        if sum(float(o["height"]) < 3 for o in ls) < 2 or sum(float(o["width"]) < 3 for o in ls) < 2:
+            return None
+        x0 = min(float(o["x0"]) for o in ls)
+        return {"page": pn, "top": min(float(o["top"]) for o in ls), "bottom": max(float(o["bottom"]) for o in ls),
+                "x0": x0, "x1": max(float(o["x1"]) for o in ls), "first_x0": x0, "size": 10}
+
     def borders(g):
         """Есть ли у таблицы линии в оригинале (иначе — таблица-раскладка без рамок, как блок адреса на титуле)."""
         if not g:
@@ -1085,6 +1107,19 @@ def load(path):
             x0, x1 = g["x0"] - 12, g["x1"] + 12
         objs = [o for o in thin if float(o["x0"]) >= x0 and float(o["x1"]) <= x1]
         vert = [o for o in objs if float(o["width"]) < 3 and float(o["height"]) > 5]
+        # пустые строки под текстом (графы листа ознакомления ИН-1065) — низ таблицы по её вертикалям, иначе линии
+        # строк (высоты пустых строк) брались только до последнего текста
+        allv = [o for o in page.rects + page.lines if float(o["width"]) < 3 and float(o["height"]) > 2
+                and float(o["x0"]) >= x0 and float(o["x1"]) <= x1 and float(o["top"]) >= top]
+        vbot = max((float(o["bottom"]) for o in vert), default=bot)
+        while True:                                         # вертикали по строкам — цепочкой вниз
+            nb = max((float(o["bottom"]) for o in allv if float(o["top"]) <= vbot + 2), default=vbot)
+            if nb <= vbot:
+                break
+            vbot = nb
+        if vbot > bot:
+            objs += [o for o in page.rects + page.lines if bot < float(o["top"]) <= vbot + 2 and float(o["height"]) < 3
+                     and float(o["x0"]) >= x0 and float(o["x1"]) <= x1]
         horiz = [o for o in objs if float(o["height"]) < 3 and float(o["width"]) > 20]
         xs = []
         for x in sorted((float(o["x0"]) + float(o["x1"])) / 2 for o in vert):
@@ -1265,7 +1300,7 @@ def load(path):
                 its.append(body)
             return [{"k": "list", "kind": str(kind), "items": its}]
         if t == "Table":
-            rows = []
+            rows, pgs = [], []
             for sec in el.children:
                 trs = sec.children if sec.type in ("THead", "TBody", "TFoot") else [sec]
                 for tr in trs:
@@ -1275,6 +1310,7 @@ def load(path):
                     for cell in tr.children:
                         if cell.type not in ("TD", "TH"):
                             continue
+                        pgs.append(cell.page_number)
                         row.append({"blocks": container(cell, depth), "th": cell.type == "TH" or sec.type == "THead",
                                     "geom": geom(cell), "attrs": dict(cell.attributes or {})})
                     rows.append(row)
@@ -1284,6 +1320,8 @@ def load(path):
                 g = {"page": cells[0]["page"], "top": cells[0]["top"], "x0": min(c["x0"] for c in cells),
                      "x1": max(c["x1"] for c in cells), "first_x0": cells[0]["x0"], "size": cells[0]["size"],
                      "bottom": max(c.get("bottom", c["top"] + 12) for c in cells if c["page"] == cells[0]["page"])}
+            elif pgs and pgs[0]:
+                g = blank_geom(pgs[0])
             if g:
                 cell_edges(rows, thin)
                 cell_fills(rows, fills)
