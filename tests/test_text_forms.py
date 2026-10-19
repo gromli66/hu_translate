@@ -26,12 +26,12 @@ def test_vector_marks_of_form():
     assert [ch for _, ch in DL._form_marks([circle, square, dot, box])] == ["○", "□"]
 
 
-def _form_pdf(path):
+def _form_pdf(path, rows=None):
     """Два листа бланка: штамп в рамке-«qu» с белыми подложками под словами, таблица (рамка-«qu», две вертикали,
     линия под шапкой), шапка таблицы на обоих листах, строки с кружками отметок, подвал."""
     doc = fitz.open()
-    rows = [[("1.1.", "Az elso feltétel teljesül."), ("1.2.", "A második armatúra zárva.")],
-            [("1.3.", "A harmadik kapcsoló élesítve."), ("1.4.", "A negyedik próba lezárva.")]]
+    rows = rows or [[("1.1.", "Az elso feltétel teljesül."), ("1.2.", "A második armatúra zárva.")],
+                    [("1.3.", "A harmadik kapcsoló élesítve."), ("1.4.", "A negyedik próba lezárva.")]]
     for pno in range(2):
         pg = doc.new_page(width=595, height=842)
         sh = pg.new_shape()
@@ -44,7 +44,7 @@ def _form_pdf(path):
         sh.draw_line((469, 81), (469, 769))
         sh.draw_line((42, 117), (574, 117))
         sh.finish(color=(0, 0, 0), width=0.8)
-        for k in range(2):
+        for k in range(len(rows[pno])):
             sh.draw_circle((494, 152 + 50 * k), 8)
             sh.finish(color=(0, 0, 0), width=0.8)
         sh.commit()
@@ -162,3 +162,43 @@ def test_scan_page_inside_text_layer_goes_as_translated_snapshot(tmp_path):
     L = D.layout(str(src), blocks, content=info.get("content_boxes"))
     assert not any((z.get("head_grid") or {}).get("paras") and any("img" in r for r in z["head_grid"]["paras"]["rows"])
                    for z in (L, L.get("front") or {}, L.get("first") or {}))
+
+
+def test_first_page_with_table_running_on_is_not_cover(tmp_path):
+    """Первый лист бланка с одной строкой таблицы, которая идёт дальше, — не титул (30RDIT: таблица уходила в раздел
+    титула, у пяти листов не было шапки)."""
+    src = tmp_path / "f1.pdf"
+    many = [(f"2.{k}.", f"A {k}. feltétel teljesül, a kapcsoló élesítve van.") for k in range(1, 11)]
+    segs = _form_pdf(src, rows=[[("1.1.", "Egy sor.")], many])
+    blocks, info = DL.load(str(src), segs, text=True)
+    assert [b["k"] for b in blocks] == ["table"] and blocks[0].get("split")
+    L = D.layout(str(src), blocks, content=info.get("content_boxes"))
+    assert L["first_is_body"]
+
+
+def test_form_column_alignment_votes_on_all_pages():
+    """Столбцы таблицы бланка на всех листах те же: голосуют все листы — один заголовок по центру на первом листе
+    не ставит по центру весь столбец (30RDIT)."""
+    xs = [40, 90, 420, 530]
+    cell = lambda page, x0, x1, th=False: {"blocks": [], "th": th, "geom": {"page": page, "x0": x0, "x1": x1,
+                                                                             "lines": 1}}
+    head = [cell(1, 50, 80, True), cell(1, 200, 310, True), cell(1, 440, 510, True)]
+    rows = [head, [cell(1, 50, 60), cell(1, 200, 310), cell(1, 470, 480)]]
+    rows += [[cell(2, 50, 60), cell(2, 94, 300 + 10 * k), cell(2, 470, 480)] for k in range(4)]
+    assert B._col_align(rows, xs, 1).get(("body", 1)) == "center"                # голос только первого листа
+    assert B._col_align(rows, xs, 1, any_page=True).get(("body", 1)) is None       # влево — по умолчанию
+
+
+def test_private_use_mark_by_its_look():
+    """Значок частной области (Wingdings, вшитый в шрифт текста) — по виду на листе: пустой квадрат, залитый кружок."""
+    doc = fitz.open()
+    pg = doc.new_page(width=200, height=100)
+    sh = pg.new_shape()
+    sh.draw_rect(fitz.Rect(20, 20, 32, 32))
+    sh.finish(color=(0, 0, 0), width=1)
+    sh.draw_circle((80, 26), 6)
+    sh.finish(color=(0, 0, 0), fill=(0, 0, 0))
+    sh.commit()
+    assert DL._pua_glyph(pg, (16, 16, 36, 36)) == "□"
+    assert DL._pua_glyph(pg, (70, 16, 90, 36)) == "●"
+    assert DL._pua_glyph(pg, (120, 16, 140, 36)) is None                         # пусто

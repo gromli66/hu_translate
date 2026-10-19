@@ -668,7 +668,7 @@ def _runs_of(group, bold, font, size, mono, right=None):
     return runs
 
 
-def _table_block(t, segs, pno, bold, font, size, mono, imgs=()):
+def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None):
     """Блок таблицы (как у docx_struct): ячейки — по сетке, текст ячейки — сегменты с центром в ней, картинки
     (подпись от руки в форме) — в ячейку своего центра, после текста."""
     xs, ys, gh, gv = t
@@ -722,7 +722,10 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=()):
                 gg = {"page": pno + 1, "top": g0[1], "bottom": max(g["loc"]["bbox"][3] for g in group), "x0": g0[0],
                       "x1": max(g["loc"]["bbox"][2] for g in group), "first_x0": g0[0], "size": size,
                       "lines": max(len(g["loc"].get("frags") or [1]) for g in group)}
-                paras.append({"k": "p", "runs": _runs_of(group, bold, font, size, mono), "geom": gg, "seg": True})
+                runs = _runs_of(group, bold, font, size, mono)
+                for ru in runs if pua else ():               # значки частной области — знаком по виду (_pua_glyph)
+                    ru["t"] = "".join(pua.get(ch, ch) for ch in ru["t"])
+                paras.append({"k": "p", "runs": runs, "geom": gg, "seg": True})
                 geom = gg if geom is None else dict(geom, x0=min(geom["x0"], gg["x0"]), x1=max(geom["x1"], gg["x1"]),
                                                      bottom=gg["bottom"], lines=geom["lines"] + gg["lines"])
             for img in (pics.get((r, ci), []) if first else []):
@@ -838,6 +841,32 @@ def _form_marks(drawings):
         elif ks in (["re"], ["qu"]) or len(ks) == 4 and all(k == "l" for k in ks):
             out.append(((x0, y0, x1, y1), "□"))
     return out
+
+
+def _pua_glyph(page, bbox):
+    """Знак частной области (U+F020–F0FF: значок Wingdings, вшитый в шрифт текста, — «» графы отметок 30RDIT) —
+    по виду на листе: пустой квадрат «□», залитый «■», кружок «○»/«●»; иначе None. Знаком частной области он печатался
+    пустым местом: шрифт текста этого знака не знает, а исходный шрифт по PDF не узнать (20.10)."""
+    import fitz
+    import numpy as np
+    pix = page.get_pixmap(dpi=300, clip=fitz.Rect(bbox), colorspace=fitz.csGRAY)
+    a = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.stride)[:, :pix.width] < 128
+    ys, xs = np.nonzero(a)
+    if len(xs) < 10:
+        return None
+    a = a[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+    h, w = a.shape
+    if min(h, w) < 8 or not 0.7 < w / h < 1.4:
+        return None
+    k = max(2, min(h, w) // 5)
+    inner = a[k:-k, k:-k].mean()
+    corner = (a[:k, :k].mean() + a[:k, -k:].mean() + a[-k:, :k].mean() + a[-k:, -k:].mean()) / 4
+    square = corner > 0.3
+    if inner < 0.15:
+        return "□" if square else "○"
+    if inner > 0.8:
+        return "■" if square else "●"
+    return None
 
 
 def _page_rules(doc, text=False):
@@ -981,11 +1010,16 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
             glyphs = [{"id": -1 - 1000 * pno - k, "page": pno, "text": ch, "loc": {"bbox": list(b), "frags": [list(b)]}}
                       for k, (b, ch) in enumerate(marks[pno]) if r.contains(mid(b))
                       and not any(fitz.Rect(s["loc"]["bbox"]).contains(mid(b)) for s in inside)]
+            pua = {}
+            for s in inside:                                # одинокий значок частной области — по виду на листе
+                ch = s["text"].strip()
+                if len(ch) == 1 and "\uf020" <= ch <= "\uf0ff" and ch not in pua:
+                    pua[ch] = _pua_glyph(page, s["loc"]["bbox"]) or ch
             if inside:
                 used |= set(mine)
                 regs.append({"rect": r, "ids": {s["id"] for s in inside},
                              "block": _table_block(t, inside + glyphs, pno, bold, font, size, mono,
-                                                   [figs[i] for i in mine])})
+                                                   [figs[i] for i in mine], pua)})
         for i, (r, img) in enumerate(figs):
             if i in used or any(r.intersects(g["rect"]) for g in regs):
                 continue

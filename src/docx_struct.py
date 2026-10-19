@@ -2356,7 +2356,10 @@ def layout(path, blocks, content=None):
     # по колонтитулам лист 1 не отличался, обложка шла листом тела с шапкой и картинкой в потоке (16.10)
     p1 = pdf.pages[0]
     bg = any((float(i["x1"]) - float(i["x0"])) * (float(i["bottom"]) - float(i["top"])) > 0.5 * W * H for i in p1.images)
-    cover = len(pdf.pages) > 1 and (med > 0 and (len(t1) < 0.4 * med or big and len(t1) < 0.7 * med)
+    # лист, с которого таблица уходит на следующий (бланк 30RDIT: на 1-м листе одна строка таблицы испытаний), — не
+    # титул, хоть текста на нём мало: таблица целиком уходила в раздел титула, и у пяти листов не было шапки (20.10)
+    runs_on = any(b["k"] == "table" and b.get("split") and (b.get("geom") or {}).get("page") == 1 for b in blocks)
+    cover = len(pdf.pages) > 1 and (med > 0 and (len(t1) < 0.4 * med or big and len(t1) < 0.7 * med) and not runs_on
                                     or any(body_key) and key1 != body_key or bg)
     out["first_is_body"] = not cover
     if key1 != body_key:                    # свои колонтитулы первого листа (титул NSU — шапка с названием вуза)

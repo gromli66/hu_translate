@@ -277,10 +277,12 @@ def _keep_tab(src, ru):
     return ru
 
 
-def _col_align(rows, xs, page):
+def _col_align(rows, xs, page, any_page=False):
     """Выравнивание столбцов таблицы по оригиналу (рамка xs на первом листе): {("head" | "body", столбец): "center" |
     "right"}; по однострочным ячейкам полных строк, большинством. Шапка UTS — по центру, номера версий — вправо, а
-    в переводе всё стояло влево (16.10)."""
+    в переводе всё стояло влево (16.10). any_page — столбцы на всех листах те же (таблица бланка по линиям листа,
+    docx_layout): голосуют все листы — на первом листе 30RDIT одна строка, заголовок раздела по центру, и центр
+    выходил у всего столбца (20.10)."""
     if len(xs) < 2:
         return {}
     ncol = len(xs) - 1
@@ -295,7 +297,7 @@ def _col_align(rows, xs, page):
             continue
         for ci, c in enumerate(r):
             g = c.get("geom")
-            if not g or g.get("page") != page or (g.get("lines") or 1) > 1:
+            if not g or not any_page and g.get("page") != page or (g.get("lines") or 1) > 1:
                 continue
             left, right = g["x0"] - xs[ci], xs[ci + 1] - g["x1"]
             v = "center" if abs(left - right) < 4 and left > 8 else "right" if right < 10 < left - 8 else "left"
@@ -1293,7 +1295,7 @@ class Builder:
             for el in ([] if mar is None else [mar.find(W + "left"), mar.find(W + "right")]):
                 if el is not None and int(el.get(W + "w")) / 20 > lim:
                     el.set(W + "w", str(round(lim * 20)))
-        aligns = _col_align(rows, xs, (b.get("geom") or {}).get("page"))
+        aligns = _col_align(rows, xs, (b.get("geom") or {}).get("page"), any_page=bool(fr.get("row_lines")))
         in_head = True
         for ri, row in enumerate(rows):
             if all("span" in c for c in row):               # ячейки по сетке линий (docx_layout) — места известны
