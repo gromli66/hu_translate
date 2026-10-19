@@ -694,7 +694,7 @@ class Builder:
             # абзаца с полужирной командой шла «кодом», и code_part возвращал венгерское «NYITNI» вместо перевода)
             key = (bool(r.get("b")), bool(r.get("i")),
                    (r.get("font") or "").lower().startswith(("consolas", "courier")) and not r.get("body_mono"),
-                   r.get("color") if r.get("color") not in ("000000", None) else None)
+                   r.get("color") if r.get("color") not in ("000000", None) else None, bool(r.get("u")))
             if groups and (groups[-1][0] == key or not r["t"].strip()):
                 groups[-1][1].append(r)
             else:
@@ -767,11 +767,13 @@ class Builder:
                     else:
                         run.font.superscript = True
                 if key:
-                    b, i, code, color = key
+                    b, i, code, color, u = key
                     if b and not style_bold:
                         run.bold = True
                     if i:
                         run.italic = True
+                    if u:
+                        run.underline = True
                     if code and par.style.name != "Code UTS":
                         run.font.name = "Consolas"
                     if color and color != "ffffff":

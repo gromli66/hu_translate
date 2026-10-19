@@ -37,6 +37,28 @@ def _upright(c):
     return abs(float(m[0])) >= abs(float(m[1])) if m else c.get("upright", True)
 
 
+def _underline(chars, objs):
+    """Подчёркивание (ссылки на законы OAH 4.22: тонкий прямоугольник 0,6 pt под строкой) — ch["u"]: линия до 1,2 pt
+    толщиной ниже базовой линии, но внутри рамки знака (от 0,7 кегля сверху до 0,8 pt над низом), под серединой знака.
+    Граница ячейки идёт по низу рамки знака и ниже (ÜFK) — не подчёркивание, зачёркивание — выше."""
+    from collections import defaultdict
+    by_y = defaultdict(list)
+    for o in objs:
+        if float(o["height"]) <= 1.2 and float(o["width"]) >= 2:
+            y = (float(o["top"]) + float(o["bottom"])) / 2
+            by_y[int(y // 4)].append((y, float(o["x0"]), float(o["x1"])))
+    if not by_y:
+        return
+    for ch in chars:
+        top, size = float(ch["top"]), float(ch["size"])
+        bottom = float(ch.get("bottom", top + size))
+        cx = (float(ch["x0"]) + float(ch["x1"])) / 2
+        lo, hi = top + 0.7 * size, bottom - 0.8
+        if any(lo <= y <= hi and x0 - 1 <= cx <= x1 + 1
+               for k in range(int(lo // 4), int(hi // 4) + 1) for y, x0, x1 in by_y.get(k, ())):
+            ch["u"] = True
+
+
 def _fmt(ch):
     name = ch["fontname"].split("+")[-1]
     fam = re.split(r"[-,]", name)[0]
@@ -56,7 +78,7 @@ def _fmt(ch):
     slant = abs(float(m[1])) < 1e-6 and abs(float(m[2])) > 0.1 * abs(float(m[3]) or 1)
     return {"font": fam, "size": round(float(ch["size"]) * 2) / 2,
             "b": bool(re.search(BOLD_W, name, re.I)), "i": bool(re.search(ITAL_W, name, re.I)) or slant,
-            "color": color}
+            "color": color, "u": bool(ch.get("u"))}
 
 
 SUP = str.maketrans("0123456789+-oоº°", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻°°°°")
@@ -1075,6 +1097,7 @@ def load(path):
     content, artifacts = {}, {"chars": [], "imgs": []}
     for p in pdf.pages:
         pn = p.page_number
+        _underline(p.chars, p.rects + p.lines)
         for ch in p.chars:
             if ch.get("mcid") is None:
                 if ch.get("tag") in SKIP or ch.get("tag") is None:

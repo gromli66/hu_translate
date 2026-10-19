@@ -1517,3 +1517,13 @@ def test_page_split_paragraph_joins_on_full_last_line():
     assert len(got) == 1 and D.text_of(got[0]["runs"]) == "feladatköréről, az Országos Atomenergia Hivatal hatósági"
     got = D.join_pages([p("A telephely engedély", 6, 524, 300), p("Az engedély hatálya", 7, 524, 498)])
     assert len(got) == 2
+
+
+def test_underline_from_thin_rule_under_glyphs():
+    """Подчёркивание — тонкая линия ниже базовой линии внутри рамки знака (OAH 4.22: 297,8–298,4 при знаках 287,7–
+    299,7); граница ячейки по низу рамки знака (ÜFK) и зачёркивание посередине — не подчёркивание."""
+    ch = lambda x, top=287.7: {"text": "a", "x0": x, "x1": x + 6, "top": top, "bottom": top + 12, "size": 12}
+    a, b, c = ch(121), ch(400), ch(121, top=208.3)
+    D._underline([a, b, c], [{"top": 297.8, "bottom": 298.4, "height": 0.6, "width": 234.8, "x0": 120.6, "x1": 355.4},
+                             {"top": 220.0, "bottom": 220.5, "height": 0.5, "width": 300, "x0": 57, "x1": 357}])
+    assert a.get("u") and not b.get("u") and not c.get("u")
