@@ -2239,6 +2239,12 @@ def layout(path, blocks, content=None):
     # и на листе-скане (картинки — полосами, каждая меньше четверти) картинок колонтитула нет: полоса скана 32RDGT
     # шла в шапку вводной части
     scanned = lambda pg: sum(area(i) for i in pg.images) >= 0.5 * W * H
+    # на листе-скане не логотип — картинка, что касается других картинок листа (мозаика скана); логотип шапки над
+    # сканом титула стоит отдельно (ИН-1065: логотип пропадал из шапки титула)
+    near = lambda i, j: (float(j["x0"]) - 2 <= float(i["x1"]) and float(i["x0"]) <= float(j["x1"]) + 2
+                         and float(j["top"]) - 2 <= float(i["bottom"]) and float(i["top"]) <= float(j["bottom"]) + 2)
+    same = lambda i, j: all(abs(float(i[k]) - float(j[k])) < 0.01 for k in ("x0", "top", "x1", "bottom"))
+    mosaic = lambda i, pg: scanned(pg) and any(not same(i, j) and near(i, j) for j in pg.images)
     ftop = _foot_top(arts, _drawn(page.rects + page.lines), H, cbot(page))
     foot_chars = [c for c in arts if c["top"] >= ftop]
     head_imgs = [{"xref": i["stream"].objid, "x0": float(i["x0"]), "x1": float(i["x1"]), "top": float(i["top"]),
@@ -2319,9 +2325,9 @@ def layout(path, blocks, content=None):
         ft = _foot_top(art, _drawn(pg.rects + pg.lines), H, cbot(pg))
         hc, fc = [c for c in art if c["top"] < body_top], [c for c in art if c["top"] >= ft]
         him = [img_of(i) for i in pg.images if i.get("mcid") is None and float(i["top"]) < body_top and logo(i)
-               and not scanned(pg)]             + _vector_logos(pg, body_top, hc)
+               and not mosaic(i, pg)]             + _vector_logos(pg, body_top, hc)
         fim = [img_of(i) for i in pg.images if i.get("mcid") is None and float(i["top"]) >= min(ft, H * 0.8)
-               and logo(i) and not scanned(pg)]
+               and logo(i) and not mosaic(i, pg)]
         return (sig(hc), sig(fc), len(him), len(fim)), hc, fc, ft, him, fim
     body_key = (sig(head_chars), body_sig, len(head_imgs), len(foot_imgs))
 

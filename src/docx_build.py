@@ -165,6 +165,15 @@ def merge_inline(blocks):
 _HELV = None
 
 
+def _style_pt(st):
+    """Кегль стиля с учётом базовых, pt; не задан нигде — None."""
+    while st is not None:
+        if st.font.size:
+            return st.font.size.pt
+        st = st.base_style
+    return None
+
+
 def _text_w(text, size):
     """Ширина строки, pt: латиница — по метрике Helvetica, кириллица и прочее — средней шириной Tahoma (у Helvetica
     PDF кириллицы нет, шрифтов Word на сервере нет)."""
@@ -1282,6 +1291,8 @@ class Builder:
                         widths[k] -= d
                         widths[c] = need[c]
             self._fit_words(rows, widths, fit_size)
+            if b.get("grid"):                           # сетка без линеек — свой кегль под ширину и поля 1 pt (3PR42)
+                self._shrink = {}
             t.autofit = False
             for c in range(ncol):
                 for cell in t.columns[c].cells:
@@ -1380,8 +1391,10 @@ class Builder:
                         self.paragraph(x, style, tgt=dc)
                 k = self._shrink.get(starts[ci])
                 if k and spans[ci][1] == spans[ci][0]:       # узкий столбец без запаса — кегль меньше (_fit_words),
-                    for par in dc.paragraphs:                # стилем: прямой кегль — нарушение профиля
-                        par.style = self._sized(par.style, round(fit_size * k * 2) / 2)
+                    for par in dc.paragraphs:                # стилем: прямой кегль — нарушение профиля; только меньше
+                        eff = _style_pt(par.style) or fit_size
+                        if fit_size * k < eff - 0.25:
+                            par.style = self._sized(par.style, round(max(0.6 * eff, fit_size * k) * 2) / 2)
                 if not used and len(dc.paragraphs) > 1:      # ячейка начинается со списка — пустой первый абзац прочь
                     first._p.getparent().remove(first._p)
                 elif not used:                               # пустая ячейка — стилем таблицы: «Обычный» (8 pt после,
@@ -1951,6 +1964,10 @@ class Builder:
                   page_tok=None if front and "head_grid" in front else L.get("page_tok")) if front else None
         in_front = False
         restart = False                         # раздел только что начал нумерацию с числа оригинала
+        # фон обложки — картинка во весь лист под текстом титула (UTS); титул без текста — один скан с подписями
+        # (ИН-1065): это сам титул, картинкой — прежде он пропадал как фон, лист 1 выходил пустым (20.10)
+        title_text = any(((b.get("geom") or {}).get("page") or 1) == 1 and b["k"] in ("p", "h")
+                         and text_of(b.get("runs") or []).strip() for b in blocks)
         if not in_title and ns:
             self._num_start(first, ns["value"])
             restart = True
@@ -1989,7 +2006,8 @@ class Builder:
                 logos_head = True
                 continue
             if in_title and b["k"] == "p" and b["runs"] and all("img" in r for r in b["runs"]) and g.get("x1") \
-                    and (g["x1"] - g["x0"]) * ((g.get("bottom") or g["top"]) - g["top"]) > 0.4 * L["W"] * L["H"]:
+                    and (g["x1"] - g["x0"]) * ((g.get("bottom") or g["top"]) - g["top"]) > 0.4 * L["W"] * L["H"] \
+                    and title_text:
                 continue                                     # фон обложки (UTS) — не картинкой в потоке
             # юридический текст внизу титула — в подвал титула; только ниже поля тела (UTS: 780 pt при поле 728),
             # дата титула выше поля — в потоке (OAH 4.22: «2015. szeptember» на 681 pt уходила в подвал к логотипу)

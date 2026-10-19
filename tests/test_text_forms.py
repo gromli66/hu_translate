@@ -7,7 +7,7 @@ import docx_build as B
 import docx_layout as DL
 import docx_struct as D
 
-from test_struct_docx import LAYOUT, PROFILE, W, png
+from test_struct_docx import LAYOUT, PROFILE, W, p, png
 
 
 def test_quad_frame_is_four_rules():
@@ -238,3 +238,18 @@ def test_short_values_against_labels_are_not_one_paragraph():
     prose = [fr(60, 100 + 13 * k, 290, "bal hasáb szövege, hosszú sor sok szóval itt") for k in range(3)] + \
         [fr(310, 100 + 13 * k, 540, "jobb hasáb folyó szövege, hosszú sor sok szóval") for k in range(3)]
     assert len(LY.group(prose, [], [])) == 2
+
+
+def test_title_scan_without_text_is_the_title_not_background(tmp_path):
+    """Титул — один скан с подписями (ИН-1065): это сам титул, картинкой; фон обложки под текстом (UTS) — как прежде,
+    не картинкой в потоке."""
+    big = {"k": "p", "runs": [{"img": {"x0": 57, "x1": 567, "top": 92, "bottom": 812}}],
+           "geom": {"page": 1, "top": 92, "bottom": 812, "x0": 57, "x1": 567, "first_x0": 57}}
+    body = p("Bevezetés", 2, 100)
+    mem = B.Memory([("Bevezetés", "Введение"), ("Címlap", "Титул")])
+    count = lambda f: len(Document(str(f)).element.body.xpath(".//w:drawing"))
+    out1 = tmp_path / "scan.docx"
+    B.Builder(mem, lambda img: png(), PROFILE).build([big, body], str(out1), dict(LAYOUT))
+    out2 = tmp_path / "bg.docx"
+    B.Builder(mem, lambda img: png(), PROFILE).build([big, p("Címlap", 1, 300), body], str(out2), dict(LAYOUT))
+    assert count(out1) == 1 and count(out2) == 0
