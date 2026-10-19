@@ -263,3 +263,25 @@ def test_soft_hyphens_by_syllables():
     run = Document().add_paragraph().add_run("ЖУРНАЛ СОБЫТИЙ")
     B._soft_hyphens(run)
     assert len(run._r.findall(W + "softHyphen")) == 3 and run.text.replace("-", "") == "ЖУРНАЛ СОБЫТИЙ"
+
+
+def test_form_fields_become_bordered_runs(tmp_path):
+    """Поля ввода бланка (обведённые прямоугольники в ячейке): код в поле — в рамке (w:bdr), пустое поле — неразрывные
+    пробелы в рамке и невидимый соединитель после (рамку пробелов в конце строки LibreOffice не рисует), 30RDGT."""
+    q = lambda x0, y0, x1, y1: {"rect": (x0, y0, x1, y1), "type": "s", "color": (0, 0, 0),
+                                "items": [("qu", ((x0, y0), (x1, y0), (x0, y1), (x1, y1)))]}
+    assert DL._form_fields([q(92, 266, 206, 282), q(209, 266, 298, 282), q(42, 81, 574, 769)]) == \
+        [(92, 266, 206, 282), (209, 266, 298, 282)]
+    gh = [(81, 42, 574), (117, 42, 574), (769, 42, 574)]
+    gv = [(42, 81, 769), (90, 81, 769), (469, 81, 769), (574, 81, 769)]
+    t = ([42, 90, 469, 574], [81, 117, 769], gh, gv)
+    seg = {"id": 7, "page": 0, "text": "31RD21S201", "loc": {"bbox": [95, 267, 155, 280], "frags": [[95, 267, 155, 280]],
+                                                            "size": 9, "bold": False}}
+    b = DL._table_block(t, [seg], 0, None, "Times New Roman", 9, False, fields=[(92, 266, 206, 282), (209, 266, 298, 282)])
+    runs = [r for row in b["rows"] for c in row for p_ in c["blocks"] for r in p_["runs"]]
+    assert [bool(r.get("box")) for r in runs if r.get("t", "").strip(" \t")] == [True, True]
+    out = tmp_path / "f.docx"
+    B.Builder(B.Memory([("31RD21S201", "31RD21S201")]), lambda img: png(), PROFILE).build(
+        [b], str(out), dict(LAYOUT, first_is_body=True))
+    body = Document(str(out)).element.body
+    assert len(body.xpath(".//w:r[w:rPr/w:bdr]")) == 2 and "⁠" in "".join(body.itertext())

@@ -754,8 +754,9 @@ class Builder:
             # абзаца с полужирной командой шла «кодом», и code_part возвращал венгерское «NYITNI» вместо перевода)
             key = (bool(r.get("b")), bool(r.get("i")),
                    (r.get("font") or "").lower().startswith(("consolas", "courier")) and not r.get("body_mono"),
-                   r.get("color") if r.get("color") not in ("000000", None) else None, bool(r.get("u")))
-            if groups and (groups[-1][0] == key or not r["t"].strip()):
+                   r.get("color") if r.get("color") not in ("000000", None) else None, bool(r.get("u")),
+                   r.get("box") or False)          # поле бланка — своё у каждого сегмента: соседние поля не сливаются
+            if groups and (groups[-1][0] == key or not r["t"].strip() and not key[5]):    # пустое поле — своя группа
                 groups[-1][1].append(r)
             else:
                 groups.append([key, [r]])
@@ -763,7 +764,7 @@ class Builder:
         # <f1></f1> и лишний запрос к порталу
         merged = []
         for g in groups:
-            if merged and not "".join(x["t"] for x in merged[-1][1]).strip():
+            if merged and not "".join(x["t"] for x in merged[-1][1]).strip() and not merged[-1][0][5]:
                 merged[-1] = [g[0], merged[-1][1] + g[1]]
             else:
                 merged.append(g)
@@ -813,6 +814,14 @@ class Builder:
             if out and out[0][1]:
                 out[0] = (out[0][0], " " + out[0][1].lstrip())
         def text_run(t, key):
+            if key and key[5] and t.strip(" \t") != t:
+                # поле бланка — рамкой только текст поля, табуляция рядом — без рамки (docx_layout._form_fields)
+                core = t.strip(" \t")
+                a = t.index(core) if core else len(t)
+                for piece, k in ((t[:a], key[:5] + (False,)), (core, key), (t[a + len(core):], key[:5] + (False,))):
+                    if piece:
+                        text_run(piece, k)
+                return
             # индексы распознавания портала («N<sub>R</sub>», «m<sup>3</sup>») — индексами, а не тегами в тексте (3PR42)
             for piece in re.split(r"(<su[bp]>.*?</su[bp]>)", t):
                 m = re.fullmatch(r"<(su[bp])>(.*?)</su[bp]>", piece, re.S)
@@ -827,7 +836,10 @@ class Builder:
                     else:
                         run.font.superscript = True
                 if key:
-                    b, i, code, color, u = key
+                    b, i, code, color, u, box = key
+                    if box:                                  # поле бланка — граница знаков
+                        rpr = run._r.get_or_add_rPr()
+                        rpr.append(_el("w:bdr", w__val="single", w__sz=4, w__space=0, w__color="000000"))
                     if b and not style_bold:
                         run.bold = True
                     if i:
@@ -838,6 +850,10 @@ class Builder:
                         run.font.name = "Consolas"
                     if color and color != "ffffff":
                         run.font.color.rgb = RGBColor.from_string(color.upper())
+                    if box and not piece.strip():
+                        # пустое поле (неразрывные пробелы) в конце абзаца: рамку пробелов в конце строки LibreOffice
+                        # не рисует — после него невидимый «соединитель слов» своим прогоном, без рамки
+                        par.add_run("\u2060")
         for key, t in out:
             while t and timgs and "	" in t:
                 k = t.index("	")

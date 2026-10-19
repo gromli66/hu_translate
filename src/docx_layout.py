@@ -654,7 +654,7 @@ def _runs_of(group, bold, font, size, mono, right=None):
         for pc in pieces:                                   # цвет — четвёртым, у текстового слоя (_text_style)
             t, b, it = pc[:3]
             runs.append({"t": t, "font": font, "size": size, "b": b, "i": it, "color": pc[3] if len(pc) > 3 else "000000",
-                         "body_mono": mono})
+                         "body_mono": mono, **({"box": f"b{g['id']}"} if g["loc"].get("box") else {})})
         last = runs[-1]
         if i + 1 < len(group):
             last["t"] += "\t"
@@ -668,7 +668,7 @@ def _runs_of(group, bold, font, size, mono, right=None):
     return runs
 
 
-def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None):
+def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields=()):
     """Блок таблицы (как у docx_struct): ячейки — по сетке, текст ячейки — сегменты с центром в ней, картинки
     (подпись от руки в форме) — в ячейку своего центра, после текста."""
     xs, ys, gh, gv = t
@@ -681,6 +681,14 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None):
         if r is not None and c is not None:
             ci = next(k for k, (a, z, _) in enumerate(grid[r]) if a <= c < z)
             pics.setdefault((r, ci), []).append(img)
+    # поля ввода бланка: текст в поле — в рамке (граница знаков), пустое поле — неразрывные пробелы его ширины в рамке
+    inbox = lambda s, f: (f[0] - 1 <= (s["loc"]["bbox"][0] + s["loc"]["bbox"][2]) / 2 <= f[2] + 1
+                          and f[1] - 1 <= (s["loc"]["bbox"][1] + s["loc"]["bbox"][3]) / 2 <= f[3] + 1)
+    segs = [dict(s, loc=dict(s["loc"], box=True)) if any(inbox(s, f) for f in fields) else s for s in segs]
+    for k, f in enumerate(fields):
+        if not any(inbox(s, f) for s in segs):
+            segs.append({"id": -10 ** 6 - 1000 * pno - k, "page": pno, "text": "\u00a0" * max(2, round((f[2] - f[0])
+                         / (0.25 * size))), "loc": {"bbox": list(f), "frags": [list(f)], "box": True}})
     put = {}
     for s in segs:
         x0, y0, x1, y1 = s["loc"]["bbox"]
@@ -869,6 +877,23 @@ def _pua_glyph(page, bbox):
     return None
 
 
+def _form_fields(drawings):
+    """Поля ввода бланка: обведённый прямоугольник (обводка «re»/«qu», без заливки краской) высотой 8–24 pt и шириной
+    от полутора высот до 300 pt — рамка вокруг кода или пустое окошко для значения (30RDGT: «[31RD31S201] [   ]»).
+    → [(x0, y0, x1, y1)]."""
+    out = []
+    white = lambda c: c is not None and min(c) > 0.95
+    for dr in drawings:
+        t = dr.get("type") or ""
+        if ("s" not in t or "f" in t and not white(dr.get("fill")) or len(dr["items"]) != 1
+                or dr["items"][0][0] not in ("re", "qu")):
+            continue
+        x0, y0, x1, y1 = dr["rect"]
+        if 8 <= y1 - y0 <= 24 and 1.4 * (y1 - y0) <= x1 - x0 <= 300:
+            out.append((x0, y0, x1, y1))
+    return out
+
+
 def _page_rules(doc, text=False):
     """Линии и рамки листов один раз на документ: (рамки путей, [(горизонтали, вертикали)] без рамки листа, [скан ли
     лист]). text — текстовый слой (горизонтали, повторённые на листах, не снимаются)."""
@@ -882,7 +907,7 @@ def _page_rules(doc, text=False):
         d = page.get_cdrawings()
         draw.append([{"rect": x["rect"]} for x in d])
         hs, vs = _rules(d)
-        marks.append(_form_marks(d))
+        marks.append((_form_marks(d), _form_fields(d)))
         del d
         scan = is_scan(page)                                # отдельный скан в документе: линий-векторов нет
         if scan:
@@ -1008,18 +1033,23 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
             # отметки бланка кривыми (кружок, квадратик) — знаком в своей ячейке, если там нет такого же текста
             mid = lambda b: fitz.Point((b[0] + b[2]) / 2, (b[1] + b[3]) / 2)
             glyphs = [{"id": -1 - 1000 * pno - k, "page": pno, "text": ch, "loc": {"bbox": list(b), "frags": [list(b)]}}
-                      for k, (b, ch) in enumerate(marks[pno]) if r.contains(mid(b))
+                      for k, (b, ch) in enumerate(marks[pno][0]) if r.contains(mid(b))
                       and not any(fitz.Rect(s["loc"]["bbox"]).contains(mid(b)) for s in inside)]
             pua = {}
             for s in inside:                                # одинокий значок частной области — по виду на листе
                 ch = s["text"].strip()
                 if len(ch) == 1 and "\uf020" <= ch <= "\uf0ff" and ch not in pua:
                     pua[ch] = _pua_glyph(page, s["loc"]["bbox"]) or ch
+            # поля ввода — внутри одной ячейки сетки, не на её линиях
+            xs_, ys_ = t[0], t[1]
+            fields = [f for f in marks[pno][1]
+                      if any(xs_[c] + 1 < f[0] and f[2] < xs_[c + 1] - 1 for c in range(len(xs_) - 1))
+                      and any(ys_[q] + 1 < f[1] and f[3] < ys_[q + 1] - 1 for q in range(len(ys_) - 1))]
             if inside:
                 used |= set(mine)
                 regs.append({"rect": r, "ids": {s["id"] for s in inside},
                              "block": _table_block(t, inside + glyphs, pno, bold, font, size, mono,
-                                                   [figs[i] for i in mine], pua)})
+                                                   [figs[i] for i in mine], pua, fields)})
         for i, (r, img) in enumerate(figs):
             if i in used or any(r.intersects(g["rect"]) for g in regs):
                 continue
