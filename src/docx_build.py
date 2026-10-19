@@ -864,6 +864,14 @@ class Builder:
                 d = round((x - self.left) / 3) * 3
                 if 6 <= d < 0.5 * (self.L["W"] - self.L["left"] - self.L["right"]):
                     style = self._indented(d)
+        # абзац у поля без красной строки в документе с красной строкой («Пояснительная записка должна содержать…»
+        # НГТУ, 85 pt при теле с 99) — стилем тела без отступа первой строки (19.10)
+        g = b.get("geom") or {}
+        if (self.P or {}).get("first_line") and style == "Normal" and tgt is self.doc \
+                and getattr(self, "left", None) is not None and g.get("first_x0") is not None \
+                and abs(g["first_x0"] - self.left) <= 3 \
+                and (g.get("rest_x0") is None or abs(g["rest_x0"] - g["first_x0"]) <= 3):
+            style = self._flush()
         par = tgt.add_paragraph(style=style)
         # в ячейке кегль — стилем таблицы (ужатым под ширину, «Table Text Small»)
         self._put_runs(par, runs, style_bold=style in ("Title UTS",),
@@ -966,6 +974,17 @@ class Builder:
                 return
             acc += len(t)
         texts[-1][1].addnext(mark)
+
+    def _flush(self):
+        """Стиль тела без отступа первой строки — абзацу у поля в документе с красной строкой."""
+        from docx.enum.style import WD_STYLE_TYPE
+        from docx.shared import Pt
+        name = "Body Flush UTS"
+        if name not in [s.name for s in self.doc.styles]:
+            s = self.doc.styles.add_style(name, WD_STYLE_TYPE.PARAGRAPH)
+            s.base_style = self.doc.styles["Normal"]
+            s.paragraph_format.first_line_indent = Pt(0)
+        return name
 
     def _indented(self, ind, hang=0):
         """Стиль абзаца с отступом слева ind pt (и висячим hang pt): отступ — стилем, а не прямым оформлением абзаца."""

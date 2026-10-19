@@ -999,6 +999,12 @@ def load(src, segs, text=False):
             if cur is None or abs(cur["x0"] - x0) > 6 or cur["kind"] != kind:
                 # знак — с листа (текстовый слой): сборка ставит его на любом уровне, не «o» второго уровня (Eskom)
                 cur = {"k": "list", "kind": kind, "items": [], "x0": x0, "own": bool(text_mode and ch)}
+                if text_mode and ch:
+                    # место маркера и текста по оригиналу (как docx_struct.list_geo): тире НГТУ стояло на уровне
+                    # текста абзацев, в оригинале — на 14 pt правее (19.10)
+                    import fitz
+                    tx = first[0] if mk else x0 + fitz.get_text_length(tm.group(0), fontsize=geom.get("size") or 10)
+                    cur["geo"] = {"marker": x0, "text": round(tx, 1)}
                 blocks.append(cur)
             cur["items"].append([para])
             continue
