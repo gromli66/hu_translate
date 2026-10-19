@@ -202,3 +202,24 @@ def test_private_use_mark_by_its_look():
     assert DL._pua_glyph(pg, (16, 16, 36, 36)) == "□"
     assert DL._pua_glyph(pg, (70, 16, 90, 36)) == "●"
     assert DL._pua_glyph(pg, (120, 16, 140, 36)) is None                         # пусто
+
+
+def test_narrow_columns_without_room_shrink_by_style(tmp_path):
+    """Много узких столбцов, расширить нечем: слово перевода не влезает — кегль ячейки меньше производным стилем
+    (не прямым кеглем), а не слово по буквам (таблица параметров 30RDIT)."""
+    xs = [40 + 24 * i for i in range(9)]
+    g = lambda x0: {"page": 1, "top": 100, "bottom": 110, "x0": x0, "x1": x0 + 20, "first_x0": x0, "size": 10,
+                    "lines": 1}
+    cell = lambda t, x0: {"blocks": [{"k": "p", "runs": [{"t": t, "font": "Tahoma", "size": 10, "b": False, "i": False,
+                                                          "color": "000000"}], "geom": g(x0)}], "th": False,
+                          "geom": g(x0), "span": 1, "edges": {"top": True, "bottom": True, "left": True, "right": True}}
+    rows = [[cell("ÉRTÉK", x) for x in xs[:-1]] for _ in range(4)]
+    tab = {"k": "table", "rows": rows, "borders": True, "frame": {"xs": xs, "ys": [100, 112, 124, 136, 148],
+                                                                   "row_lines": True},
+           "geom": {"page": 1, "top": 100, "bottom": 148, "x0": xs[0], "x1": xs[-1], "first_x0": xs[0], "size": 10}}
+    out = tmp_path / "s.docx"
+    B.Builder(B.Memory([("ÉRTÉK", "ЗНАЧЕНИЕ")]), lambda img: png(), PROFILE).build(
+        [tab], str(out), dict(LAYOUT, first_is_body=True))
+    names = {p.style.name for c in Document(str(out)).tables[0].rows[1].cells for p in c.paragraphs}
+    assert any(n.endswith("pt") for n in names)
+    assert not Document(str(out)).tables[0]._tbl.xpath(".//w:r/w:rPr/w:sz")

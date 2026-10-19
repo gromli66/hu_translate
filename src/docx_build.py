@@ -1173,6 +1173,7 @@ class Builder:
 
     def table(self, b):
         from docx.shared import Pt
+        self._shrink = {}                               # столбец → доля кегля (_fit_words), своя у каждой таблицы
         rows = [r for r in b["rows"] if r]
         if not rows:
             return
@@ -1377,6 +1378,10 @@ class Builder:
                         used = True
                     else:
                         self.paragraph(x, style, tgt=dc)
+                k = self._shrink.get(starts[ci])
+                if k and spans[ci][1] == spans[ci][0]:       # узкий столбец без запаса — кегль меньше (_fit_words),
+                    for par in dc.paragraphs:                # стилем: прямой кегль — нарушение профиля
+                        par.style = self._sized(par.style, round(fit_size * k * 2) / 2)
                 if not used and len(dc.paragraphs) > 1:      # ячейка начинается со списка — пустой первый абзац прочь
                     first._p.getparent().remove(first._p)
                 elif not used:                               # пустая ячейка — стилем таблицы: «Обычный» (8 pt после,
@@ -1421,10 +1426,17 @@ class Builder:
         pad = 2 * ((self.P.get("table") or {}).get("pad_left") or 5.4) + 5
         ncol = len(widths)
         need = [0.0] * ncol
+        self._shrink = {}
         for row in rows:
-            if len(row) != ncol:
+            # строка с объединёнными ячейками по сетке линий (docx_layout: span) — её ячейки в один столбец тоже: шапка
+            # таблицы параметров 30RDIT в два яруса в счёт не шла, «ЗНАЧЕНИЕ» рвалось по буквам (20.10)
+            if len(row) == ncol:
+                cols = list(enumerate(row))
+            elif all("span" in c for c in row) and sum(c["span"] for c in row) == ncol:
+                cols = [(sum(c["span"] for c in row[:i]), c) for i, c in enumerate(row) if c["span"] == 1]
+            else:
                 continue
-            for ci, cell in enumerate(row):
+            for ci, cell in cols:
                 for x in cell["blocks"]:
                     if x["k"] != "p" or not x["runs"]:
                         continue
@@ -1442,6 +1454,9 @@ class Builder:
             if give > 0:
                 widths[c] += give
                 widths[d] -= give
+            # запаса нет (много узких столбцов) — кегль ячеек столбца меньше, до 60 %, а не слово по буквам
+            if need[c] - widths[c] > 0.5 and need[c] > pad:
+                self._shrink[c] = max(0.6, (widths[c] - pad) / (need[c] - pad))
 
     def _title_styles(self, blocks):
         """Стили крупного, «переднего» и мелкого текста (титул) — шрифтом, кеглем и начертанием оригинала: было
@@ -1453,6 +1468,17 @@ class Builder:
             if runs:
                 font, size, bold = Counter((r.get("font"), r.get("size"), bool(r.get("b"))) for r in runs).most_common(1)[0][0]
                 self._font(self.doc.styles[name], font or "Tahoma", size or 10, bold)
+
+    def _sized(self, style, size):
+        """Стиль абзаца ячейки кеглем size (узкий столбец, _fit_words) — производный от его стиля."""
+        from docx.enum.style import WD_STYLE_TYPE
+        from docx.shared import Pt
+        name = f"{style.name} {size:g}pt"
+        if name not in [x.name for x in self.doc.styles]:
+            st = self.doc.styles.add_style(name, WD_STYLE_TYPE.PARAGRAPH)
+            st.base_style = style
+            st.font.size = Pt(size)
+        return self.doc.styles[name]
 
     def _aligned(self, style, al):
         """Стиль ячейки с выравниванием столбца оригинала (стилем, а не прямым оформлением абзаца)."""
