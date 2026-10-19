@@ -64,8 +64,9 @@ def chat(messages, max_tokens=8000, think=False, temperature=0, tag="", images=N
             _TOK = _token()
     payload = {"model": MODEL, "stream": False, "temperature": temperature, "max_tokens": max_tokens,
                "messages": msgs}
-    if think:
-        payload["chat_template_kwargs"] = {"enable_thinking": True}
+    # рассуждение — только по заказу, и «без рассуждения» — явно: с 19.10 портал рассуждает по умолчанию, рассуждение
+    # съедает лимит ответа (200 токенов на «переведи одну фразу») и ответ приходит пустым — перевод вставал
+    payload["chat_template_kwargs"] = {"enable_thinking": bool(think)}
     if sampling:
         payload.update(sampling)
     data = json.dumps(payload).encode()
