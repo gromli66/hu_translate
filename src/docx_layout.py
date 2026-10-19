@@ -415,8 +415,18 @@ def _rules(drawings):
                         hs.append((ay, min(ax, bx), max(ax, bx)))
                     elif abs(ax - bx) < 1 and abs(ay - by) >= 8:
                         vs.append((ax, min(ay, by), max(ay, by)))
-                elif it[0] == "re":
-                    rx0, ry0, rx1, ry1 = it[1]
+                elif it[0] in ("re", "qu"):
+                    # рамка четырёхугольником (бланки 30RDGT: штамп, рамка таблицы — «qu»; без них таблица листа не
+                    # находилась, шапка таблицы уходила в колонтитул, 15 листов → 68, 20.10) — как прямоугольник,
+                    # если стороны по осям
+                    if it[0] == "qu":
+                        q = it[1]
+                        if abs(q[0][1] - q[1][1]) > 1 or abs(q[0][0] - q[2][0]) > 1:
+                            continue                        # повёрнутый
+                        rx0, ry0 = min(p[0] for p in q), min(p[1] for p in q)
+                        rx1, ry1 = max(p[0] for p in q), max(p[1] for p in q)
+                    else:
+                        rx0, ry0, rx1, ry1 = it[1]
                     if ry1 - ry0 <= 3.5 and rx1 - rx0 >= 15:  # тонкие прямоугольники одним путём (сетка 3PR42, л. 145)
                         hs.append(((ry0 + ry1) / 2, rx0, rx1))
                     elif rx1 - rx0 <= 3.5 and ry1 - ry0 >= 8:
@@ -810,18 +820,40 @@ def _center(s):
     return (x0 + x1) / 2, (y0 + y1) / 2
 
 
-def _regions(doc, content, bold, font, size, mono, mask=None):
-    """Таблицы и рисунки листов: {лист: [{"rect", "block", "ids"}]} — сегменты ids идут не абзацами, а в них."""
+def _form_marks(drawings):
+    """Отметки бланка, нарисованные векторами, а не знаком шрифта: кружок (контур из дуг) — «○», квадратик — «□»;
+    6–20 pt, почти квадрат, только обводка. Графа «Teljesítés igazolás» форм 30RDGT — кружки кривыми: в DOCX графа
+    выходила пустой (20.10). → [(рамка, знак)]."""
+    out = []
+    white = lambda c: c is not None and min(c) > 0.95
+    for dr in drawings:
+        x0, y0, x1, y1 = dr["rect"]
+        w, h, t = x1 - x0, y1 - y0, dr.get("type") or ""
+        if ("s" not in t or "f" in t and not white(dr.get("fill")) or not (6 <= w <= 20 and 6 <= h <= 20)
+                or abs(w - h) > 2.5):
+            continue
+        ks = [it[0] for it in dr["items"]]
+        if len(ks) >= 4 and all(k == "c" for k in ks):
+            out.append(((x0, y0, x1, y1), "○"))
+        elif ks in (["re"], ["qu"]) or len(ks) == 4 and all(k == "l" for k in ks):
+            out.append(((x0, y0, x1, y1), "□"))
+    return out
+
+
+def _page_rules(doc, text=False):
+    """Линии и рамки листов один раз на документ: (рамки путей, [(горизонтали, вертикали)] без рамки листа, [скан ли
+    лист]). text — текстовый слой (горизонтали, повторённые на листах, не снимаются)."""
     import fitz
     import numpy as np
     from layout import rules_from_image
     # от путей листа нужны линии (здесь) и рамки (для рисунков): все пути всех листов держали в памяти до 6,6 ГБ —
     # у 3PR42 текст нарисован контурами, тысячи путей на лист (17.10)
-    draw, per, scans = [], [], []
+    draw, per, scans, marks = [], [], [], []
     for page in doc:
         d = page.get_cdrawings()
         draw.append([{"rect": x["rect"]} for x in d])
         hs, vs = _rules(d)
+        marks.append(_form_marks(d))
         del d
         scan = is_scan(page)                                # отдельный скан в документе: линий-векторов нет
         if scan:
@@ -843,6 +875,49 @@ def _regions(doc, content, bold, font, size, mono, mask=None):
         _, p, a, b = key(o, r)
         return sum(cnt.get((o, p + i, a + j, b + q), 0)
                    for i in (-1, 0, 1) for j in (-1, 0, 1) for q in (-1, 0, 1)) >= need
+    lines = []
+    for hs, vs in per:
+        # текстовый слой: горизонталь как у линии под шапкой других листов — не рамка листа, если таблицу держат свои
+        # вертикали (верх таблицы титула Eskom на высоте линии шапки: таблица не находилась); рамку листа отсекают
+        # её же повторяющиеся вертикали
+        hs = [r for r in hs if text or not running("h", r)]
+        # повторяющиеся вертикали — рамка листа, но три и больше на одном пролёте — столбцы таблицы-бланка, повторённой
+        # на каждом листе (формы RDGT: на листах 2–5 таблица на тех же местах — её вертикали снимались как рамка, и
+        # таблица шла картинкой с переведённого PDF, 20.10)
+        span = Counter((round(r[1] / 6), round(r[2] / 6)) for r in vs if running("v", r))
+        vs = [r for r in vs if not running("v", r) or span[(round(r[1] / 6), round(r[2] / 6))] >= 3]
+        lines.append((hs, vs))
+    return draw, lines, scans, marks
+
+
+def _head_rows(doc, rules, body, keys, H):
+    """Строки заголовков столбцов таблиц: первая строка сетки от двух столбцов, под которой в той же таблице есть текст
+    тела (не повтор колонтитула). Повторяется на каждом листе (Word печатает шапку таблицы на каждом листе) — и
+    снималась как колонтитул или бегущее название: у 30RDGT шапка таблицы уходила в шапку DOCX узкой сеткой, 15 листов
+    → 68; у 31RDGT заголовки столбцов пропадали со второго листа (20.10). → {id сегмента}."""
+    import fitz
+    per = rules[1]
+    by_page = {}
+    for s in body:
+        by_page.setdefault(s["page"], []).append(s)
+    out = set()
+    for pno, (hs, vs) in enumerate(per):
+        segs = by_page.get(pno, [])
+        for xs, ys, _, _ in _tables(hs, vs):
+            if len(xs) < 3 or len(ys) < 3:
+                continue
+            head = fitz.Rect(xs[0], ys[0], xs[-1], ys[1])
+            rest = fitz.Rect(xs[0], ys[1], xs[-1], ys[-1])
+            if not any(rest.contains(fitz.Point(*_center(s))) and not _is_running(s, keys, H) for s in segs):
+                continue                                    # штамп: вся таблица повторяется на листах — колонтитул
+            out |= {s["id"] for s in segs if head.contains(fitz.Point(*_center(s)))}
+    return out
+
+
+def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
+    """Таблицы и рисунки листов: {лист: [{"rect", "block", "ids"}]} — сегменты ids идут не абзацами, а в них."""
+    import fitz
+    draw, per, scans, marks = rules or _page_rules(doc, mask is not None)
     # картинки на нескольких листах (логотип шапки) — только текстовому слою; get_images не раскодирует картинки
     reused = Counter(x for page in doc for x in {im[0] for im in page.get_images()}) if mask is not None else Counter()
     by_page, masks = {}, {}
@@ -856,15 +931,7 @@ def _regions(doc, content, bold, font, size, mono, mask=None):
         figs = [(r, {"png": page.get_pixmap(dpi=150, clip=r).tobytes("png"), "x0": r.x0, "x1": r.x1, "top": r.y0,
                      "bottom": r.y1}) for r in _figures(page, masks.get(pno, segs) if mask else segs, draw[pno],
                                                          scans[pno])]
-        # текстовый слой: горизонталь как у линии под шапкой других листов — не рамка листа, если таблицу держат свои
-        # вертикали (верх таблицы титула Eskom на высоте линии шапки: таблица не находилась); рамку листа отсекают
-        # её же повторяющиеся вертикали
-        hs = [r for r in per[pno][0] if mask is not None or not running("h", r)]
-        # повторяющиеся вертикали — рамка листа, но три и больше на одном пролёте — столбцы таблицы-бланка, повторённой
-        # на каждом листе (формы RDGT: на листах 2–5 таблица на тех же местах — её вертикали снимались как рамка, и
-        # таблица шла картинкой с переведённого PDF, 20.10)
-        span = Counter((round(r[1] / 6), round(r[2] / 6)) for r in per[pno][1] if running("v", r))
-        vs = [r for r in per[pno][1] if not running("v", r) or span[(round(r[1] / 6), round(r[2] / 6))] >= 3]
+        hs, vs = per[pno]
         if mask is not None:
             infos = page.get_image_info(xrefs=True)          # один раз на лист
             figs += _raster(page, segs, figs, reused, infos)
@@ -885,10 +952,16 @@ def _regions(doc, content, bold, font, size, mono, mask=None):
                 continue                                    # сетка внутри рисунка (график) — часть рисунка
             inside = [s for s in segs if r.contains(fitz.Point(*_center(s)))]
             mine = [i for i, (f, _) in enumerate(figs) if r.contains(fitz.Point((f.x0 + f.x1) / 2, (f.y0 + f.y1) / 2))]
+            # отметки бланка кривыми (кружок, квадратик) — знаком в своей ячейке, если там нет такого же текста
+            mid = lambda b: fitz.Point((b[0] + b[2]) / 2, (b[1] + b[3]) / 2)
+            glyphs = [{"id": -1 - 1000 * pno - k, "page": pno, "text": ch, "loc": {"bbox": list(b), "frags": [list(b)]}}
+                      for k, (b, ch) in enumerate(marks[pno]) if r.contains(mid(b))
+                      and not any(fitz.Rect(s["loc"]["bbox"]).contains(mid(b)) for s in inside)]
             if inside:
                 used |= set(mine)
                 regs.append({"rect": r, "ids": {s["id"] for s in inside},
-                             "block": _table_block(t, inside, pno, bold, font, size, mono, [figs[i] for i in mine])})
+                             "block": _table_block(t, inside + glyphs, pno, bold, font, size, mono,
+                                                   [figs[i] for i in mine])})
         for i, (r, img) in enumerate(figs):
             if i in used or any(r.intersects(g["rect"]) for g in regs):
                 continue
@@ -910,8 +983,11 @@ def load(src, segs, text=False):
     W, H = doc[0].rect.width, doc[0].rect.height
     body = [s for s in segs if "shot" not in s["loc"] and s["loc"].get("bbox") and s["text"].strip()]
     run_keys = _running(body, H, len(doc))
-    pool = [s for s in body if _is_running(s, run_keys, H) or _portal_running(s)]
-    content = [s for s in body if not _is_running(s, run_keys, H)
+    rules = _page_rules(doc, text)
+    # шапка таблицы (строка заголовков столбцов) повторяется на каждом листе, но это не колонтитул и не бегущее название
+    heads = _head_rows(doc, rules, body, run_keys, H)
+    pool = [s for s in body if s["id"] not in heads and (_is_running(s, run_keys, H) or _portal_running(s))]
+    content = [s for s in body if s["id"] in heads or not _is_running(s, run_keys, H)
                and not (_portal_running(s) and _stable_running(s, pool, run_keys, H))]
     # меняющееся название раздела в рамке (метка портала, но не на всех листах одинаково) — один раз, первым появлением:
     # OCR читает его на каждом листе чуть по-разному, и точное сравнение с предыдущим листом ниже оставляло копии
@@ -923,7 +999,7 @@ def load(src, segs, text=False):
     seen, drop = [], set()
     for s in sorted(content, key=lambda s: (s["page"], s["loc"]["bbox"][1])):
         k = _sig(s["text"])
-        if _zone(s, H) != "head" or not any(like(k, t) for t in titles):
+        if _zone(s, H) != "head" or s["id"] in heads or not any(like(k, t) for t in titles):
             continue
         if any(like(k, q) for q in seen):
             drop.add(id(s))
@@ -934,7 +1010,8 @@ def load(src, segs, text=False):
     # вверху предыдущего листа, — не текст (на всех листах сразу его не найти: у каждого раздела своё)
     # название — от 6 знаков с буквами: короткое значение («3», «N/A» титульных сведений Eskom) повторяется само по себе
     # и пропадало (17.10)
-    titled = lambda s: len(re.sub(r"\W", "", s["text"])) >= 6 and re.search(r"[^\W\d_]{3}", s["text"])
+    titled = lambda s: s["id"] not in heads and len(re.sub(r"\W", "", s["text"])) >= 6 \
+        and re.search(r"[^\W\d_]{3}", s["text"])
     # пробелы — без счёта: OCR читает название то с двойным пробелом после номера, то с одним («1.1.  Turbina …»
     # / «1.1. Turbina …», 3SZ19), и повтор с прошлого листа оставался заголовком посреди раздела (19.10)
     key = lambda t: re.sub(r"\s+", " ", _sig(t)).strip()
@@ -971,7 +1048,7 @@ def load(src, segs, text=False):
     layer = {} if text else _layer(doc)                     # текстовый слой: маркеры — знаками текста
     content_all = content
     bold = _text_style(doc, body) if text else _pixel_style(doc, body, layer)   # и колонтитулы: шапка 3SZ19 — жирная
-    regions = _regions(doc, content, bold, font, size, mono, mask=body if text else None)
+    regions = _regions(doc, content, bold, font, size, mono, mask=body if text else None, rules=rules)
     # рисунок из краски колонтитула (шапка с линией под ней на скане): колонтитул снят с текста, а его краска уходила
     # картинкой посреди текста следующего листа (сканы, 18.10) — рисунок без своих сегментов, накрывающий колонтитул, — прочь
     import fitz as _f
@@ -1139,10 +1216,14 @@ def load(src, segs, text=False):
         if b["k"] == "list":
             x = b.pop("x0")
             b["level"] = min(min(range(len(steps)), key=lambda i: abs(steps[i] - x)), 3)
+    import docx_struct
+    # таблица через лист (шапка повторена на каждом листе или продолжение без неё) — одной таблицей, как у размеченного:
+    # в DOCX она переносится сама и повторяет шапку; частями по листам каждая часть тянула пустоту до рамки листа
+    # (31RDGT: 5 листов → 7, 20.10)
+    blocks = docx_struct.join_tables(blocks)
     # разрывы листа — правилом PDF с разметкой (docx_struct.mark_breaks): верх и низ тела листов; и для распознанных
     # листов — разделы 3SZ19 с нового листа шли подряд (18.10)
     if True:
-        import docx_struct
         tops, bots = {}, {}
         ys = [(s["page"] + 1, s["loc"]["bbox"][1], s["loc"]["bbox"][3]) for s in content_all]
         ys += [(pno + 1, g["rect"].y0, g["rect"].y1) for pno, regs in regions.items() for g in regs]

@@ -1316,7 +1316,9 @@ class Builder:
             head = in_head and ri < 3 and len(rows) > 1
             # повтор шапки на новом листе — как в оригинале: таблица, разрезанная листом без повтора шапки, — без него
             # (JPDS «Перечень сокращений»: «БД База данных» печаталась второй раз вверху следующего листа, 18.10)
-            if head and len(rows) > 3 and (b.get("head_repeat") or not b.get("split")):
+            # строки, повторённые оригиналом на каждом листе (docx_struct.join_tables), — шапкой и без TH: шапка форм
+            # RDGT не полужирная и со второго листа не повторялась (20.10)
+            if (head or ri < b.get("repeat_rows", 0)) and len(rows) > 3 and (b.get("head_repeat") or not b.get("split")):
                 _trpr_put(t.rows[ri]._tr, _el("w:tblHeader"))
             # короткая строка не рвётся между листами (в оригинале строки целые; длинная — пусть рвётся, иначе не влезет)
             size = sum(len(text_of(x["runs"])) for c in row for x in c["blocks"] if x["k"] == "p")
@@ -1920,8 +1922,10 @@ class Builder:
         Lf = dict(L, **{k: v for k, v in (front or {}).items() if k != "to"},
                   page_tok=None if front and "head_grid" in front else L.get("page_tok")) if front else None
         in_front = False
+        restart = False                         # раздел только что начал нумерацию с числа оригинала
         if not in_title and ns:
             self._num_start(first, ns["value"])
+            restart = True
         title_foot = []
         for b in blocks:
             g = b.get("geom") or {}
@@ -1937,6 +1941,7 @@ class Builder:
                 self._footer(sec, Lf if in_front else L)
                 if ns and not in_front:
                     self._num_start(sec, ns["value"])
+                    restart = True
             if in_front and page is not None and page > front["to"]:
                 in_front = False
                 sec = self.doc.add_section(WD_SECTION.NEW_PAGE)
@@ -1946,6 +1951,7 @@ class Builder:
                 self._footer(sec, L)
                 if ns:
                     self._num_start(sec, ns["value"])
+                    restart = True
             # логотипы обложки — те же, что в шапке тела, или стоящие в полосе шапки (выше поля тела; «atom erőmű» UTS
             # уезжал за правый край), — шапкой титула из логотипов тела
             if in_title and b["k"] == "p" and b["runs"] and all("img" in r for r in b["runs"]) and head_x and (all(
@@ -1962,6 +1968,14 @@ class Builder:
             if in_title and b["k"] == "p" and g.get("top", 0) > max(0.8 * L["H"], L["H"] - L["bottom"] - 2):
                 title_foot.append(b)
                 continue
+            if restart and b["k"] == "table":
+                # LibreOffice теряет начало нумерации раздела (pgNumType start), если раздел начат таблицей: листы
+                # 31RDGT печатались с «1» вместо «2» оригинала (20.10) — перед таблицей пустой абзац в 1 pt
+                from docx.enum.text import WD_LINE_SPACING
+                sp = self.doc.add_paragraph().paragraph_format
+                sp.space_before = sp.space_after = Pt(0)
+                sp.line_spacing, sp.line_spacing_rule = Pt(1), WD_LINE_SPACING.EXACTLY
+            restart = False
             self.block(b)
             pg = g.get("page")
             if not in_title and pg in sparse and b["k"] in ("p", "h") and g.get("top") and self.doc.paragraphs:

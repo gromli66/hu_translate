@@ -426,12 +426,20 @@ def join_tables(bs):
                       and any("img" in q for q in x.get("runs") or [])]
             # таблица через лист: повтор шапки — только если оригинал её повторял (сборщик, w:tblHeader)
             out[-1] = dict(prev, rows=_cut_rows(prev["rows"] + rows), split=True,
-                           head_repeat=bool(rep) or prev.get("head_repeat", False))
+                           head_repeat=bool(rep) or prev.get("head_repeat", False),
+                           # строки, что оригинал повторял на каждом листе, — шапка, даже без TH (сборщик: w:tblHeader)
+                           repeat_rows=max(rep, prev.get("repeat_rows", 0)))
             # линии строк обеих частей — одной рамкой (по ним высота пустых строк, docx_build): у склеенной таблицы
             # их число не сходилось со строками, и пустые графы продолжения схлопывались
             ya, yb = (prev.get("frame") or {}).get("ys") or [], (b.get("frame") or {}).get("ys") or []
-            if not rep and len(ya) == len(prev["rows"]) + 1 and len(yb) == len(b["rows"]) + 1 \
+            if len(ya) == len(prev["rows"]) + 1 and len(yb) == len(b["rows"]) + 1 \
                     and len(out[-1]["rows"]) == len(prev["rows"]) + len(rows):
+                # последняя строка части, растянутая рамкой до низа листа (формы RDGT: под текстом пусто до рамки
+                # листа), — по своему тексту: пустота шла в DOCX высотой строки, и таблица разрасталась на листы (20.10)
+                low = max((c["geom"]["bottom"] for c in prev["rows"][-1] if c.get("geom")), default=None)
+                if low is not None and ya[-1] - low > 24:
+                    ya = ya[:-1] + [round(max(low + 4, ya[-2] + 7), 1)]
+                yb = yb[rep:]                       # без линий повтора шапки
                 out[-1]["frame"] = dict(prev["frame"], ys=ya + [round(ya[-1] + y - yb[0], 1) for y in yb[1:]])
             if strays:
                 out[-1]["strays"] = prev.get("strays", []) + strays
@@ -2220,7 +2228,7 @@ def layout(path, blocks, content=None):
     page, page_tok, page_off, tok_boxes = _typical_page(pdf, body_top, H, cbot=cbot)
     arts = [c for c in page.chars if c.get("mcid") is None and _upright(c)]
     head_chars = [c for c in arts if c["top"] < body_top]
-    ftop = _foot_top(arts, page.rects + page.lines, H, cbot(page))
+    ftop = _foot_top(arts, _drawn(page.rects + page.lines), H, cbot(page))
     foot_chars = [c for c in arts if c["top"] >= ftop]
     head_imgs = [{"xref": i["stream"].objid, "x0": float(i["x0"]), "x1": float(i["x1"]), "top": float(i["top"]),
                   "bottom": float(i["bottom"])} for i in page.images if i.get("mcid") is None and float(i["top"]) < body_top]
@@ -2235,7 +2243,7 @@ def layout(path, blocks, content=None):
                    "top": min(float(w["top"]) for w in ws), "bottom": max(float(w["bottom"]) for w in ws)}
                   for _, ws in sorted(lines.items())]
     # штамп: столбцы — по рамкам ячеек (нет внутренних линий — по разрывам между группами слов), строки — по словам
-    frects = [r for r in page.rects + page.lines if float(r["top"]) >= ftop]
+    frects = [r for r in _drawn(page.rects + page.lines) if float(r["top"]) >= ftop]
     # номер листа — помечен в знаках: полем станет он, а не такое же число рядом («Блок 3» на листе 3, синтетика)
     mark = lambda chars: [dict(c, text=PAGE_MARK) if c["text"].isdigit() and any(
         abs(float(c["top"]) - bx["top"]) < 2 and bx["x0"] - 0.5 <= float(c["x0"]) and float(c["x1"]) <= bx["x1"] + 0.5
@@ -2297,7 +2305,7 @@ def layout(path, blocks, content=None):
         # повёрнутый текст на поле (JPDS: «Собственность… Запрещается…» вдоль края титула) — не колонтитул: абзацем
         # он рисовался столбиком по букве и растягивал титул на три листа (16.10)
         art = [c for c in pg.chars if c.get("mcid") is None and _upright(c)]
-        ft = _foot_top(art, pg.rects + pg.lines, H, cbot(pg))
+        ft = _foot_top(art, _drawn(pg.rects + pg.lines), H, cbot(pg))
         hc, fc = [c for c in art if c["top"] < body_top], [c for c in art if c["top"] >= ft]
         him = [img_of(i) for i in pg.images if i.get("mcid") is None and float(i["top"]) < body_top]             + _vector_logos(pg, body_top, hc)
         fim = [img_of(i) for i in pg.images if i.get("mcid") is None and float(i["top"]) >= min(ft, H * 0.8)]
@@ -2306,7 +2314,7 @@ def layout(path, blocks, content=None):
 
     def zone_layout(pg, hc, fc, ft, him, fim):
         """Колонтитулы отдельного листа (вводной части, первого листа): абзацами без рамки или сеткой."""
-        frr = [r for r in pg.rects + pg.lines if float(r["top"]) >= ft]
+        frr = [r for r in _drawn(pg.rects + pg.lines) if float(r["top"]) >= ft]
         fg = _zone_grid(fc, frr)
         z = {"stamp": fg["rows"], "stamp_widths": fg["widths"], "stamp_aligns": fg["aligns"], "stamp_box": fg["box"],
              "stamp_inner": fg["inner"], "stamp_merge": None, "stamp_paras": _zone_paras(fc, frr, left, W - right, fim, W)}
@@ -2409,12 +2417,21 @@ def font_classes(path, pages=12):
     return {f: c.most_common(1)[0][0] for f, c in votes.items()}
 
 
+def _drawn(objs):
+    """Линии и рамки, видные на листе: белая заливка без обводки (подложка поля бланка — у 30RDGT девять таких под
+    словами штампа) — не край ячейки; по её краям штамп резался на 13 узких столбцов и слова шли столбиком (20.10)."""
+    def white(c):
+        v = [float(x) for x in (c if isinstance(c, (list, tuple)) else [c] if isinstance(c, (int, float)) else [])]
+        return bool(v) and (max(v) < 0.05 if len(v) == 4 else min(v) > 0.95)
+    return [o for o in objs if o.get("stroke", True) or o.get("fill") and not white(o.get("non_stroking_color"))]
+
+
 def _head_rects(page, body_top):
     """Линии зоны шапки: выше тела и выше первого содержимого листа с запасом — рамка таблицы, которой начат лист,
     лежит выше её первого знака и попадала в шапку лишними строками и столбцами (синтетика, 16.10)."""
     ctop = min((float(c["top"]) for c in page.chars if c.get("mcid") is not None), default=body_top)
     lim = min(body_top, ctop - 6)
-    return [r for r in page.rects + page.lines if float(r["bottom"]) < lim]
+    return [r for r in _drawn(page.rects + page.lines) if float(r["bottom"]) < lim]
 
 
 def _zone_paras(chars, rects, x_left, x_right, imgs=(), page_w=None):
@@ -2489,7 +2506,7 @@ def _typical_page(pdf, body_top, H, sample=15, cbot=lambda pg: None):
     for i in idx:
         pg = pdf.pages[i]
         art = arts_of[i] = [c for c in pg.chars if c.get("mcid") is None]
-        ftop = _foot_top(art, pg.rects + pg.lines, H, cbot(pg))
+        ftop = _foot_top(art, _drawn(pg.rects + pg.lines), H, cbot(pg))
         arts = [c for c in art if c["top"] < body_top or c["top"] >= ftop]
         sig[i] = re.sub(r"\d+", "#", "".join(c["text"] for c in arts))
         words[i] = pdfplumber.utils.extract_words(arts, x_tolerance=2.5, y_tolerance=2) if arts else []

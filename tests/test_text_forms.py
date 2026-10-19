@@ -1,0 +1,126 @@
+# Бланки текстовым слоем (формы RDGT, 20.10): рамки четырёхугольниками, шапка таблицы на каждом листе, таблица через
+# лист, отметки кривыми, подложки полей штампа, нумерация листов при таблице в начале раздела.
+import fitz
+from docx import Document
+
+import docx_build as B
+import docx_layout as DL
+import docx_struct as D
+
+from test_struct_docx import LAYOUT, PROFILE, W, png
+
+
+def test_quad_frame_is_four_rules():
+    """Рамка путём из четырёх отрезков («qu») — линии, как прямоугольник «re»: без неё таблица бланка не находилась."""
+    q = ((42, 81), (574, 81), (42, 769), (574, 769))
+    hs, vs = DL._rules([{"rect": (42, 81, 574, 769), "type": "s", "color": (0, 0, 0), "items": [("qu", q)]}])
+    assert sorted(round(h[0]) for h in hs) == [81, 769] and sorted(round(v[0]) for v in vs) == [42, 574]
+
+
+def test_vector_marks_of_form():
+    """Кружок из дуг и квадратик обводкой (6–20 pt) — отметки бланка; залитый кружок и крупная рамка — нет."""
+    circle = {"rect": (486, 199, 502, 215), "type": "s", "color": (0, 0, 0), "items": [("c",)] * 5}
+    square = {"rect": (486, 300, 498, 312), "type": "s", "color": (0, 0, 0), "items": [("re", (486, 300, 498, 312))]}
+    dot = {"rect": (486, 400, 494, 408), "type": "f", "fill": (0, 0, 0), "items": [("c",)] * 4}
+    box = {"rect": (90, 300, 200, 314), "type": "s", "color": (0, 0, 0), "items": [("re", (90, 300, 200, 314))]}
+    assert [ch for _, ch in DL._form_marks([circle, square, dot, box])] == ["○", "□"]
+
+
+def _form_pdf(path):
+    """Два листа бланка: штамп в рамке-«qu» с белыми подложками под словами, таблица (рамка-«qu», две вертикали,
+    линия под шапкой), шапка таблицы на обоих листах, строки с кружками отметок, подвал."""
+    doc = fitz.open()
+    rows = [[("1.1.", "Az elso feltétel teljesül."), ("1.2.", "A második armatúra zárva.")],
+            [("1.3.", "A harmadik kapcsoló élesítve."), ("1.4.", "A negyedik próba lezárva.")]]
+    for pno in range(2):
+        pg = doc.new_page(width=595, height=842)
+        sh = pg.new_shape()
+        for r in ((54, 42, 102, 55), (137, 42, 180, 55), (405, 42, 459, 55), (54, 55, 112, 68), (501, 55, 552, 68)):
+            sh.draw_rect(fitz.Rect(r))
+        sh.finish(color=None, fill=(1, 1, 1))
+        sh.draw_quad(fitz.Rect(42, 21, 574, 69).quad)
+        sh.draw_quad(fitz.Rect(42, 81, 574, 769).quad)
+        sh.draw_line((90, 81), (90, 769))
+        sh.draw_line((469, 81), (469, 769))
+        sh.draw_line((42, 117), (574, 117))
+        sh.finish(color=(0, 0, 0), width=0.8)
+        for k in range(2):
+            sh.draw_circle((494, 152 + 50 * k), 8)
+            sh.finish(color=(0, 0, 0), width=0.8)
+        sh.commit()
+        put = lambda x, y, t: pg.insert_text((x, y), t, fontsize=9, fontname="tiro")
+        put(250, 37, "TESZTELÉSI UTASÍTÁS")
+        for x, y, t in ((54, 52, "Azonosító:"), (137, 52, "30RDGT"), (405, 52, "Verziószám:"), (547, 52, "3"),
+                        (54, 65, "Megnevezés:"), (137, 65, "3-as blokk"), (405, 65, "Dátum:"), (501, 65, "2017-04-20")):
+            put(x, y, t)
+        put(48, 96, "Sorsz.")
+        put(214, 96, "Feltétel, muvelet, ellenorzés")
+        put(478, 96, "Teljesítés igazolás")
+        for k, (num, text) in enumerate(rows[pno]):
+            put(48, 155 + 50 * k, num)
+            put(94, 155 + 50 * k, text)
+        put(46, 812, "Nyomtatva: 2017-04-28 11:48")
+    doc.save(str(path))
+    segs = []
+    for pno, pg in enumerate(fitz.open(str(path))):
+        for bl in pg.get_text("dict")["blocks"]:
+            for ln in bl.get("lines", []):
+                t = "".join(s["text"] for s in ln["spans"]).strip()
+                if t:
+                    bb = [round(v, 1) for v in ln["bbox"]]
+                    segs.append({"id": len(segs), "page": pno, "text": t, "src": t,
+                                 "loc": {"bbox": bb, "frags": [bb], "size": 9.0, "bold": False, "family": "Times",
+                                         "align": "left"}})
+    return segs
+
+
+def test_form_table_header_is_not_running_and_table_joins_across_pages(tmp_path):
+    """Шапка таблицы на каждом листе — строка таблицы, не колонтитул (30RDGT: уходила в шапку DOCX, 15 листов → 68);
+    таблица через лист — одна, шапка повторяется (w:tblHeader), хвост строки до рамки листа не тянется; кружки
+    кривыми — знаком «○»; штамп в колонтитуле — не по краям белых подложек полей."""
+    src = tmp_path / "form.pdf"
+    segs = _form_pdf(src)
+    blocks, info = DL.load(str(src), segs, text=True)
+    tabs = [b for b in blocks if b["k"] == "table"]
+    assert len(tabs) == 1
+    t = tabs[0]
+    cell = lambda c: " ".join("".join(r.get("t", "") for r in x["runs"]) for x in c["blocks"]).strip()
+    texts = [[cell(c) for c in r] for r in t["rows"]]
+    assert texts[0][:2] == ["Sorsz.", "Feltétel, muvelet, ellenorzés"]
+    assert sum("Feltétel" in c for r in texts for c in r) == 1                  # повтор шапки — прочь
+    assert t.get("repeat_rows") == 1 and t.get("head_repeat")
+    body = " ".join(c for r in texts for c in r)
+    assert all(n in body for n in ("1.1.", "1.2.", "1.3.", "1.4.")) and body.count("○") == 4
+    ys = t["frame"]["ys"]
+    assert len(ys) == len(t["rows"]) + 1
+    last1 = max(i for i, r in enumerate(t["rows"]) if any((c.get("geom") or {}).get("page") == 1 for c in r))
+    assert ys[last1 + 1] - ys[last1] < 80                                       # не до рамки листа (769)
+    L = D.layout(str(src), blocks, content=info.get("content_boxes"))
+    head = L.get("head_grid") or {}
+    assert len(head.get("widths") or []) <= 5
+    assert "Feltétel" not in str(head) and "Azonosító" in str(head)
+    out = tmp_path / "form.docx"
+    mem = B.Memory([(s["text"], s["text"]) for s in segs])
+    B.Builder(mem, lambda img: png(), PROFILE).build(blocks, str(out), dict(LAYOUT, **{k: v for k, v in L.items()
+                                                                                      if k in ("head_grid",)}))
+    tbl = Document(str(out)).tables[0]
+    assert tbl.rows[0]._tr.find(".//" + W + "tblHeader") is not None
+
+
+def test_page_numbers_restart_before_leading_table(tmp_path):
+    """Раздел с нумерацией с числа оригинала, начатый таблицей: LibreOffice такое начало теряет (31RDGT: «1» вместо
+    «2»), перед таблицей — пустой абзац в 1 pt."""
+    g = lambda top: {"page": 1, "top": top, "bottom": top + 10, "x0": 80, "x1": 300, "first_x0": 80, "size": 10,
+                     "lines": 1}
+    cellp = lambda t, top: {"blocks": [{"k": "p", "runs": [{"t": t, "font": "Tahoma", "size": 10, "b": False,
+                                                            "i": False, "color": "000000"}], "geom": g(top)}],
+                            "th": False, "geom": g(top)}
+    tab = {"k": "table", "rows": [[cellp("1.1.", 100), cellp("Első", 100)], [cellp("1.2.", 120), cellp("Második", 120)]],
+           "borders": True, "geom": dict(g(100), x1=500)}
+    out = tmp_path / "n.docx"
+    B.Builder(B.Memory([("Első", "Первый"), ("Második", "Второй")]), lambda img: png(), PROFILE).build(
+        [tab], str(out), dict(LAYOUT, page_tok="2", num_start={"page": 1, "value": 2}, first_is_body=True))
+    body = Document(str(out)).element.body
+    first = next(el for el in body if el.tag in (W + "p", W + "tbl"))
+    assert first.tag == W + "p"
+    assert Document(str(out)).sections[0]._sectPr.find(W + "pgNumType").get(W + "start") == "2"
