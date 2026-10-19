@@ -711,20 +711,28 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=()):
                      "size": size}}
 
 
-def _grids(items, bold, font, size, mono):
+def _grids(items, bold, font, size, mono, layer=None):
     """Сетка без линеек — таблицей без рамок: подряд от трёх строк из нескольких коротких кусков, куски которых встают в
     общие столбцы (перечень кодов 3PR42 л. 112: «04.TH10D001 ⇥ KM1/1 ⇥ 02.TK42D001 ⇥ …» в шесть столбцов). Строкой с
     табуляцией по месту оригинала последний столбец не влезал и переносился (кегль сборки крупнее), 17.10. Строка
     оглавления (в конце — номер листа) — не сетка."""
     from layout import code_line
 
+    def dashed(g):
+        """Перед первым куском строки — тире пункта (чёрточка текстового слоя скана)."""
+        f = (g[0]["loc"].get("frags") or [g[0]["loc"]["bbox"]])[0]
+        lh = max(f[3] - f[1], 1)
+        return any(abs(d[1] - (f[1] + f[3]) / 2) < 0.6 * lh and 0 < f[0] - d[0] < 30
+                   for d in (layer or {}).get(g[0]["page"], {}).get("dash", []))
+
     def row_ok(it):
         g = it[2]
-        # строка — пункт списка по метке портала («– RN31S202 NYIT, RN35S201 ZÁR,» 3SZ19: тире в слое, куски через
-        # промежуток кода) — не строка сетки: три пункта шли мелкой таблицей без рамок (19.10)
+        # строка — пункт с тире («– RN31S202 NYIT, RN35S201 ZÁR,» 3SZ19, куски через промежуток кода) — не строка сетки:
+        # три пункта шли мелкой таблицей без рамок. По тире слоя, а не по метке портала «пункт»: портал метит пунктами
+        # и строки перечня кодов 3PR42 («30RA04S201 - 37FY22 - BV IAB»), и перечень шёл лесенкой абзацев (19.10)
         return it[1] == 0 and len(g) >= 2 and len({x["page"] for x in g}) == 1 \
             and all(len(x["text"]) <= 60 for x in g) and not re.fullmatch(r"\d{1,4}", g[-1]["text"].strip()) \
-            and g[0]["loc"].get("role") != "list"
+            and not dashed(g)
     out, i = [], 0
     while i < len(items):
         j = i
@@ -902,12 +910,23 @@ def load(src, segs, text=False):
     # название — от 6 знаков с буквами: короткое значение («3», «N/A» титульных сведений Eskom) повторяется само по себе
     # и пропадало (17.10)
     titled = lambda s: len(re.sub(r"\W", "", s["text"])) >= 6 and re.search(r"[^\W\d_]{3}", s["text"])
+    # пробелы — без счёта: OCR читает название то с двойным пробелом после номера, то с одним («1.1.  Turbina …»
+    # / «1.1. Turbina …», 3SZ19), и повтор с прошлого листа оставался заголовком посреди раздела (19.10)
+    key = lambda t: re.sub(r"\s+", " ", _sig(t)).strip()
     top = {}
     for s in content:
         if s["loc"]["bbox"][3] < 0.2 * H:
-            top.setdefault(s["page"], set()).add(_sig(s["text"]))
+            top.setdefault(s["page"], set()).add(key(s["text"]))
+    # первое появление бегущего названия (то же — вверху следующего листа) — заголовок раздела, даже без метки портала:
+    # «1.8. Turbina csapágyak rezgése …» 3SZ19 шло обычным абзацем, а со следующего листа снималось как повтор (19.10)
+    # (название — полужирное или по центру: строка тела вверху листа, повторённая на следующем, — не заголовок)
+    first = {(s["page"], key(s["text"])) for s in content if s["loc"]["bbox"][3] < 0.2 * H and titled(s)
+             and (s["loc"].get("bold") or s["loc"].get("align") == "center")
+             and key(s["text"]) in top.get(s["page"] + 1, ()) and key(s["text"]) not in top.get(s["page"] - 1, ())}
     content = [s for s in content if not (s["loc"]["bbox"][3] < 0.2 * H and titled(s)
-                                          and _sig(s["text"]) in top.get(s["page"] - 1, ()))]
+                                          and key(s["text"]) in top.get(s["page"] - 1, ()))]
+    content = [dict(s, loc=dict(s["loc"], role="heading")) if (s["page"], key(s["text"])) in first
+               and s["loc"].get("role") not in ("heading", "header") else s for s in content]
     # и на первом листе раздела: название в рамке сверху, а ниже на том же листе — тот же текст заголовком
     # («1.3/1. SZBV kazetta leesése» дважды подряд, 3PR42)
     norm = lambda t: re.sub(r"\s+", " ", _sig(t))
@@ -965,7 +984,7 @@ def load(src, segs, text=False):
                          max((s["id"] for s in content if s["page"] < pno), default=-1) + 0.5)
             items.append((k, 1, g["block"]))
     items.sort(key=lambda x: (x[0], x[1]))
-    items = _grids(items, bold, font, size, mono)
+    items = _grids(items, bold, font, size, mono, layer)
     blocks, cur = [], None                                  # cur — открытый список из пунктов с тире
     last_head = {}                                          # уровень → текст последнего заголовка
     for _, kind, group in items:
@@ -992,7 +1011,9 @@ def load(src, segs, text=False):
         if len(group) == 1 and (not loc.get("roles") and len(runs) == 1 and (loc.get("align") == "center" or text_mode
                 and m and len(loc.get("frags") or [1]) == 1 and re.search(r"[^\W\d_]{3}", text[m.end(1):]))
                 and runs[0]["b"] and len(text) < 120
-                or loc.get("role") == "heading" and len(text) < 200 and re.search(r"[^\W\d_]{3}", text)):
+                or loc.get("role") in ("heading", "header") and len(text) < 200 and re.search(r"[^\W\d_]{3}", text)):
+            # «колонтитул» по метке портала, что остался в тексте (_stable_running: меняется от раздела к разделу), —
+            # название раздела в рамке: заголовок (3SZ19 «1.8. Turbina csapágyak…» шёл пунктом списка над разделом)
             level = min(len(m.group(1).split(".")) if m else 1, 5)
             norm = re.sub(r"\s+", " ", text)
             if last_head.get(level) == norm:
@@ -1026,7 +1047,13 @@ def load(src, segs, text=False):
             kind = "Circle"
         elif ch and kind == "Disc" and ch in "▪■□":
             kind = "Square"
-        if not mark and loc.get("role") == "list":
+        # строка оглавления (в конце — номер листа у правого поля, _runs_of: rtab) — не пункт списка, хоть портал и
+        # метит её «пунктом»: оглавление 3PR42 шло списком с отступами профиля узким столбцом (19.10)
+        # (и номер листа внутри рамки, не у поля: в конце — число «8», «56/1» далеко справа от текста строки)
+        toc_line = any(r.get("rtab") for r in runs) or len(group) >= 2 \
+            and re.fullmatch(r"\d{1,4}(?:/\d+)?", group[-1]["text"].strip()) \
+            and group[-1]["loc"]["bbox"][0] - group[-2]["loc"]["bbox"][2] > 60
+        if not mark and loc.get("role") == "list" and not toc_line:
             # пункт по метке портала без знака маркера («a) …», «1. …», «ba) …») — пункт без маркера, метка — в тексте
             mark, kind = True, "Label"
         para = {"k": "p", "runs": runs, "geom": geom, "seg": True}    # seg — абзац собран, merge_inline не клеит
@@ -1049,11 +1076,21 @@ def load(src, segs, text=False):
                     # скан: тире — чёрточка слоя (mark[0] — её правый край), текст — начало куска; по профилю текст
                     # пункта стоял на 60 pt правее тире (3PR42: +23 листа), в оригинале — почти вплотную (19.10)
                     cur["geo"] = {"marker": round(mark[0] - 0.5 * (geom.get("size") or 10), 1), "text": round(first[0], 1)}
+                elif mark is True:
+                    # пункт по метке портала без знака (метка — в тексте: «1.3/1. Падение кассеты…» оглавления 3PR42):
+                    # метка — с начала строки, продолжение — с начала второй строки; по профилю пункты стояли на 155 pt
+                    # от поля узким столбцом (19.10)
+                    fr = loc.get("frags") or []
+                    rest = fr[1][0] if len(fr) > 1 and fr[1][0] >= x0 else x0
+                    cur["geo"] = {"marker": round(x0, 1), "text": round(rest, 1)}
                 blocks.append(cur)
             cur["items"].append([para])
             continue
-        if cur is not None and cur["items"] and abs(first[0] - cur["x0"]) < 8 and loc.get("align") != "center":
-            cur["items"][-1].append(para)                   # продолжение пункта (OCR разбил пункт на сегменты)
+        # продолжение пункта (OCR разбил пункт на сегменты); строка оглавления — не продолжение: строки оглавления 3PR42
+        # уходили внутрь «пункта» над ними
+        if cur is not None and cur["items"] and abs(first[0] - cur["x0"]) < 8 and loc.get("align") != "center" \
+                and not toc_line:
+            cur["items"][-1].append(para)
             continue
         cur = None
         indent = round(max(0.0, first[0] - left) / 9) * 9

@@ -1627,3 +1627,22 @@ def test_page_split_does_not_join_next_list_label():
     assert len(got) == 3
     got = D.join_pages([p("a felaktiválódásra hajlamosak", 44), p("szerkezetük pedig olyan", 45)])
     assert len(got) == 1
+
+
+def test_scan_toc_lines_not_list_and_running_title_heading(tmp_path):
+    """Скан: строки оглавления («1.3/1. SZBV kazetta leesése ⇥ 8») по метке портала «пункт» — не список; бегущее
+    название раздела в рамке без метки портала (повтор на следующем листе) — заголовок на первом листе, один раз."""
+    import docx_layout as DL
+    src, segs = ocr_doc(tmp_path)
+    toc = [s for s in segs if s["text"].startswith(("1.4.", "Tengelyelmozdulás", "13"))]
+    for s in toc:
+        s["loc"]["role"] = "list"
+    for s in segs:
+        if s["loc"]["bbox"][1] == 86:
+            s["loc"]["role"] = None
+            s["text"] = s["text"].replace("  ", " ")
+    blocks, info = DL.load(src, segs)
+    text = lambda b: "".join(r.get("t", "") for r in b.get("runs") or [])
+    assert not any(b["k"] == "list" and any("Tengely" in text(x) for it in b["items"] for x in it) for b in blocks)
+    heads = [text(b) for b in blocks if b["k"] == "h"]
+    assert sum("üzemzavarai" in h for h in heads) == 1 and sum("Szekunderköri" in h for h in heads) == 1

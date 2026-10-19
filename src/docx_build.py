@@ -1102,8 +1102,9 @@ class Builder:
             am, at = self._list_ind(level, b["kind"])
             # тире может выступать за поле набора (скан 3SZ19: поле — по началу текста, тире на 4,75 pt левее) — у поля;
             # иначе пункт брал отступы профиля, и текст уезжал на 64 pt (19.10)
-            if (abs(m - am) > 3 or abs(t - at) > 3) and m >= -15 and t > max(m, 0.0):
-                own = (max(m, 0.0), t)
+            # пункт с меткой в тексте («1.3/1. …») бывает и без висячего отступа: t == m
+            if (abs(m - am) > 3 or abs(t - at) > 3) and m >= -15 and t >= max(m, 0.0):
+                own = (max(m, 0.0), max(t, 0.0))
         for item in b["items"]:
             first = True
             for x in item:
