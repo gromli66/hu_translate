@@ -1042,6 +1042,10 @@ def load(src, segs, text=False):
                     import fitz
                     tx = first[0] if mk else x0 + fitz.get_text_length(tm.group(0), fontsize=geom.get("size") or 10)
                     cur["geo"] = {"marker": x0, "text": round(tx, 1)}
+                elif isinstance(mark, tuple):
+                    # скан: тире — чёрточка слоя (mark[0] — её правый край), текст — начало куска; по профилю текст
+                    # пункта стоял на 60 pt правее тире (3PR42: +23 листа), в оригинале — почти вплотную (19.10)
+                    cur["geo"] = {"marker": round(mark[0] - 0.5 * (geom.get("size") or 10), 1), "text": round(first[0], 1)}
                 blocks.append(cur)
             cur["items"].append([para])
             continue
@@ -1053,6 +1057,13 @@ def load(src, segs, text=False):
         if indent >= 9 and loc.get("align") != "center":
             para["indent"] = min(indent, 90)                # отступ по оригиналу — уровнем стиля (сборщик)
         blocks.append(para)
+    # номер раздела из рамки отдельной строкой («1.1.») прямо перед заголовком с тем же номером («1.1. Срабатывание
+    # АЗ…»): название из рамки снято как повтор, номер оставался строкой-сиротой над каждым разделом (3PR42, 19.10)
+    txt = lambda b: "".join(r.get("t", "") for r in b.get("runs") or []).strip()
+    num = re.compile(r"\d+(?:\.\d+)*(?:/\d+)?\.?")
+    blocks = [b for i, b in enumerate(blocks)
+              if not (b["k"] in ("p", "h") and num.fullmatch(txt(b)) and i + 1 < len(blocks)
+                      and blocks[i + 1]["k"] in ("p", "h") and txt(blocks[i + 1]).startswith(txt(b).rstrip(".")))]
     # уровень пункта — ступень его отступа среди отступов всех списков документа (3PR42: «-» у края рамки и «-»
     # под пунктом 2.1.1. — раньше один уровень, вложенность пропадала)
     xs = [b["x0"] for b in blocks if b["k"] == "list"]

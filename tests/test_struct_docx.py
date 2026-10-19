@@ -1592,3 +1592,13 @@ def test_running_section_title_once_with_portal_labels(tmp_path):
     titles = [text(b) for b in blocks if b["k"] in ("h", "p") and ("üzemzavar" in text(b) or "Szekunderk" in text(b)
                                                                     or text(b).startswith("3. Egyéb"))]
     assert len(titles) == 3, titles
+
+
+def test_scan_dash_list_geometry_from_layer(tmp_path):
+    """Скан: тире пункта — чёрточка текстового слоя, текст — начало куска OCR: место маркера и текста по оригиналу
+    (по профилю текст стоял на 60 pt правее тире, 3PR42 +23 листа)."""
+    import docx_layout as DL
+    src, segs = ocr_doc(tmp_path)
+    blocks, info = DL.load(src, segs)
+    geo = next(b["geo"] for b in blocks if b["k"] == "list" and b.get("geo"))
+    assert 95 <= geo["marker"] <= 101 and abs(geo["text"] - 112) < 1
