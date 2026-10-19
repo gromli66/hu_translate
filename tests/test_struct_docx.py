@@ -1602,3 +1602,15 @@ def test_scan_dash_list_geometry_from_layer(tmp_path):
     blocks, info = DL.load(src, segs)
     geo = next(b["geo"] for b in blocks if b["k"] == "list" and b.get("geo"))
     assert 95 <= geo["marker"] <= 101 and abs(geo["text"] - 112) < 1
+
+
+def test_list_marker_hanging_into_margin_keeps_original_place(tmp_path):
+    """Тире пункта левее поля набора (скан: поле — по началу текста, тире на 4,75 pt левее) — пункт у поля с местом
+    текста по оригиналу, а не с отступами профиля (текст уезжал на 64 pt)."""
+    item = p("Ha az RTSZ aut. üzemmódban volt", 1, 300, x0=81.5)
+    blocks = [{"k": "list", "kind": "Dash", "items": [[item]], "geo": {"marker": 57.7, "text": 81.5}}]
+    out = tmp_path / "l.docx"
+    B.Builder(B.Memory([]), lambda img: None, PROFILE).build(blocks, str(out), LAYOUT)
+    par = next(x for x in Document(str(out)).paragraphs if x.text.startswith("Ha az"))
+    assert abs(par.paragraph_format.left_indent.pt - (81.5 - 62.4)) < 0.6
+    assert abs(par.paragraph_format.first_line_indent.pt + (81.5 - 62.4)) < 0.6

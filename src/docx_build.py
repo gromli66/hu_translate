@@ -1100,7 +1100,9 @@ class Builder:
         if geo and tgt is self.doc and getattr(self, "left", None) is not None:
             m, t = geo["marker"] - self.left, geo["text"] - self.left
             am, at = self._list_ind(level, b["kind"])
-            if (abs(m - am) > 3 or abs(t - at) > 3) and m >= -1 and t > m:
+            # тире может выступать за поле набора (скан 3SZ19: поле — по началу текста, тире на 4,75 pt левее) — у поля;
+            # иначе пункт брал отступы профиля, и текст уезжал на 64 pt (19.10)
+            if (abs(m - am) > 3 or abs(t - at) > 3) and m >= -15 and t > max(m, 0.0):
                 own = (max(m, 0.0), t)
         for item in b["items"]:
             first = True
