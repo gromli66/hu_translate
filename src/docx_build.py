@@ -583,6 +583,17 @@ class Builder:
         stepx = (v["text"] - lists[str(known[0])]["text"]) / top if top else 36
         return v["marker"] + stepx * (lv - top), v["text"] + stepx * (lv - top)
 
+    def _lvl_ind(self, lv, kind):
+        """Отступы уровня списка (маркер, текст), pt, — как в нумерации: под метку и зазор после неё."""
+        mark, text = self._list_ind(lv, kind)
+        if kind in ("LowerRoman", "UpperRoman") and lv == 0:
+            text = max(text, mark + 24)                     # «iii.», «iv.» шире висячего отступа — текст уезжал (ÜFK)
+        elif kind not in NUMFMT and kind != "Label":
+            # маркер шире висячего отступа (у оригинала «- » — дефис и пробел, 7 pt): тире «–» вставало вплотную к
+            # тексту (НГТУ, 19.10) — место под знак и зазор
+            text = max(text, mark + 9)
+        return mark, text
+
     def _list_num(self, kind, start=1, level=0, suffix=".", own=False):
         """Новый экземпляр списка вида kind: нумерация — с номера первого пункта оригинала (start, на уровне level;
         список после рисунка продолжает «7.»), вид метки — как в оригинале («a.» / «a.)»), маркеры уровней • o ▪."""
@@ -609,9 +620,7 @@ class Builder:
                                             BULLETS["Disc"])
                     l.append(_el("w:numFmt", w__val="bullet")); l.append(_el("w:lvlText", w__val=ch))
                 l.append(_el("w:lvlJc", w__val="left"))
-                mark, text = self._list_ind(lv, kind)
-                if kind in ("LowerRoman", "UpperRoman") and lv == 0:
-                    text = max(text, mark + 24)             # «iii.», «iv.» шире висячего отступа — текст уезжал (ÜFK)
+                mark, text = self._lvl_ind(lv, kind)
                 ppr = _el("w:pPr"); ppr.append(_el("w:ind", w__left=round(text * 20), w__hanging=round((text - mark) * 20)))
                 l.append(ppr)
                 if fontn:
@@ -1098,11 +1107,13 @@ class Builder:
                     numpr = _el("w:numPr"); numpr.append(_el("w:ilvl", w__val=min(level, 3)))
                     numpr.append(_el("w:numId", w__val=nid))
                     par._p.get_or_add_pPr().insert(0, numpr)
-                    if own:
-                        par.paragraph_format.left_indent = Pt(own[1])
-                        par.paragraph_format.first_line_indent = Pt(own[0] - own[1])
+                    # отступы — и самому абзацу: стиль пункта (отступ первой строки 0 при красной строке тела,
+                    # build) перебивает висячий отступ нумерации — маркер вставал у поля вплотную к тексту (НГТУ, 19.10)
+                    m, t = own or self._lvl_ind(min(level, 3), b["kind"])
+                    par.paragraph_format.left_indent = Pt(t)
+                    par.paragraph_format.first_line_indent = Pt(m - t)
                 else:
-                    par.paragraph_format.left_indent = Pt(own[1] if own else self._list_ind(level, b["kind"])[1])
+                    par.paragraph_format.left_indent = Pt(own[1] if own else self._lvl_ind(min(level, 3), b["kind"])[1])
                 self._put_runs(par, runs)
                 for n in x.get("notes") or []:
                     self._footnote(par, n)
