@@ -2210,7 +2210,11 @@ def layout(path, blocks, content=None):
             else:
                 yield b
     body = [b["geom"] for b in flat(blocks) if b.get("geom") and b["geom"]["page"] and b["geom"]["page"] > 2
-            and b["k"] in ("p", "h")]
+            and b["k"] in ("p", "h") and not (content and b.get("figure"))]
+    if content:
+        # текстовый слой: у бланка текст — в таблицах, поля и верх тела — и по ним; снимок скана (во весь лист, от края)
+        # — не мера поля: у 32RDGT левое поле выходило 0, верх тела — над штампом, и шапки не было (20.10)
+        body += [b["geom"] for b in blocks if b["k"] == "table" and ((b.get("geom") or {}).get("page") or 0) > 2]
     # левое поле — самый левый край, повторяющийся у трёх и больше блоков (заголовки у поля), а не медиана: у OAH тело
     # сдвинуто от заголовков на 37 pt, поле выходило внутри сдвига, и центр шапки и логотипа не узнавался (16.10);
     # сдвиг тела — отступом абзаца (docx_build.paragraph)
@@ -2228,10 +2232,17 @@ def layout(path, blocks, content=None):
     page, page_tok, page_off, tok_boxes = _typical_page(pdf, body_top, H, cbot=cbot)
     arts = [c for c in page.chars if c.get("mcid") is None and _upright(c)]
     head_chars = [c for c in arts if c["top"] < body_top]
+    # картинка больше четверти листа — сам лист (скан посреди текстового слоя) или фон, не логотип колонтитула: скан
+    # 32RDGT шёл в шапку вводной части сырой картинкой без поворота листа — полосами (20.10)
+    area = lambda i: (float(i["x1"]) - float(i["x0"])) * (float(i["bottom"]) - float(i["top"]))
+    logo = lambda i: area(i) < 0.25 * W * H
+    # и на листе-скане (картинки — полосами, каждая меньше четверти) картинок колонтитула нет: полоса скана 32RDGT
+    # шла в шапку вводной части
+    scanned = lambda pg: sum(area(i) for i in pg.images) >= 0.5 * W * H
     ftop = _foot_top(arts, _drawn(page.rects + page.lines), H, cbot(page))
     foot_chars = [c for c in arts if c["top"] >= ftop]
     head_imgs = [{"xref": i["stream"].objid, "x0": float(i["x0"]), "x1": float(i["x1"]), "top": float(i["top"]),
-                  "bottom": float(i["bottom"])} for i in page.images if i.get("mcid") is None and float(i["top"]) < body_top]
+                  "bottom": float(i["bottom"])} for i in page.images if i.get("mcid") is None and float(i["top"]) < body_top and logo(i)]
     head_imgs += _vector_logos(page, body_top, head_chars)
     hw = pdfplumber.utils.extract_words(head_chars, x_tolerance=2.5, y_tolerance=2) if head_chars else []
     lines = {}
@@ -2252,7 +2263,7 @@ def layout(path, blocks, content=None):
     fz = min(ftop, H * 0.8)
     img_of = lambda i: {"xref": i["stream"].objid, "x0": float(i["x0"]), "x1": float(i["x1"]), "top": float(i["top"]),
                         "bottom": float(i["bottom"])}
-    foot_imgs = [img_of(i) for i in page.images if i.get("mcid") is None and float(i["top"]) >= fz]
+    foot_imgs = [img_of(i) for i in page.images if i.get("mcid") is None and float(i["top"]) >= fz and logo(i)]
     foot = _rule_grid(mark(foot_chars), frects)
     foot_paras = None if foot else _zone_paras(mark(foot_chars), frects, left, W - right, foot_imgs, W)
     foot = foot or _zone_grid(mark(foot_chars), frects)
@@ -2307,8 +2318,10 @@ def layout(path, blocks, content=None):
         art = [c for c in pg.chars if c.get("mcid") is None and _upright(c)]
         ft = _foot_top(art, _drawn(pg.rects + pg.lines), H, cbot(pg))
         hc, fc = [c for c in art if c["top"] < body_top], [c for c in art if c["top"] >= ft]
-        him = [img_of(i) for i in pg.images if i.get("mcid") is None and float(i["top"]) < body_top]             + _vector_logos(pg, body_top, hc)
-        fim = [img_of(i) for i in pg.images if i.get("mcid") is None and float(i["top"]) >= min(ft, H * 0.8)]
+        him = [img_of(i) for i in pg.images if i.get("mcid") is None and float(i["top"]) < body_top and logo(i)
+               and not scanned(pg)]             + _vector_logos(pg, body_top, hc)
+        fim = [img_of(i) for i in pg.images if i.get("mcid") is None and float(i["top"]) >= min(ft, H * 0.8)
+               and logo(i) and not scanned(pg)]
         return (sig(hc), sig(fc), len(him), len(fim)), hc, fc, ft, him, fim
     body_key = (sig(head_chars), body_sig, len(head_imgs), len(foot_imgs))
 
@@ -2508,7 +2521,9 @@ def _typical_page(pdf, body_top, H, sample=15, cbot=lambda pg: None):
         art = arts_of[i] = [c for c in pg.chars if c.get("mcid") is None]
         ftop = _foot_top(art, _drawn(pg.rects + pg.lines), H, cbot(pg))
         arts = [c for c in art if c["top"] < body_top or c["top"] >= ftop]
-        sig[i] = re.sub(r"\d+", "#", "".join(c["text"] for c in arts))
+        # без пробелов: пробел в конце строки тела выходит за её рамку (PDF без разметки) и у каждого листа свой —
+        # листы с одинаковым штампом не находились, номер листа застывал числом (32RDGT, 20.10)
+        sig[i] = re.sub(r"\d+", "#", "".join(c["text"] for c in arts if c["text"].strip()))
         words[i] = pdfplumber.utils.extract_words(arts, x_tolerance=2.5, y_tolerance=2) if arts else []
     common = Counter(s for s in sig.values() if s.strip()).most_common(1)
     same = [i for i in idx if common and sig[i] == common[0][0]] or idx
@@ -2540,6 +2555,9 @@ def _foot_top(arts, rects, H, cbot=None):
     рамки над ней. Порог «ниже 80 % листа» захватывал низ таблицы и пометку «Folytatás a következő oldalon» — их
     линии резали подвал на лишние ячейки (ÜFK I, 16.10). cbot — низ текста тела листа (PDF без разметки): подвал —
     всё ниже него, без счёта разрывов («CONTROLLED DISCLOSURE» Eskom в 20 pt над прочими строками терялся)."""
+    # пробел — не краска: пробел в конце строки тела выходит за её рамку и считался подвалом (32RDGT: верх подвала
+    # на 509 pt, нижнее поле 344 pt, 20.10)
+    arts = [c for c in arts if c["text"].strip()]
     if cbot is not None:
         low = [float(c["top"]) for c in arts if float(c["top"]) > max(cbot, H * 0.6)]
         if low:

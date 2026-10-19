@@ -124,3 +124,41 @@ def test_page_numbers_restart_before_leading_table(tmp_path):
     first = next(el for el in body if el.tag in (W + "p", W + "tbl"))
     assert first.tag == W + "p"
     assert Document(str(out)).sections[0]._sectPr.find(W + "pgNumType").get(W + "start") == "2"
+
+
+def test_scan_page_inside_text_layer_goes_as_translated_snapshot(tmp_path):
+    """Скан посреди текстового слоя (лист регистрации 32RDGT) — снимком листа с переведённого PDF (img["clip"]),
+    а не россыпью сегментов; его полосы-картинки — не логотип колонтитула."""
+    import numpy as np
+    src = tmp_path / "mixed.pdf"
+    doc = fitz.open()
+    for pno in range(3):
+        pg = doc.new_page(width=595, height=842)
+        if pno == 1:                                    # скан: две полосы-картинки на весь лист
+            a = np.full((421, 595, 3), 255, np.uint8)
+            a[100:102, 50:545] = 0
+            for k, y in enumerate((0, 421)):
+                pix = fitz.Pixmap(fitz.csRGB, 595, 421, a.tobytes(), False)
+                pg.insert_image(fitz.Rect(0, y, 595, y + 421), pixmap=pix)
+        else:
+            pg.insert_text((72, 100 + 20 * pno), f"Szöveg a {pno + 1}. lapon, rendes bekezdés.", fontsize=10)
+    doc.save(str(src))
+    segs = []
+    for pno, pg in enumerate(fitz.open(str(src))):
+        lines = [(ln["bbox"], "".join(s["text"] for s in ln["spans"])) for bl in pg.get_text("dict")["blocks"]
+                 for ln in bl.get("lines", [])]
+        if pno == 1:                                    # распознанные строки скана
+            lines = [((60, 80, 300, 92), "NYILVÁNTARTÓ LAP"), ((60, 120, 400, 132), "1./ A tesztelési utasítás")]
+        for bb, t in lines:
+            bb = [round(v, 1) for v in bb]
+            segs.append({"id": len(segs), "page": pno, "text": t, "src": t,
+                         "loc": {"bbox": bb, "frags": [bb], "size": 10.0, "bold": False, "family": "Times",
+                                 "align": "left", **({"ocr": True} if pno == 1 else {})}})
+    blocks, info = DL.load(str(src), segs, text=True)
+    snaps = [b for b in blocks if b["k"] == "p" and b["runs"] and "img" in b["runs"][0]]
+    assert len(snaps) == 1 and snaps[0]["runs"][0]["img"]["page_number"] == 2 and snaps[0]["runs"][0]["img"]["clip"]
+    text = " ".join("".join(r.get("t", "") for r in b.get("runs") or []) for b in blocks)
+    assert "NYILVÁNTARTÓ" not in text and "1. lapon" in text
+    L = D.layout(str(src), blocks, content=info.get("content_boxes"))
+    assert not any((z.get("head_grid") or {}).get("paras") and any("img" in r for r in z["head_grid"]["paras"]["rows"])
+                   for z in (L, L.get("front") or {}, L.get("first") or {}))

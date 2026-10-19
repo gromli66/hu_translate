@@ -932,6 +932,30 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
                      "bottom": r.y1}) for r in _figures(page, masks.get(pno, segs) if mask else segs, draw[pno],
                                                          scans[pno])]
         hs, vs = per[pno]
+        if mask is not None and scans[pno] and segs:
+            # скан посреди текстового слоя (лист регистрации, титул с подписями 32RDGT) — листом с переведённого PDF,
+            # как отдельный скан формы (16.10): по сегментам сетка, подписи и штампы бланка рассыпались, 8 листов → 11
+            # (20.10). Колонтитулы листа (повтор шапки других листов) посреди тела — не в снимке: их печатает шапка
+            # DOCX; сканы в начале (за титулом — одни сканы) — вводная часть своим разделом без шапки, снимок целиком
+            R = fitz.Rect()
+            for q in [fitz.Rect(s["loc"]["bbox"]) for s in segs] + [f for f, _ in figs] + \
+                    [fitz.Rect(a, y, b, y) for y, a, b in hs] + [fitz.Rect(x, a, x, b) for x, a, b in vs]:
+                R |= q
+            lead = all(scans[q] for q in range(1, pno))
+            off = [s for s in masks.get(pno, []) if s not in segs] if not lead else []
+            Hp = page.rect.height
+            if any(_zone(s, Hp) == "head" for s in off):
+                R.y0 = max(R.y0, max(s["loc"]["bbox"][3] for s in off if _zone(s, Hp) == "head") + 2)
+            if any(_zone(s, Hp) == "foot" for s in off):
+                R.y1 = min(R.y1, min(s["loc"]["bbox"][1] for s in off if _zone(s, Hp) == "foot") - 2)
+            R = (R + (-4, -4, 4, 4)) & page.rect
+            img = {"clip": [R.x0, R.y0, R.x1, R.y1], "page_number": pno + 1, "x0": R.x0, "x1": R.x1, "top": R.y0,
+                   "bottom": R.y1}
+            out[pno] = [{"rect": R, "ids": {s["id"] for s in segs},
+                         "block": {"k": "p", "runs": [{"img": img}], "figure": True, "seg": True,
+                                   "geom": {"page": pno + 1, "top": R.y0, "bottom": R.y1, "x0": R.x0, "x1": R.x1,
+                                            "first_x0": R.x0, "size": size}}}]
+            continue
         if mask is not None:
             infos = page.get_image_info(xrefs=True)          # один раз на лист
             figs += _raster(page, segs, figs, reused, infos)
