@@ -1527,3 +1527,17 @@ def test_underline_from_thin_rule_under_glyphs():
     D._underline([a, b, c], [{"top": 297.8, "bottom": 298.4, "height": 0.6, "width": 234.8, "x0": 120.6, "x1": 355.4},
                              {"top": 220.0, "bottom": 220.5, "height": 0.5, "width": 300, "x0": 57, "x1": 357}])
     assert a.get("u") and not b.get("u") and not c.get("u")
+
+
+def test_flush_paragraph_without_red_line(tmp_path):
+    """Документ с красной строкой: абзац, первая строка которого у поля, — стилем без отступа первой строки
+    («Пояснительная записка должна содержать…» НГТУ); абзац с красной строкой — обычным стилем тела."""
+    blocks = [{"k": "h", "level": 1, "runs": [{"t": "1 Bevezetés", "font": "Tahoma", "size": 14, "b": True}],
+               "geom": {"page": 2, "top": 90}},
+              p("A dokumentum tartalmazza:", 2, 120, x0=62.4), p("Az UTS alkalmazás leírása.", 2, 140, x0=80.0)]
+    mem = B.Memory([("Bevezetés", "Введение"), ("A dokumentum tartalmazza:", "Документ содержит:"),
+                    ("Az UTS alkalmazás leírása.", "Описание приложения UTS.")])
+    out = tmp_path / "f.docx"
+    B.Builder(mem, lambda img: None, dict(PROFILE, first_line=17.0)).build(blocks, str(out), LAYOUT)
+    st = {x.text: x.style.name for x in Document(str(out)).paragraphs}
+    assert st["Документ содержит:"] == "Body Flush UTS" and st["Описание приложения UTS."] == "Normal"
