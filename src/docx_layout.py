@@ -720,8 +720,11 @@ def _grids(items, bold, font, size, mono):
 
     def row_ok(it):
         g = it[2]
+        # строка — пункт списка по метке портала («– RN31S202 NYIT, RN35S201 ZÁR,» 3SZ19: тире в слое, куски через
+        # промежуток кода) — не строка сетки: три пункта шли мелкой таблицей без рамок (19.10)
         return it[1] == 0 and len(g) >= 2 and len({x["page"] for x in g}) == 1 \
-            and all(len(x["text"]) <= 60 for x in g) and not re.fullmatch(r"\d{1,4}", g[-1]["text"].strip())
+            and all(len(x["text"]) <= 60 for x in g) and not re.fullmatch(r"\d{1,4}", g[-1]["text"].strip()) \
+            and g[0]["loc"].get("role") != "list"
     out, i = [], 0
     while i < len(items):
         j = i

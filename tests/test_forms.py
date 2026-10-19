@@ -190,3 +190,12 @@ def test_comparison_sign_survives_neighbour_line_in_portal_chunk():
           word("Olajhűtők", 157, 360, line=(2, 1, 1)), word("utáni", 210, 360, line=(2, 1, 1))]
     out, _ = S.ocr_words(ws, "megnőtt: t < 45°C.\n- Olajhűtők utáni")
     assert [w["t"] for w in out][:4] == ["megnőtt:", "t", "<", "45°C."]
+
+
+def test_degree_unit_not_matched_to_misread_sign():
+    """«t < 98 °C.»: Tesseract — «t c 98 9C.», портал — «t < 98 °C.»; без знака градуса в сравнении «°C.» становилось «c»
+    и совпадало с «c» вместо «<» — выходило «t < 98 c 98 9C.» (3SZ19, 19.10)."""
+    ws = [word("emelkedik,", 300, 141, w=50), word("t", 360, 141, w=4), word("c", 370, 141, w=4, c=78),
+          word("98", 380, 141, w=10), word("9C.", 395, 141, w=14, c=51)]
+    out, _ = S.ocr_words(ws, "emelkedik, t < 98 °C.")
+    assert [w["t"] for w in out] == ["emelkedik,", "t", "<", "98", "°C."]
