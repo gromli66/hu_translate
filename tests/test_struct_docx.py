@@ -1575,3 +1575,20 @@ def test_running_section_title_not_in_header_grid(tmp_path):
     L = DL.layout(src, blocks, segs, info)
     cells = [c for r in L["head_grid"]["rows"] for c in r["cells"]]
     assert "Azonosító: 3SZ19" in cells and not any("üzemzavarai" in c or "Szekunderköri" in c for c in cells)
+
+
+def test_running_section_title_once_with_portal_labels(tmp_path):
+    """Название раздела в рамке с меткой портала на всех листах и с разночтениями OCR — в тексте один раз, у начала
+    раздела (3SZ19: заголовок второго раздела пропадал в начале и оставался посреди)."""
+    import docx_layout as DL
+    src, segs = ocr_doc(tmp_path)
+    for s in segs:
+        if s["loc"]["bbox"][1] == 86:
+            s["loc"]["role"] = "header"
+            if s["page"] in (2, 4):
+                s["text"] = s["text"].replace("üzemzavarai", "üzemzavarai.").replace("Szekunderköri", "Szekunderkori")
+    blocks, info = DL.load(src, segs)
+    text = lambda b: "".join(r.get("t", "") for r in b.get("runs") or [])
+    titles = [text(b) for b in blocks if b["k"] in ("h", "p") and ("üzemzavar" in text(b) or "Szekunderk" in text(b)
+                                                                    or text(b).startswith("3. Egyéb"))]
+    assert len(titles) == 3, titles

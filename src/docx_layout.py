@@ -81,6 +81,24 @@ def _portal_running(s):
     return bool(s["loc"].get("ocr")) and s["loc"].get("role") == "header"
 
 
+def _stable_running(s, pool, keys, H):
+    """Колонтитул — строка, что стоит так же почти на всех листах: повтор по тексту (_is_running) или строка с меткой
+    портала, если на 80 % листов с колонтитулами (pool — повторы и метки портала) на той же высоте похожий текст (OCR
+    читает шапку по-разному). Название раздела в рамке (3SZ19: «1. A turbina üzemzavarai» / «2. …») портал метит
+    колонтитулом, но оно меняется от раздела к разделу — это текст: в шапке всех листов стояло название второго раздела
+    (шапка ломалась на три столбца), а в теле заголовок раздела пропадал в начале раздела и оставался посреди (19.10)."""
+    if _is_running(s, keys, H):
+        return True
+    from difflib import SequenceMatcher
+    z, y, k = _zone(s, H), s["loc"]["bbox"][1], _sig(s["text"])
+    if not z:
+        return False
+    have = {t["page"] for t in pool if _zone(t, H) == z}
+    hit = {t["page"] for t in pool if _zone(t, H) == z and abs(t["loc"]["bbox"][1] - y) < 4
+           and SequenceMatcher(None, k, _sig(t["text"])).ratio() >= 0.8}
+    return len(hit) >= 0.8 * len(have)
+
+
 def _layer(doc):
     """Маркеры пунктов «-»/«–» текстового слоя (текст нарисован контурами, маркеры — шрифтом): {лист: {"dash":
     [(x1, y_середина, высота)]}}."""
@@ -856,7 +874,26 @@ def load(src, segs, text=False):
     W, H = doc[0].rect.width, doc[0].rect.height
     body = [s for s in segs if "shot" not in s["loc"] and s["loc"].get("bbox") and s["text"].strip()]
     run_keys = _running(body, H, len(doc))
-    content = [s for s in body if not _is_running(s, run_keys, H) and not _portal_running(s)]
+    pool = [s for s in body if _is_running(s, run_keys, H) or _portal_running(s)]
+    content = [s for s in body if not _is_running(s, run_keys, H)
+               and not (_portal_running(s) and _stable_running(s, pool, run_keys, H))]
+    # меняющееся название раздела в рамке (метка портала, но не на всех листах одинаково) — один раз, первым появлением:
+    # OCR читает его на каждом листе чуть по-разному, и точное сравнение с предыдущим листом ниже оставляло копии
+    # посреди раздела (3SZ19, 19.10); похожие строки верхней зоны — одна группа
+    from difflib import SequenceMatcher
+    titles = {_sig(s["text"]) for s in pool if _portal_running(s) and not _stable_running(s, pool, run_keys, H)}
+    titles = [k for k in titles if len(k) >= 6]
+    like = lambda k, q: SequenceMatcher(None, k, q).ratio() >= 0.8
+    seen, drop = [], set()
+    for s in sorted(content, key=lambda s: (s["page"], s["loc"]["bbox"][1])):
+        k = _sig(s["text"])
+        if _zone(s, H) != "head" or not any(like(k, t) for t in titles):
+            continue
+        if any(like(k, q) for q in seen):
+            drop.add(id(s))
+        else:
+            seen.append(k)
+    content = [s for s in content if id(s) not in drop]
     # бегущее название раздела в рамке сверху листа (3PR42: «1.15. Átfolyás …» на каждом листе раздела) — то же, что
     # вверху предыдущего листа, — не текст (на всех листах сразу его не найти: у каждого раздела своё)
     # название — от 6 знаков с буквами: короткое значение («3», «N/A» титульных сведений Eskom) повторяется само по себе
@@ -1192,21 +1229,9 @@ def layout(src, blocks, segs, info):
                 num_start = {"page": first, "value": vals.most_common(1)[0][0] + first - 1}
                 break
     bold = info.get("style")
-    from difflib import SequenceMatcher
-
-    def stable(s):
-        """В сетку колонтитула — строка, что стоит так же почти на всех листах: повтор по тексту или по метке портала,
-        если на 80 % листов с колонтитулом на той же высоте похожий текст (OCR читает шапку по-разному). Название раздела
-        в рамке (3SZ19: «1. A turbina üzemzavarai» / «2. …») портал метит колонтитулом, но оно меняется от раздела к
-        разделу: в шапке всех листов стояло название второго раздела, и шапка ломалась на три столбца (19.10)."""
-        if _is_running(s, run_keys, H):
-            return True
-        z, y, k = _zone(s, H), s["loc"]["bbox"][1], _sig(s["text"])
-        have = {t["page"] for t in runs if _zone(t, H) == z}
-        hit = {t["page"] for t in runs if _zone(t, H) == z and abs(t["loc"]["bbox"][1] - y) < 4
-               and SequenceMatcher(None, k, _sig(t["text"])).ratio() >= 0.8}
-        return len(hit) >= 0.8 * len(have)
-    zone_of = lambda z: [s for s in by_page.get(rep, []) if _zone(s, H) == z and stable(s)] if rep is not None else []
+    # в сетку колонтитула — только строки, одинаковые почти на всех листах (_stable_running)
+    zone_of = lambda z: [s for s in by_page.get(rep, []) if _zone(s, H) == z and _stable_running(s, runs, run_keys, H)] \
+        if rep is not None else []
     headz = zone_of("head")
     head = _grid(headz, bold) if headz else None
     footz = zone_of("foot")
