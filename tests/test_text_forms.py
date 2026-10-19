@@ -223,3 +223,18 @@ def test_narrow_columns_without_room_shrink_by_style(tmp_path):
     names = {p.style.name for c in Document(str(out)).tables[0].rows[1].cells for p in c.paragraphs}
     assert any(n.endswith("pt") for n in names)
     assert not Document(str(out)).tables[0]._tbl.xpath(".//w:r/w:rPr/w:sz")
+
+
+def test_short_values_against_labels_are_not_one_paragraph():
+    """Столбик коротких значений против подписей слева («BSZG állásjelzések … rendben» ×4, 31RDGT) — по строке;
+    длинные строки второй колонки сплошного текста — как прежде, абзацем."""
+    import layout as LY
+    fr = lambda x0, y0, x1, t: {"bbox": (x0, y0, x1, y0 + 12), "t": t, "size": 10, "bold": False}
+    labels = ["BSZG állásjelzések", "BSZG online eseménylista", "BV állásjelzések", "Helyszín"]
+    frags = [fr(156, 288 + 13 * k, 280, t) for k, t in enumerate(labels)] + \
+        [fr(375, 288 + 13 * k, 414, "rendben") for k in range(4)]
+    pars = LY.group(frags, [], [])
+    assert sum(p["text"] == "rendben" for p in pars) == 4
+    prose = [fr(60, 100 + 13 * k, 290, "bal hasáb szövege, hosszú sor sok szóval itt") for k in range(3)] + \
+        [fr(310, 100 + 13 * k, 540, "jobb hasáb folyó szövege, hosszú sor sok szóval") for k in range(3)]
+    assert len(LY.group(prose, [], [])) == 2
