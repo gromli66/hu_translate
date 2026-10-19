@@ -1192,13 +1192,28 @@ def layout(src, blocks, segs, info):
                 num_start = {"page": first, "value": vals.most_common(1)[0][0] + first - 1}
                 break
     bold = info.get("style")
-    head = _grid([s for s in by_page.get(rep, []) if _zone(s, H) == "head"], bold) if rep is not None and \
-        any(_zone(s, H) == "head" for s in by_page.get(rep, [])) else None
-    footz = [s for s in by_page.get(rep, []) if _zone(s, H) == "foot"] if rep is not None else []
+    from difflib import SequenceMatcher
+
+    def stable(s):
+        """В сетку колонтитула — строка, что стоит так же почти на всех листах: повтор по тексту или по метке портала,
+        если на 80 % листов с колонтитулом на той же высоте похожий текст (OCR читает шапку по-разному). Название раздела
+        в рамке (3SZ19: «1. A turbina üzemzavarai» / «2. …») портал метит колонтитулом, но оно меняется от раздела к
+        разделу: в шапке всех листов стояло название второго раздела, и шапка ломалась на три столбца (19.10)."""
+        if _is_running(s, run_keys, H):
+            return True
+        z, y, k = _zone(s, H), s["loc"]["bbox"][1], _sig(s["text"])
+        have = {t["page"] for t in runs if _zone(t, H) == z}
+        hit = {t["page"] for t in runs if _zone(t, H) == z and abs(t["loc"]["bbox"][1] - y) < 4
+               and SequenceMatcher(None, k, _sig(t["text"])).ratio() >= 0.8}
+        return len(hit) >= 0.8 * len(have)
+    zone_of = lambda z: [s for s in by_page.get(rep, []) if _zone(s, H) == z and stable(s)] if rep is not None else []
+    headz = zone_of("head")
+    head = _grid(headz, bold) if headz else None
+    footz = zone_of("foot")
     foot = _grid(footz, bold) if footz else {"rows": [], "widths": [], "aligns": [], "inner": False, "box": False}
     if head:                                # шапка — шрифтом документа (стиль шапки по умолчанию — Tahoma, 3SZ19 — Courier)
         head["font"], head["size"] = info.get("font"), info.get("size")
-    head_bottom = max((s["loc"]["bbox"][3] for s in by_page.get(rep, []) if _zone(s, H) == "head"), default=36)
+    head_bottom = max((s["loc"]["bbox"][3] for s in headz), default=36)
     foot_top = min((s["loc"]["bbox"][1] for s in footz), default=H - 36)
     return {"W": W, "H": H, "left": left, "right": max(right, 20), "top": max(top - 4, head_bottom + 6),
             "bottom": max(H - bottom - 4, H - foot_top + 6), "header": 24, "footer": 18,

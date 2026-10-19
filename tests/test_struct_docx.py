@@ -1561,3 +1561,17 @@ def test_hanging_tab_and_stretch_after_it():
     runs = D._runs([{"ch": c} for c in chars])
     t = D.text_of(runs)
     assert t.startswith("MSZ EN 571-1:20\tRoncsolás vizsgálatok.") and t.count("\t") == 1
+
+
+def test_running_section_title_not_in_header_grid(tmp_path):
+    """Название раздела в рамке (3SZ19) портал метит колонтитулом, но оно меняется от раздела к разделу — не в сетку
+    шапки: в шапке всех листов стояло название другого раздела, шапка ломалась на три столбца."""
+    import docx_layout as DL
+    src, segs = ocr_doc(tmp_path)
+    for s in segs:
+        if s["text"][:2] in ("1.", "2.", "3.") and s["loc"]["bbox"][1] == 86:
+            s["loc"]["role"] = "header"
+    blocks, info = DL.load(src, segs)
+    L = DL.layout(src, blocks, segs, info)
+    cells = [c for r in L["head_grid"]["rows"] for c in r["cells"]]
+    assert "Azonosító: 3SZ19" in cells and not any("üzemzavarai" in c or "Szekunderköri" in c for c in cells)
