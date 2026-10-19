@@ -180,3 +180,13 @@ def test_text_span_across_table_rule_is_cut():
     assert [s["text"] for s in out] == ["Индекс ПЗ", "Об"]
     assert out[0]["bbox"][2] <= 343 < (out[1]["bbox"][0] + out[1]["bbox"][2]) / 2
     assert [s["text"] for s in L._cut_spans([span], [], fitz.Identity)] == ["Индекс ПЗОб"]
+
+
+def test_comparison_sign_survives_neighbour_line_in_portal_chunk():
+    """«t < 45°C.»: Tesseract читает «t c 459C.», портал — «t < 45°C.», а в кусок сопоставления попадает «-» пункта
+    со следующей строки чтения — «<» пропадал, мусорное «459C.» оставалось (3SZ19, 19.10)."""
+    ws = [word("megnőtt:", 373, 345, w=41), word("t", 422, 346, w=4), word("c", 433, 346, w=4, c=11, ink=0.3),
+          word("459C.", 444, 345, w=22, c=70),
+          word("Olajhűtők", 157, 360, line=(2, 1, 1)), word("utáni", 210, 360, line=(2, 1, 1))]
+    out, _ = S.ocr_words(ws, "megnőtt: t < 45°C.\n- Olajhűtők utáni")
+    assert [w["t"] for w in out][:4] == ["megnőtt:", "t", "<", "45°C."]

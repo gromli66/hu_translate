@@ -295,13 +295,28 @@ def ocr_words(words, portal_text):
     lost = []
     if ptoks:
         sm = difflib.SequenceMatcher(None, a, b, autojunk=False)
+        # знак сравнения или единицы у портала на месте неуверенного слова Tesseract («<» прочитан как «c») — подтверждён
+        sign = lambda p: not re.search(r"\w", p) and re.search(r"[<>≤≥=±÷%°Δ×→]", p)
         for op, i1, i2, j1, j2 in sm.get_opcodes():
+            # в куске — хвост соседней строки чтения портала («-» пункта ниже): «t c 459C.» против «t < 45°C. -» —
+            # длины кусков расходились, «c» доставалось «45°C.», а «<» пропадал (3SZ19, 19.10); слова портала — своей
+            # строки (той, что у слова перед куском), 1:1
+            if op == "replace" and i1 > 0 and wline[i1 - 1] is not None and i2 - i1 != j2 - j1:
+                js = [j for j in range(j1, j2) if pline[j] == wline[i1 - 1]]
+                if len(js) == i2 - i1 and len({w["line"] for w in ws[i1:i2]}) == 1:
+                    for k, j in zip(range(i1, i2), js):
+                        w, p = ws[k], ptoks[j]
+                        w["t"] = p if w.get("c", 100) < 60 else _choose(w["t"], p)
+                        conf[k] = a[k] == b[j] or _sim(a[k], b[j]) >= 0.5 or bool(sign(p))
+                        wline[k] = pline[j]
+                    lost += [ptoks[j] for j in range(j1, j2) if j not in js]
+                    continue
             if op in ("equal", "replace") and i2 - i1 == j2 - j1:
                 for k in range(i2 - i1):
                     w, p = ws[i1 + k], ptoks[j1 + k]
                     # неуверенно прочитанное слово портал знает лучше («Dánum:» → «Dátum:»)
                     w["t"] = p if w.get("c", 100) < 60 else _choose(w["t"], p)
-                    conf[i1 + k] = op == "equal" or _sim(a[i1 + k], b[j1 + k]) >= 0.5
+                    conf[i1 + k] = op == "equal" or _sim(a[i1 + k], b[j1 + k]) >= 0.5 or bool(sign(p))
                     wline[i1 + k] = pline[j1 + k]
             elif op == "replace" and i2 - i1 <= 3 and j2 - j1 <= 3 and not any(w["hand"] for w in ws[i1:i2]) \
                     and len({w["line"] for w in ws[i1:i2]}) == 1 and len(set(pline[j1:j2])) == 1 \
