@@ -1653,7 +1653,7 @@ def _compose_figures(blocks, doc):
             draws.append((r, len(d["items"])))
         # тонкие линии — только указатели выносок: начинаются на рисунке (проверка в grow), не во весь лист, не таблица
         # (ТЭ357 рис. 37: линия от снимка к рамке с мышкой толщиной 1 pt отбрасывалась как линейка, 19.10)
-        leads = [d["rect"] for d in page.get_drawings()
+        leads = [d["rect"] + (-0.5, -0.5, 0.5, 0.5) for d in page.get_drawings()
                  if (d["rect"].width <= 1.5) != (d["rect"].height <= 1.5) and max(d["rect"].width, d["rect"].height) >= 10
                  and d["rect"].width < 0.6 * W and d["rect"].height < 0.6 * H and not any(d["rect"].intersects(t) for t in tables)]
         if not draws and not any(img_only(blocks[i]) for i in idx):
@@ -1684,8 +1684,9 @@ def _compose_figures(blocks, doc):
                             changed = True
                 for r in leads:                             # указатель, начатый внутри области
                     if not R.contains(r) and (R.contains(r.tl) or R.contains(r.br)):
+                        before = fitz.Rect(R)
                         R |= r
-                        changed = True
+                        changed = changed or R != before        # пустая рамка объединением не меняет — без вечного цикла
                 for j in sats:
                     if j not in got and j not in drop and box(blocks[j]["geom"]).intersects(R + (-near, -near, near, near)):
                         R |= box(blocks[j]["geom"])
