@@ -1301,7 +1301,12 @@ class Builder:
             # с просторными строками (31 pt при строке текста) сжимались вдвое
             ys = fr.get("ys") or []
             if (not size or fr.get("row_lines")) and len(ys) == len(rows) + 1 and ys[ri + 1] - ys[ri] > 6:
-                _trpr_put(t.rows[ri]._tr, _el("w:trHeight", w__val=round((ys[ri + 1] - ys[ri]) * 20), w__hRule="atLeast"))
+                # строка без текста и картинок — ровно по оригиналу: пустой абзац кеглем тела (14 pt, 1,5 интервала)
+                # раздувал графы листа изменений ИН-1065 с 18 до 27 pt, хвост листа уходил на новый (19.10)
+                blank = not size and not any("img" in r for c in row for x in c["blocks"] if x["k"] == "p"
+                                             for r in x["runs"])
+                _trpr_put(t.rows[ri]._tr, _el("w:trHeight", w__val=round((ys[ri + 1] - ys[ri]) * 20),
+                                              w__hRule="exact" if blank else "atLeast"))
             for ci, cell in enumerate(row):
                 dc = t.cell(ri, starts[ci])
                 self._tab_base = min((float(x["geom"]["x0"]) for x in cell["blocks"]
