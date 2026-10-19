@@ -714,7 +714,11 @@ def join_pages(bs):
             # («…az Országos | Atomenergia Hivatal …», OAH 1.1 л. 6–7: половины переводились порознь, фраза
             # повторялась, 19.10)
             full = (ga.get("lines") or 1) >= 2 and ga.get("last_x1") is not None and ga["x1"] - ga["last_x1"] < 4
-            if ta and tb and not re.search(r"[.!?:;]$", ta) and (tb[0].islower() or indent or full and tb[0].isalpha()):
+            # начало — метка пункта («cb) …», «d) …», «2.», «–»): новый пункт, а не продолжение фразы, хоть и со строчной
+            # (OAH N3a л. 44–45: «ca) …», «cb) …», «d) …» сливались в один абзац, 19.10)
+            label = re.match(r"\(?[a-zа-яё]{1,3}\)|\d+(\.\d+)*[.)]\s|[–•\-]\s", tb)
+            if ta and tb and not label and not re.search(r"[.!?:;]$", ta) \
+                    and (tb[0].islower() or indent or full and tb[0].isalpha()):
                 runs = list(a["runs"]) + [dict(r) for r in b["runs"]]
                 k = len(a["runs"])
                 if not runs[k - 1]["t"].endswith((" ", "-", "\u00ad")):

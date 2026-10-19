@@ -1614,3 +1614,16 @@ def test_list_marker_hanging_into_margin_keeps_original_place(tmp_path):
     par = next(x for x in Document(str(out)).paragraphs if x.text.startswith("Ha az"))
     assert abs(par.paragraph_format.left_indent.pt - (81.5 - 62.4)) < 0.6
     assert abs(par.paragraph_format.first_line_indent.pt + (81.5 - 62.4)) < 0.6
+
+
+def test_page_split_does_not_join_next_list_label():
+    """«ca) … maradnak,» внизу листа и «cb) …» вверху следующего — разные пункты (OAH N3a), хоть «cb)» и со строчной;
+    продолжение фразы со строчной — склеивается."""
+    def p(t, page):
+        return {"k": "p", "runs": [{"t": t}], "geom": {"page": page, "top": 700 if page == 44 else 85, "x0": 99,
+                                                        "first_x0": 99, "x1": 524, "last_x1": 300, "lines": 2}}
+    got = D.join_pages([p("ca) a felaktiválódásra hajlamosak, maradnak,", 44), p("cb) a sugárzás hatására,", 45),
+                        p("d) a neutronsugárzásnak kitett", 45)])
+    assert len(got) == 3
+    got = D.join_pages([p("a felaktiválódásra hajlamosak", 44), p("szerkezetük pedig olyan", 45)])
+    assert len(got) == 1
