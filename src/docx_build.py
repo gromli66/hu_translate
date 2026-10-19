@@ -302,7 +302,12 @@ def _col_align(rows, xs, page):
             votes.setdefault((key, ci), []).append(v)
     out = {}
     for k, v in votes.items():
-        best = Counter(v).most_common(1)[0][0]
+        c = Counter(v)
+        best = c.most_common(1)[0][0]
+        # не влево — только явным большинством тела: один заголовок раздела по центру против одной строки влево
+        # центрировал весь столбец (31RDGT, 20.10); у шапки и первой строки голос один — как есть
+        if best != "left" and k[0] == "body" and c[best] <= c["left"]:
+            best = "left"
         if best != "left" or k[0] == "first":
             out[k] = best
     return out

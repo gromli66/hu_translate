@@ -2182,11 +2182,13 @@ def layout(path, blocks, content=None):
     if content:
         for pg in pdf.pages:
             bx = content.get(pg.page_number) or []
+            # знаки в рамках текста тела — содержимое, прочие — колонтитулы, даже с MCID: PDF с неполной разметкой (формы
+            # RDGT — все знаки помечены P) идёт сюда как текстовый слой, и шапка с MCID считалась телом — колонтитула
+            # не было, шапка 1-го листа терялась (20.10)
             for c in pg.chars:
-                if c.get("mcid") is None and any(b[0] - 1 <= float(c["x0"]) and float(c["x1"]) <= b[2] + 1
-                                                 and b[1] - 2 <= float(c["top"]) and float(c["bottom"]) <= b[3] + 2
-                                                 for b in bx):
-                    c["mcid"] = -1
+                inside = any(b[0] - 1 <= float(c["x0"]) and float(c["x1"]) <= b[2] + 1
+                             and b[1] - 2 <= float(c["top"]) and float(c["bottom"]) <= b[3] + 2 for b in bx)
+                c["mcid"] = -1 if inside else None
             cbots[pg.page_number] = max((b[3] for b in bx), default=0.0)
     cbot = (lambda pg: cbots.get(pg.page_number, 0.0)) if content else (lambda pg: None)
     W, H = float(pdf.pages[0].width), float(pdf.pages[0].height)

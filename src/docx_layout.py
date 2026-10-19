@@ -681,11 +681,31 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=()):
             continue
         ci = next(k for k, (a, z, _) in enumerate(grid[r]) if a <= c < z)
         put.setdefault((r, ci), []).append(s)
-    rows = []
+    # строка сетки без внутренних горизонталей, где в первом столбце — несколько меток пунктов («1.1.», «1.2.» … формы
+    # RDGT: номер, условие и графа отметки — каждый против своего), — подстроками по верху меток: всё строкой шло
+    # в одну ячейку, и номера, текст и отметки съезжали друг относительно друга (31RDGT л. 1, 20.10). Над первой
+    # меткой — своя подстрока (легенда, заголовок раздела); линий между подстроками нет
+    label = re.compile(r"\(?(?:\d+(?:\.\d+)*\.?|[a-zA-Z][.)])\)?")
+    bands = []
     for r, cells in enumerate(grid):
+        tops = sorted({round(s["loc"]["bbox"][1], 1) for s in put.get((r, 0), [])
+                       if label.fullmatch(s["text"].strip())})
+        if len(cells) >= 2 and len(tops) >= 2:
+            above = any(s["loc"]["bbox"][3] <= tops[0] for ci in range(len(cells)) for s in put.get((r, ci), []))
+            cuts = [ys[r]] + [t - 2 for t in (tops if above else tops[1:]) if t - 2 > ys[r] + 1] + [ys[r + 1]]
+            for k in range(len(cuts) - 1):
+                bands.append((r, cuts[k], cuts[k + 1], k == 0, k == len(cuts) - 2))
+        else:
+            bands.append((r, ys[r], ys[r + 1], True, True))
+    rows = []
+    for r, lo, hi, first, last in bands:
+        cells = grid[r]
         row = []
         for ci, (a, z, e) in enumerate(cells):
-            ss = sorted(put.get((r, ci), []), key=lambda s: (round(s["loc"]["bbox"][1] / 3), s["loc"]["bbox"][0]))
+            mid = lambda s: (s["loc"]["bbox"][1] + s["loc"]["bbox"][3]) / 2
+            ss = sorted([s for s in put.get((r, ci), []) if lo <= mid(s) < hi or last and mid(s) >= hi],
+                        key=lambda s: (round(s["loc"]["bbox"][1] / 3), s["loc"]["bbox"][0]))
+            e = dict(e, **({} if first else {"top": False}), **({} if last else {"bottom": False}))
             paras, geom = [], None
             for group in _lines(ss):
                 g0 = group[0]["loc"]["bbox"]
@@ -695,10 +715,11 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=()):
                 paras.append({"k": "p", "runs": _runs_of(group, bold, font, size, mono), "geom": gg, "seg": True})
                 geom = gg if geom is None else dict(geom, x0=min(geom["x0"], gg["x0"]), x1=max(geom["x1"], gg["x1"]),
                                                      bottom=gg["bottom"], lines=geom["lines"] + gg["lines"])
-            for img in pics.get((r, ci), []):
+            for img in (pics.get((r, ci), []) if first else []):
                 paras.append({"k": "p", "runs": [{"img": img}], "seg": True})
             row.append({"blocks": paras, "th": False, "geom": geom, "edges": e, "span": z - a})
         rows.append(row)
+    ys = [bands[0][1]] + [b[2] for b in bands] if bands else ys     # линии строк — по подстрокам
     head = [p for c in rows[0] for p in c["blocks"]] if rows else []
     # картинка в ячейке шапки (значок, JPDS текстовым слоем) — не текст: KeyError 't' ронял сборку (18.10)
     if head and len(rows) > 1 and all(r.get("b") for p in head for r in p["runs"] if r.get("t", "").strip()):
@@ -839,7 +860,11 @@ def _regions(doc, content, bold, font, size, mono, mask=None):
         # вертикали (верх таблицы титула Eskom на высоте линии шапки: таблица не находилась); рамку листа отсекают
         # её же повторяющиеся вертикали
         hs = [r for r in per[pno][0] if mask is not None or not running("h", r)]
-        vs = [r for r in per[pno][1] if not running("v", r)]
+        # повторяющиеся вертикали — рамка листа, но три и больше на одном пролёте — столбцы таблицы-бланка, повторённой
+        # на каждом листе (формы RDGT: на листах 2–5 таблица на тех же местах — её вертикали снимались как рамка, и
+        # таблица шла картинкой с переведённого PDF, 20.10)
+        span = Counter((round(r[1] / 6), round(r[2] / 6)) for r in per[pno][1] if running("v", r))
+        vs = [r for r in per[pno][1] if not running("v", r) or span[(round(r[1] / 6), round(r[2] / 6))] >= 3]
         if mask is not None:
             infos = page.get_image_info(xrefs=True)          # один раз на лист
             figs += _raster(page, segs, figs, reused, infos)
