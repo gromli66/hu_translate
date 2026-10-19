@@ -1505,3 +1505,15 @@ def test_padded_labels_become_sub_rows():
     assert [txt(c) for c in t["rows"][1][2:]] == [["A.2.1."], ["A reaktor"], ["A.2.1. 2 óra"]]
     assert not t["rows"][0][3]["edges"]["bottom"] and not t["rows"][1][3]["edges"]["top"]
     assert t["rows"][1][0]["edges"]["bottom"] and not t["rows"][0][0]["edges"]["bottom"]
+
+
+def test_page_split_paragraph_joins_on_full_last_line():
+    """Абзац, разрезанный листом, когда продолжение начато прописной (имя собственное: «…az Országos | Atomenergia
+    Hivatal…», OAH 1.1): последняя строка на листе во всю ширину — склейка; короткая последняя строка — нет."""
+    def p(t, page, x1, last_x1, lines=3):
+        return {"k": "p", "runs": [{"t": t}], "geom": {"page": page, "top": 700 if page == 6 else 85, "x0": 99,
+                                                        "first_x0": 99, "x1": x1, "last_x1": last_x1, "lines": lines}}
+    got = D.join_pages([p("feladatköréről, az Országos", 6, 524, 524), p("Atomenergia Hivatal hatósági", 7, 524, 498)])
+    assert len(got) == 1 and D.text_of(got[0]["runs"]) == "feladatköréről, az Országos Atomenergia Hivatal hatósági"
+    got = D.join_pages([p("A telephely engedély", 6, 524, 300), p("Az engedély hatálya", 7, 524, 498)])
+    assert len(got) == 2

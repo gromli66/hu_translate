@@ -684,7 +684,11 @@ def join_pages(bs):
                 and a["runs"] and b["runs"] and "t" in a["runs"][-1] and "t" in b["runs"][0]:
             ta, tb = text_of(a["runs"]).rstrip(), text_of(b["runs"]).lstrip()
             indent = ga.get("first_x0", 0) - ga.get("x0", 0) > 5 and abs(gb.get("first_x0", 0) - ga.get("x0", 0)) < 3
-            if ta and tb and not re.search(r"[.!?:;]$", ta) and (tb[0].islower() or indent):
+            # последняя строка на листе — во всю ширину (выключка по ширине): фраза продолжается и с прописной
+            # («…az Országos | Atomenergia Hivatal …», OAH 1.1 л. 6–7: половины переводились порознь, фраза
+            # повторялась, 19.10)
+            full = (ga.get("lines") or 1) >= 2 and ga.get("last_x1") is not None and ga["x1"] - ga["last_x1"] < 4
+            if ta and tb and not re.search(r"[.!?:;]$", ta) and (tb[0].islower() or indent or full and tb[0].isalpha()):
                 runs = list(a["runs"]) + [dict(r) for r in b["runs"]]
                 k = len(a["runs"])
                 if not runs[k - 1]["t"].endswith((" ", "-", "\u00ad")):
@@ -1112,9 +1116,11 @@ def load(path):
         first = [c for c in chs if c["page_number"] == chs[0]["page_number"]]
         # левый край строк после первой (висячий отступ: «MSZ EN 1593:2000 ⇥ Roncsolásmentes…», OAH 16.10)
         rest = [c for c in first if c["top"] > chs[0]["top"] + 0.6 * c["size"]]
+        lt = max(c["top"] for c in first)                   # правый край последней строки (join_pages)
         return {"x0": min(c["x0"] for c in chs), "x1": max(c["x1"] for c in chs),
                 "first_x0": chs[0]["x0"], "page": chs[0]["page_number"], "top": chs[0]["top"],
                 "bottom": max(c["bottom"] for c in first), "lines": len({round(c["top"]) for c in first}),
+                "last_x1": max(c["x1"] for c in first if c["top"] >= lt - 0.6 * c["size"]),
                 "rest_x0": min(c["x0"] for c in rest) if rest else None,
                 "rotated": sum(1 for c in chs if not _upright(c)) > len(chs) / 2,
                 "size": Counter(round(c["size"]) for c in chs).most_common(1)[0][0]}

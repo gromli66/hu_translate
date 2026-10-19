@@ -1340,6 +1340,12 @@ class Builder:
                         t.cell(ri - 1, starts[ci]).merge(t.cell(ri, starts[ci]))
                     except InvalidSpanError:
                         pass
+            # шапка (или первая строка) — со следующей строкой: «Контроль | Периодичность» оставалась одна внизу листа,
+            # строки — на следующем (ÜFK I, перевод, л. 86 и 99; 19.10)
+            if (head or ri == 0) and ri + 1 < len(rows):
+                for tc in t.rows[ri]._tr.tc_lst:
+                    for p in tc.iter(W + "p"):
+                        p.get_or_add_pPr().get_or_add_keepNext()
         self._tab_base = None
         self.doc.add_paragraph(style="Table Text")        # Word: после таблицы — абзац
 
