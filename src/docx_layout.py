@@ -916,7 +916,8 @@ def _form_fields(drawings):
 
 def _page_rules(doc, text=False):
     """Линии и рамки листов один раз на документ: (рамки путей, [(горизонтали, вертикали)] без рамки листа, [скан ли
-    лист]). text — текстовый слой (горизонтали, повторённые на листах, не снимаются)."""
+    лист], [отметки и поля бланка], [низ рамки шапки или None]). text — текстовый слой (горизонтали, повторённые на
+    листах, не снимаются)."""
     import fitz
     import numpy as np
     from layout import rules_from_image
@@ -961,7 +962,16 @@ def _page_rules(doc, text=False):
         span = Counter((round(r[1] / 6), round(r[2] / 6)) for r in vs if running("v", r))
         vs = [r for r in vs if not running("v", r) or span[(round(r[1] / 6), round(r[2] / 6))] >= 3]
         lines.append((hs, vs))
-    return draw, lines, scans, marks
+    # низ рамки шапки (рамка шапки и названия раздела 3SZ19, 3PR42) — что начинается ниже него, то тело листа: нижняя
+    # горизонталь верхней пятой части листа той же ширины, что повторяющиеся на листах горизонтали рамки (от половины
+    # листа); сама она может и не повторяться — под названием раздела в две строки рамка ниже (3SZ19: 119 вместо 110)
+    frames = []
+    for pg, (hs, _) in zip(doc, per):
+        band = [r for r in hs if r[0] < 0.2 * pg.rect.height and r[2] - r[1] >= 0.5 * pg.rect.width]
+        run = [r for r in band if running("h", r)]
+        frames.append(max((r[0] for r in band if any(abs(r[1] - q[1]) < 6 and abs(r[2] - q[2]) < 6 for q in run)),
+                          default=None))
+    return draw, lines, scans, marks, frames
 
 
 def _head_rows(doc, rules, body, keys, H):
@@ -1005,7 +1015,7 @@ def _head_rows(doc, rules, body, keys, H):
 def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
     """Таблицы и рисунки листов: {лист: [{"rect", "block", "ids"}]} — сегменты ids идут не абзацами, а в них."""
     import fitz
-    draw, per, scans, marks = rules or _page_rules(doc, mask is not None)
+    draw, per, scans, marks = (rules or _page_rules(doc, mask is not None))[:4]
     # картинки на нескольких листах (логотип шапки) — только текстовому слою; get_images не раскодирует картинки
     reused = Counter(x for page in doc for x in {im[0] for im in page.get_images()}) if mask is not None else Counter()
     by_page, masks = {}, {}
@@ -1132,7 +1142,12 @@ def load(src, segs, text=False):
     # вверху предыдущего листа, — не текст (на всех листах сразу его не найти: у каждого раздела своё)
     # название — от 6 знаков с буквами: короткое значение («3», «N/A» титульных сведений Eskom) повторяется само по себе
     # и пропадало (17.10)
-    titled = lambda s: s["id"] not in heads and len(re.sub(r"\W", "", s["text"])) >= 6 \
+    # и не строка, что начинается ниже рамки шапки листа: это тело — «1. Ismérvek:» 3SZ19 стоит под рамкой на одном
+    # месте почти на каждом листе (раздел — с нового листа) и снималась как повтор с прошлого листа на 39 листах из 68
+    # (20.10); лист без рамки — как прежде
+    frames = rules[4]
+    under = lambda s: frames[s["page"]] is not None and s["loc"]["bbox"][1] >= frames[s["page"]] - 1
+    titled = lambda s: s["id"] not in heads and not under(s) and len(re.sub(r"\W", "", s["text"])) >= 6 \
         and re.search(r"[^\W\d_]{3}", s["text"])
     # пробелы — без счёта: OCR читает название то с двойным пробелом после номера, то с одним («1.1.  Turbina …»
     # / «1.1. Turbina …», 3SZ19), и повтор с прошлого листа оставался заголовком посреди раздела (19.10)
@@ -1240,7 +1255,9 @@ def load(src, segs, text=False):
             # название раздела в рамке: заголовок (3SZ19 «1.8. Turbina csapágyak…» шёл пунктом списка над разделом)
             level = min(len(m.group(1).split(".")) if m else 1, 5)
             norm = re.sub(r"\s+", " ", text)
-            if last_head.get(level) == norm:
+            # (заголовок под рамкой шапки — тело: «Korlátozás:» 3PR42 в двух разделах подряд, «2. A személyzet
+            # tevékenysége:» 3SZ19 — пропадали, 20.10)
+            if last_head.get(level) == norm and not under(s):
                 continue        # бегущее название раздела в начале каждого листа (3SZ19: 41 и 42 раза) — не новый раздел
             last_head[level] = norm
             for lv in range(level + 1, 6):

@@ -1648,6 +1648,48 @@ def test_scan_toc_lines_not_list_and_running_title_heading(tmp_path):
     assert sum("üzemzavarai" in h for h in heads) == 1 and sum("Szekunderköri" in h for h in heads) == 1
 
 
+def test_line_under_header_frame_is_body_not_running_title(tmp_path):
+    """Скан с рамкой шапки (3SZ19: линии 35/68/82/110, название подраздела в рамке): строка под рамкой, что стоит на
+    том же месте и на прошлом листе («1. Ismérvek:» — раздел с нового листа), — тело, а не бегущее название: снималась
+    на 39 листах из 68; и строка под рамкой, повторённая ниже на том же листе («Turbinát kiütni.» в двух ветках), —
+    тоже; заголовок под рамкой с тем же текстом, что прошлый заголовок того же уровня (метка портала), — не повтор.
+    Бегущее название в рамке на листе продолжения раздела по-прежнему снимается."""
+    import docx_layout as DL
+    doc = fitz.open()
+    segs = []
+
+    def seg(pno, text, x0, y0, x1, align="left", role=None):
+        segs.append({"id": len(segs), "page": pno, "text": text,
+                     "loc": {"bbox": [x0, y0, x1, y0 + 7], "frags": [[x0, y0, x1, y0 + 7]], "size": 9.7, "bold": False,
+                             "align": align, "family": "monospace", "ocr": True, "roles": True, "role": role}})
+    subs = ["1.1. Turbina leállítása vákuumrontással"] * 2 + ["1.2. Generátor teherledobás", "1.3. Vízütés a turbinánál"] \
+        + ["1.4. Csapágy hőmérséklet emelkedés"] * 2
+    for pno, sub in enumerate(subs):
+        page = doc.new_page(width=595, height=842)
+        sh = page.new_shape()
+        for y in (35, 68, 82, 110):
+            sh.draw_line((70, y), (559, y))
+        sh.finish(color=(0, 0, 0), width=0.6)
+        sh.commit()
+        seg(pno, "Azonosító: 3SZ19", 77, 38, 172, role="header")
+        seg(pno, f"Oldalszám: {pno + 2}", 461, 57, 538, role="header")
+        seg(pno, "1. A turbina üzemzavarai", 241, 88, 390, "center", "header")
+        seg(pno, sub, 160, 98, 470, "center", "heading")        # название подраздела в рамке
+        if pno == 0 or sub != subs[pno - 1]:                    # лист раздела: под рамкой — «1. Ismérvek:»
+            seg(pno, "1. Ismérvek:", 89, 122, 171, role="heading")
+            seg(pno, "Turbinát kiütni.", 157, 145, 241)
+            seg(pno, f"Védelmi lefutást ellenőrizni, elmaradt működéseket pótolni {pno}.", 157, 200, 473)
+            seg(pno, "Turbinát kiütni.", 157, 250, 241)
+        else:
+            seg(pno, f"Tengelyelmozdulás növekedése SA10V125, lap {pno}.", 157, 140, 397)
+    doc.save(tmp_path / "frame.pdf")
+    blocks, _ = DL.load(str(tmp_path / "frame.pdf"), segs)
+    texts = [(b["geom"]["page"], B.text_of(b["runs"]).strip()) for b in B._paras(blocks)]
+    assert sorted(pg for pg, t in texts if t == "1. Ismérvek:") == [1, 3, 4, 5]
+    assert sum(t == "Turbinát kiütni." for _, t in texts) == 8
+    assert sum("Turbina leállítása" in t for _, t in texts) == 1 and sum("Csapágy hőmérséklet" in t for _, t in texts) == 1
+
+
 def test_label_column_splits_table_row_into_sub_rows():
     """Таблица-бланк без внутренних горизонталей (31RDGT): номер, текст и отметка — каждый против своего; строка сетки
     режется по верху меток первого столбца, линий между подстроками нет."""
