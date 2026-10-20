@@ -636,6 +636,66 @@ def _vector_figures(page, pno, drawings, segs, masked, tabs, figs):
     return out
 
 
+def _scheme_figures(page, pno, drawings, segs, tabs, figs):
+    """Схема распознанного листа (текст — контурами): стрелки-связки с короткими подписями — областью листа с
+    переведённого PDF, как _vector_figures. Связки разнесены дальше 20 pt и соединяются через подписи (стрелка
+    упирается в подпись, следующая начинается под ней) — подпись в 10 pt от фигуры склеивает группы, подписи одного
+    ряда (до 60 pt между ними) и строки одной подписи друг под другом — тоже; контуры букв (в рамке сегмента) и
+    шапка/подвал — не фигуры. Схема — от 6 фигур, из них от 3 тонких линий длиннее 15 pt, и вертикальные, и
+    горизонтальные (список условий 3SZ19 л. 4 с метками в рамочках «[3/2]» и тире — без вертикалей, это текст; поля
+    бланка — одни горизонтали), от 2 подписей, ни одна не абзац (до 120 знаков: OCR сливает подписи ряда в одну —
+    «Turbina főgépész Primerköri főgépész Villamos művezető»), и ни одна строка не задета краем. 3PR42 л. 113 (кто где
+    при расхолаживании) рассыпался на абзацы «Turbi Reaktor operátor», «na operátor» (20.10)."""
+    import fitz
+    W, H = page.rect.width, page.rect.height
+    sb = [fitz.Rect(s["loc"]["bbox"]) for s in segs]
+    rs = [fitz.Rect(d["rect"]) + (-0.5, -0.5, 0.5, 0.5) for d in drawings]
+    rs = [r for r in rs if r.width < 0.75 * W and r.height < 0.75 * H and (r.width > 0.5 or r.height > 0.5)
+          and r.y1 >= 0.14 * H and r.y0 <= 0.86 * H and not any((b + (-2, -2, 2, 2)).contains(r) for b in sb)
+          and not any(r.intersects(t) for t in tabs) and not any(r.intersects(f) for f in figs)]
+    items = [(True, r) for r in rs] + [(False, b) for b in sb]
+    up = list(range(len(items)))
+
+    def root(i):
+        while up[i] != i:
+            up[i] = up[up[i]]
+            i = up[i]
+        return i
+    for i, (fa, a) in enumerate(items):
+        for j in range(i + 1, len(items)):
+            fb, b = items[j]
+            if fa or fb:
+                m = 20 if fa and fb else 10
+                near = (a + (-m, -m, m, m)).intersects(b)
+            else:                                               # подписи — одного ряда или строки одной подписи
+                h = min(a.height, b.height)
+                near = min(a.y1, b.y1) - max(a.y0, b.y0) >= 0.5 * h and max(a.x0, b.x0) - min(a.x1, b.x1) <= 60 \
+                    or min(a.x1, b.x1) > max(a.x0, b.x0) and max(a.y0, b.y0) - min(a.y1, b.y1) <= 0.6 * h
+            if near:
+                up[root(i)] = root(j)
+    comps = {}
+    for i, it in enumerate(items):
+        comps.setdefault(root(i), []).append(it)
+    out = []
+    for c in comps.values():
+        shapes = [r for f, r in c if f]
+        vert = sum(r.width <= 3.5 and r.height >= 15 for r in shapes)
+        horz = sum(r.height <= 3.5 and r.width >= 15 for r in shapes)
+        if len(shapes) < 6 or vert + horz < 3 or not vert or not horz or len(c) - len(shapes) < 2:
+            continue
+        R = fitz.Rect(shapes[0])
+        for _, r in c:
+            R |= r
+        inside = [s for s, b in zip(segs, sb) if R.contains((b.tl + b.br) / 2)]
+        if any(len(s["text"].strip()) > 120 for s in inside) or any(b.intersects(R) and s not in inside
+                                                                     for s, b in zip(segs, sb)):
+            continue
+        R = (R + (-3, -3, 3, 3)) & page.rect
+        out.append((R, {"clip": [R.x0, R.y0, R.x1, R.y1], "page_number": pno + 1, "x0": R.x0, "x1": R.x1, "top": R.y0,
+                        "bottom": R.y1}))
+    return out
+
+
 def _runs_of(group, bold, font, size, mono, right=None):
     """Прогоны абзаца из сегментов одной строки: части — через табуляцию по месту оригинала (оглавление «1.4.» ⇥
     «Tengelyelmozdulás …» ⇥ «13»: память переводит части по отдельности, 16.10); полужирные слова (по картинке,
@@ -1069,6 +1129,9 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
             # находился, подписи перемешивались между разделами, 19.10) — областью листа с переведённого PDF
             tabs = [fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1]) for t in _tables(hs, vs)]
             figs += _vector_figures(page, pno, draw[pno], segs, masks.get(pno, []), tabs, [f for f, _ in figs])
+        elif not scans[pno]:
+            tabs = [fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1]) for t in _tables(hs, vs)]
+            figs += _scheme_figures(page, pno, draw[pno], segs, tabs, [f for f, _ in figs])
         regs, used = [], set()
         for t in _tables(hs, vs):
             r = fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1])

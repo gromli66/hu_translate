@@ -1690,6 +1690,66 @@ def test_line_under_header_frame_is_body_not_running_title(tmp_path):
     assert sum("Turbina leállítása" in t for _, t in texts) == 1 and sum("Csapágy hőmérséklet" in t for _, t in texts) == 1
 
 
+def test_scan_scheme_of_arrows_and_short_labels_is_figure(tmp_path):
+    """Распознанный лист: схема из стрелок с короткими подписями (3PR42 л. 113, кто где при расхолаживании) — рисунком
+    с переведённого PDF, подписи — не абзацами (рассыпалась на «Turbi Reaktor operátor», «na operátor»); стрелки
+    разнесены дальше 20 pt и соединяются через подписи; подпись, слитая OCR из трёх («Turbina főgépész Primerköri
+    főgépész Villamos művezető»), схеме не мешает. Список условий с тире и метками в рамочках «[3/2]» (3SZ19 л. 4, без
+    вертикалей) — текстом."""
+    import docx_layout as DL
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    sh = page.new_shape()
+
+    def arrow(x, y0, y1):
+        sh.draw_line((x, y0), (x, y1))
+        sh.finish(color=(0, 0, 0), width=0.7)
+        sh.draw_polyline([(x - 3, y1 - 1), (x + 3, y1 - 1), (x, y1 + 5)])
+        sh.finish(color=(0, 0, 0), fill=(0, 0, 0), closePath=True)
+    for a, b in (((125, 318), (282, 318)), ((228, 332), (285, 332))):
+        sh.draw_line(a, b)
+        sh.finish(color=(0, 0, 0), width=0.7)
+    for x, y0, y1 in ((125, 318, 384), (228, 332, 383), (330, 354, 385), (459, 354, 385), (229, 426, 457),
+                      (330, 426, 457), (459, 426, 457)):
+        arrow(x, y0, y1)
+    for y in (600, 630, 660):                                       # условия: тире и метка «3/2» в рамочке
+        sh.draw_line((92, y + 5), (110, y + 5))
+        sh.finish(color=(0, 0, 0), width=0.7)
+        sh.draw_rect(fitz.Rect(110, y, 135, y + 10))
+        sh.finish(color=(0, 0, 0), width=0.7)
+    sh.commit()
+    segs = []
+
+    def seg(text, x0, y0, x1):
+        segs.append({"id": len(segs), "page": 0, "text": text,
+                     "loc": {"bbox": [x0, y0, x1, y0 + 10], "frags": [[x0, y0, x1, y0 + 10]], "size": 9.7, "bold": False,
+                             "align": "left", "family": "serif", "ocr": True}})
+    seg("Lehűtés során az operatív személyzet tartózkodási helye:", 100, 160, 372)
+    for y, t in ((302, "Blokkügyeletes"), (314, "IÜO művezető"), (329, "Turbina operátor"), (341, "Reaktor operátor")):
+        seg(t, 291, y, 369)
+    seg("Vezető elektrikus", 414, 342, 495)
+    for x, t in ((92, "TARTÓZKODÓ"), (218, "KÜV"), (294, "TARTÓZKODÓ"), (414, "TARTÓZKODÓ")):
+        seg(t, x, 394, x + 80)
+    seg("Műszerészek", 100, 409, 185)
+    seg("Turbina főgépész Primerköri főgépész Villamos művezető", 195, 409, 510)
+    for x, t in ((195, "TARTÓZKODÓ"), (306, "HELYSZÍNEN"), (414, "HELYSZÍNEN")):
+        seg(t, x, 461, x + 80)
+    for x, t in ((209, "Gépészek"), (306, "Gépészek"), (426, "Elektrikusok")):
+        seg(t, x, 476, x + 60)
+    for y, t in ((600, "Generátor tengelyzár hőmérséklet-növekedése t > 110 °C."), (630, "Generátor 8. csapágy"),
+                 (660, "Tengelyzár olajrendszer nyomása csökken, Δp < 0,2 bar.")):
+        seg("3/2", 113, y, 132)
+        seg(t, 140, y, 140 + 5 * len(t))
+    doc.save(tmp_path / "scheme.pdf")
+    blocks, _ = DL.load(str(tmp_path / "scheme.pdf"), segs)
+    texts = [B.text_of(b["runs"]) for b in B._paras(blocks)]
+    figs = [b for b in blocks if b.get("figure")]
+    assert len(figs) == 1 and figs[0]["runs"][0]["img"]["clip"][1] < 330 < 470 < figs[0]["runs"][0]["img"]["clip"][3]
+    assert not any(t in x for x in texts for t in ("Reaktor operátor", "Primerköri főgépész", "Gépészek", "KÜV"))
+    assert any("Lehűtés során" in x for x in texts) and any("Generátor 8. csapágy" in x for x in texts)
+    assert sum("3/2" in x for x in texts) == 3
+
+
 def test_label_column_splits_table_row_into_sub_rows():
     """Таблица-бланк без внутренних горизонталей (31RDGT): номер, текст и отметка — каждый против своего; строка сетки
     режется по верху меток первого столбца, линий между подстроками нет."""
