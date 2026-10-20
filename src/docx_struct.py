@@ -1493,16 +1493,38 @@ def load(path):
     return blocks, info
 
 
+def _text_x(par):
+    """Начало текста пункта из одной строки: первый прогон с буквой или цифрой на строке маркера, правее начала абзаца
+    (маркера) на 3 pt и больше; у пункта из нескольких строк место текста — по второй строке (rest_x0)."""
+    g = par["geom"]
+    if g.get("rest_x0") is not None or (g.get("lines") or 1) > 1:
+        return None
+    for r in par.get("runs") or []:
+        if r.get("x") is not None and re.search(r"\w", r.get("t") or "") and r["x"] >= g["first_x0"] + 3 \
+                and abs((r.get("top") or g.get("top") or 0) - (g.get("top") or 0)) < 3:
+            return r["x"]
+    return None
+
+
 def list_geo(blocks):
     """Место своего списка на листе: b["geo"] = {"marker": x метки, "text": x текста} (абсолютные, pt) — медиана по
     первым абзацам пунктов; текст — по строкам после первой (rest_x0). У ÜFK пункты «a.)» стоят и у поля, и с отступом
-    30 pt: отступ вида списка (профиль) — медиана, и список у поля уезжал вправо (17.10)."""
+    30 pt: отступ вида списка (профиль) — медиана, и список у поля уезжал вправо (17.10). И в ячейках таблиц: там
+    отступ по профилю замерен от поля листа, а не от края ячейки (ТЭ357, «•» почти все в таблицах)."""
     from statistics import median
     for b in blocks:
+        if b["k"] == "table":
+            for r in b["rows"]:
+                for c in r:
+                    list_geo(c["blocks"])
         if b["k"] == "list":
-            firsts = [it[0]["geom"] for it in b["items"] if it and it[0]["k"] == "p" and it[0].get("geom")
-                      and it[0]["geom"].get("first_x0") is not None]
+            heads = [it[0] for it in b["items"] if it and it[0]["k"] == "p" and it[0].get("geom")
+                     and it[0]["geom"].get("first_x0") is not None]
+            firsts = [x["geom"] for x in heads]
             texts = [g["rest_x0"] for g in firsts if g.get("rest_x0") and g["rest_x0"] > g["first_x0"] + 3]
+            # пункт в одну строку — начало текста по первому прогону правее метки («•» ⇥ «Текст»): место списка из
+            # однострочных пунктов брал профиль — медиана по документу, а список стоял иначе
+            texts += [x for x in map(_text_x, heads) if x is not None]
             if firsts and texts:
                 b["geo"] = {"marker": median(g["first_x0"] for g in firsts), "text": median(texts)}
             for it in b["items"]:
