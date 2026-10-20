@@ -299,6 +299,15 @@ def test_struct_list_of_one_line_items_takes_place_from_runs():
     b = lst("Disc", [[it(100)], [it(115)]])
     D.list_geo([b])
     assert b["geo"] == {"marker": 90, "text": 108.0}
+    # метка снята из текста (relist), прогон остался на месте метки — места текста нет, а не верхний индекс в конце
+    # строки (ÜFK I «a.) … 3,7 × 10⁶ Bq/dm³»: текст уезжал узким столбцом к правому полю)
+    lbl = lambda top: {"k": "p", "runs": [{"t": "A primerköri hűtőközeg összes béta-aktivitása 3,7 × 10", "x": 85.0,
+                                           "top": top}, {"t": "⁶", "x": 492.5, "top": top - 0.8},
+                                          {"t": " Bq/dm", "x": 495.9, "top": top}],
+                       "geom": {"page": 3, "top": top, "x0": 85, "first_x0": 85, "x1": 540, "lines": 1, "rest_x0": None}}
+    b = lst("LowerAlpha", [[lbl(100)], [lbl(115)]])
+    D.list_geo([b])
+    assert "geo" not in b
 
 
 def test_profile_lists_without_cell_items(tmp_path):

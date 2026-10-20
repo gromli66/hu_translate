@@ -1494,16 +1494,18 @@ def load(path):
 
 
 def _text_x(par):
-    """Начало текста пункта из одной строки: первый прогон с буквой или цифрой на строке маркера, правее начала абзаца
-    (маркера) на 3 pt и больше; у пункта из нескольких строк место текста — по второй строке (rest_x0)."""
+    """Начало текста пункта из одной строки: первый прогон с буквой или цифрой, если он правее начала абзаца (маркера)
+    на 3 pt и больше («•» ⇥ «Текст»); у пункта из нескольких строк место текста — по второй строке (rest_x0). Метка,
+    снятая из текста (relist: «a.)»), оставляет прогону место метки — тогда места текста нет: следующий прогон брать
+    нельзя (ÜFK I «a.) … 3,7 × 10⁶ Bq/dm³» — текст уезжал к верхнему индексу в конце строки, 20.10)."""
     g = par["geom"]
     if g.get("rest_x0") is not None or (g.get("lines") or 1) > 1:
         return None
-    for r in par.get("runs") or []:
-        if r.get("x") is not None and re.search(r"\w", r.get("t") or "") and r["x"] >= g["first_x0"] + 3 \
-                and abs((r.get("top") or g.get("top") or 0) - (g.get("top") or 0)) < 3:
-            return r["x"]
-    return None
+    r = next((r for r in par.get("runs") or [] if re.search(r"\w", r.get("t") or "")), None)
+    if r is None or r.get("x") is None or r["x"] < g["first_x0"] + 3 \
+            or abs((r.get("top") or g.get("top") or 0) - (g.get("top") or 0)) >= 3:
+        return None
+    return r["x"]
 
 
 def list_geo(blocks):
