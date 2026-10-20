@@ -224,8 +224,8 @@ def extract(path, blocks, L):
         if len(ws) >= 2 and abs(float(ws[0]["x0"]) - g["first_x0"]) < 2 \
                 and re.fullmatch(r"[•▪◦·o\-–\uf0a7\uf0b7]|\(?(?:\d+|[a-zA-Z])\.?\)|\d+\.|[a-zA-Z]\.", ws[0]["text"]):
             x = (float(ws[0]["x0"]) - L["left"], float(ws[1]["x0"]) - L["left"])
-            lv_x.setdefault(depth - 1, []).append(x)
             if not cell:        # в ячейке отступ — от края столбца, не от поля (ТЭ357: «•» почти все в таблицах)
+                lv_x.setdefault(depth - 1, []).append(x)
                 kind_x.setdefault(kind, {}).setdefault(depth - 1, []).append(x)
     mid = lambda v: {"marker": round(median(a for a, _ in v), 1), "text": round(median(t for _, t in v), 1)}
     P["lists"] = {str(lv): mid(v) for lv, v in sorted(lv_x.items()) if len(v) >= 2}
@@ -320,21 +320,51 @@ def check(docx_path, P, blocks, L):
     got = ls.pt if hasattr(ls, "pt") else None
     if got is None or abs(got - P["line"]) > 0.6:
         bad("Ф6", "межстрочный «Normal»", ls, f"не меньше {P['line']} pt")
-    for lv, want in P["lists"].items():
-        for a in num.findall(f"{W}abstractNum"):
-            if int(a.get(qn("w:abstractNumId"))) < 901:
-                continue
-            lvl = next((x for x in a.findall(f"{W}lvl") if x.get(qn("w:ilvl")) == lv), None)
-            ind = lvl.find(f"{W}pPr/{W}ind") if lvl is not None else None
-            if ind is None:
-                continue
-            text = int(ind.get(qn("w:left"))) / 20
-            mark = text - int(ind.get(qn("w:hanging"))) / 20
-            # отступ своего вида списка (lists_kind) — тоже по оригиналу
-            ok = [want] + [d[lv] for d in (P.get("lists_kind") or {}).values() if lv in d]
-            if all(abs(text - w["text"]) > 2 or abs(mark - w["marker"]) > 2 for w in ok):
-                bad("Ф7", f"список {a.get(qn('w:abstractNumId'))}, уровень {int(lv) + 1}", f"{mark}/{text}",
-                    f"{want['marker']}/{want['text']}")
+    # Ф7: отступы пунктов — по оригиналу, одним значением (договор правил, шаг 3): у каждого пункта отступ абзаца тот
+    # же, что у его уровня в нумерации, а нумерация — из источника сборки (docx_build.item_ind: место списка на листе,
+    # иначе профиль с местом под метку). Прежде проверка видела только нумерацию (а место по листу ставилось только в
+    # абзац) и сверяла её с профилем без места под метку — ложные нарушения
+    abst = {a.get(qn("w:abstractNumId")): a for a in num.findall(f"{W}abstractNum")}
+    of_num = {n.get(qn("w:numId")): n.find(f"{W}abstractNumId").get(qn("w:val")) for n in num.findall(f"{W}num")}
+
+    def num_ind(nid, ilvl):
+        a = abst.get(of_num.get(nid))
+        lvl = next((x for x in a.findall(f"{W}lvl") if x.get(qn("w:ilvl")) == ilvl), None) if a is not None else None
+        ind = lvl.find(f"{W}pPr/{W}ind") if lvl is not None else None
+        if ind is None:
+            return None
+        text = int(ind.get(qn("w:left"))) / 20
+        return round(text - int(ind.get(qn("w:hanging")) or 0) / 20, 1), round(text, 1)
+    want = set()                                            # отступы пунктов тела по источнику сборки
+
+    def lists(bs, level=None):
+        for b in bs:
+            if b["k"] == "list":
+                lv = b.get("level", 0) if level is None else level
+                want.add(tuple(round(v, 1) for v in B.item_ind(b, lv, P, L["left"])))
+                for it in b["items"]:
+                    lists(it, lv + 1)
+    lists(blocks)
+    for p in doc.element.body.iter(f"{W}p"):
+        np_ = p.find(f"{W}pPr/{W}numPr")
+        nid = np_.find(f"{W}numId") if np_ is not None else None
+        if nid is None or int(nid.get(qn("w:val"))) < 1000:
+            continue
+        il = np_.find(f"{W}ilvl")
+        got = num_ind(nid.get(qn("w:val")), il.get(qn("w:val")) if il is not None else "0")
+        if got is None:
+            continue
+        t = "".join(e.text or "" for e in p.iter(f"{W}t"))[:40]
+        ind = p.find(f"{W}pPr/{W}ind")
+        if ind is not None and ind.get(qn("w:left")) is not None:
+            left = int(ind.get(qn("w:left"))) / 20
+            own = (round(left + (int(ind.get(qn("w:firstLine")) or 0) - int(ind.get(qn("w:hanging")) or 0)) / 20, 1),
+                   round(left, 1))
+            if abs(own[0] - got[0]) > 0.5 or abs(own[1] - got[1]) > 0.5:
+                bad("Ф7", t, f"абзац {own[0]}/{own[1]}", f"как в нумерации {got[0]}/{got[1]}")
+        in_cell = any(a.tag == f"{W}tc" for a in p.iterancestors())
+        if not in_cell and want and all(abs(got[0] - w[0]) > 2 or abs(got[1] - w[1]) > 2 for w in want):
+            bad("Ф7", t, f"{got[0]}/{got[1]}", "по месту списка на листе или по профилю")
     if P["figure"]["center"] and int(st["Figure UTS"].paragraph_format.alignment or 0) != 1:
         bad("Ф8", "стиль рисунка", "не по центру", "по центру")
     if P["caption"]["center"] and int(st["Caption UTS"].paragraph_format.alignment or 0) != 1:
@@ -416,6 +446,7 @@ def check(docx_path, P, blocks, L):
                 bad("М2", vt(p)[:40], "прямой кегль", "кегль стиля")
                 break
         ind = p.find(f"{W}pPr/{W}ind")
-        if ind is not None and pst(p) != "List UTS":
+        # пункты списка (и в ячейках) несут отступ своего списка прямо — то же значение, что в нумерации (Ф7)
+        if ind is not None and pst(p) not in ("List UTS", "List Cell UTS"):
             bad("М2", vt(p)[:40], "прямой отступ", "отступ стиля")
     return out
