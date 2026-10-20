@@ -190,10 +190,10 @@ def _abbr(word, text):
 
 def _pieces(word, text=""):
     """Куски слова между местами переноса (с дефисом), для ширины столбца; слово без них — целиком. text — весь текст
-    ячейки (аббревиатура в нём — целиком)."""
-    if not re.fullmatch(r"[А-Яа-яЁё]{6,}", word) or _abbr(word, text):
-        return [word]
-    ks = _hyphen_points(word)
+    ячейки (аббревиатура в нём — целиком). Места — в русской части слова, как у _soft_hyphens: «контуре(⁶)» —
+    «кон-ту-ре(⁶)» (ÜFK I л. 9: слово со скобкой считалось целым, и столбец мельчал, 20.10)."""
+    ks = sorted(m.start() + k for m in re.finditer(r"[А-Яа-яЁё]{6,}", word) if not _abbr(m.group(), text)
+                for k in _hyphen_points(m.group()))
     return [word[a:b] + ("-" if b < len(word) else "") for a, b in zip([0] + ks, ks + [len(word)])]
 
 
@@ -1262,7 +1262,7 @@ class Builder:
 
     def table(self, b):
         from docx.shared import Pt
-        self._shrink, self._hyph = {}, set()            # столбец → доля кегля, столбцы с переносами (_fit_words)
+        self._room = {}                                 # узкий столбец → (ширина, поля ячейки) (_fit_words)
         rows = [r for r in b["rows"] if r]
         if not rows:
             return
@@ -1372,7 +1372,7 @@ class Builder:
                         widths[c] = need[c]
             self._fit_words(rows, widths, fit_size)
             if b.get("grid"):                           # сетка без линеек — свой кегль под ширину и поля 1 pt (3PR42)
-                self._shrink, self._hyph = {}, set()
+                self._room = {}
             t.autofit = False
             for c in range(ncol):
                 for cell in t.columns[c].cells:
@@ -1469,17 +1469,26 @@ class Builder:
                         used = True
                     else:
                         self.paragraph(x, style, tgt=dc)
-                k = self._shrink.get(starts[ci])
-                if spans[ci][1] == spans[ci][0] and (k or starts[ci] in self._hyph):
-                    # узкий столбец без запаса (_fit_words): мягкие переносы, а если не влезает и слог — кегль меньше
-                    # (стилем: прямой кегль — нарушение профиля; только меньше)
+                room = self._room.get(starts[ci])
+                if spans[ci][1] == spans[ci][0] and room:
+                    # узкий столбец без запаса (_fit_words): мягкие переносы; абзац, где не влезает и слог, — кегль
+                    # меньше, до 60 % (стилем: прямой кегль — нарушение профиля), только он: соседние ячейки столбца —
+                    # своим кеглем («p ≥ 5» и «–» под длинной шапкой ÜFK I л. 9 мельчали вместе с ней, 20.10)
+                    cw, pad_fit = room
                     for par in dc.paragraphs:
                         eff = _style_pt(par.style) or fit_size
-                        if k and fit_size * k < eff - 0.25:
-                            par.style = self._sized(par.style, round(max(0.6 * eff, fit_size * k) * 2) / 2)
-                        if starts[ci] in self._hyph:
-                            for run in par.runs:
-                                _soft_hyphens(run)
+                        st, sb = par.style, None
+                        while st is not None and sb is None:
+                            sb, st = st.font.bold, st.base_style
+                        txt = par.text
+                        wh = max((_text_w(pc, eff, True) for wd in txt.split() for pc in _pieces(wd, txt)),
+                                 default=0) * (1.1 if sb or any(r.bold for r in par.runs) else 1.0)
+                        if wh and wh + pad_fit > cw + 0.5:
+                            k = max(0.6, (cw - pad_fit) / wh)
+                            if eff * k < eff - 0.25:
+                                par.style = self._sized(par.style, round(eff * k * 2) / 2)
+                        for run in par.runs:
+                            _soft_hyphens(run)
                 if not used and len(dc.paragraphs) > 1:      # ячейка начинается со списка — пустой первый абзац прочь
                     first._p.getparent().remove(first._p)
                 elif not used:                               # пустая ячейка — стилем таблицы: «Обычный» (8 pt после,
@@ -1524,8 +1533,7 @@ class Builder:
         pad = 2 * ((self.P.get("table") or {}).get("pad_left") or 5.4) + 5
         ncol = len(widths)
         need = [0.0] * ncol
-        need_h = [0.0] * ncol                           # то же с мягкими переносами (самый длинный слог-кусок)
-        self._shrink, self._hyph = {}, set()
+        self._room = {}
         for row in rows:
             # строка с объединёнными ячейками по сетке линий (docx_layout: span) — её ячейки в один столбец тоже: шапка
             # таблицы параметров 30RDIT в два яруса в счёт не шла, «ЗНАЧЕНИЕ» рвалось по буквам (20.10)
@@ -1543,10 +1551,7 @@ class Builder:
                     ru = TAGS.sub("", (get(src) if src else None) or src)
                     bold = any(r.get("b") for r in x["runs"] if r.get("t", "").strip())
                     w = max((_text_w(wd, size, True) for wd in ru.split()), default=0) * (1.1 if bold else 1.0)
-                    wh = max((_text_w(pc, size, True) for wd in ru.split() for pc in _pieces(wd, ru)),
-                             default=0) * (1.1 if bold else 1.0)
                     need[ci] = max(need[ci], w + pad)
-                    need_h[ci] = max(need_h[ci], wh + pad)
         for c in range(ncol):
             short = need[c] - widths[c]
             if short <= 0:
@@ -1556,12 +1561,15 @@ class Builder:
             if give > 0:
                 widths[c] += give
                 widths[d] -= give
-            # запаса нет — сначала мягкие переносы по слогам (кегль тот же: в таблице UTS один столбец мельче
-            # соседних выглядел чужим), и только если не влезает и слог — кегль ячеек столбца меньше, до 60 %
-            if need[c] - widths[c] > 0.5 and need[c] > pad:
-                self._hyph.add(c)
-                if need_h[c] - widths[c] > 0.5 and need_h[c] > pad:
-                    self._shrink[c] = max(0.6, (widths[c] - pad) / (need_h[c] - pad))
+        # запаса нет — мягкие переносы по слогам, а кегль меньше — только у абзаца, где не влезает и слог (table()).
+        # «Влезает ли» — по полям, что станут в ячейке (table() урезает их до lim у узких столбцов), и запасу 1 pt: по
+        # полям профиля с запасом 5 pt (16 pt вместо 6) числа «250» в столбцах по 24 pt ÜFK I л. 32 «не влезали», и
+        # весь столбец мельчал до 60 % (20.10)
+        side = (self.P.get("table") or {}).get("pad_left") or 5.4
+        pad_fit = 2 * min(side, max(1.0, (min(widths) - 12) / 2)) + 1
+        for c in range(ncol):
+            if need[c] > pad and need[c] - pad + pad_fit - widths[c] > 0.5:
+                self._room[c] = (widths[c], pad_fit)
 
     def _title_styles(self, blocks):
         """Стили крупного, «переднего» и мелкого текста (титул) — шрифтом, кеглем и начертанием оригинала: было

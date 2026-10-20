@@ -478,3 +478,63 @@ def test_soft_hyphens_skip_abbreviations():
     B._soft_hyphens(run)
     assert run._r.findall(W + "softHyphen")
     assert B._pieces("ЦАСУТП", "Шкаф ЦАСУТП") == ["ЦАСУТП"] and len(B._pieces("ЗНАЧЕНИЕ", "ЗНАЧЕНИЕ")) == 3
+    assert B._pieces("контуре(⁶)") == ["кон-", "ту-", "ре(⁶)"]                   # слово со скобкой — по буквенной части
+
+
+def _narrow_table(texts, xs):
+    """Таблица по сетке линий (docx_layout): строки texts, столбцы по xs."""
+    g = lambda x0: {"page": 1, "top": 100, "bottom": 110, "x0": x0, "x1": x0 + 10, "first_x0": x0, "size": 10,
+                    "lines": 1}
+    cell = lambda t, x0: {"blocks": [{"k": "p", "runs": [{"t": t, "font": "Tahoma", "size": 10, "b": False, "i": False,
+                                                          "color": "000000"}], "geom": g(x0)}], "th": False,
+                          "geom": g(x0), "span": 1, "edges": {"top": True, "bottom": True, "left": True, "right": True}}
+    rows = [[cell(t, x) for t, x in zip(r, xs)] for r in texts]
+    ys = [100 + 12 * k for k in range(len(rows) + 1)]
+    return {"k": "table", "rows": rows, "borders": True, "frame": {"xs": xs, "ys": ys, "row_lines": True},
+            "geom": {"page": 1, "top": ys[0], "bottom": ys[-1], "x0": xs[0], "x1": xs[-1], "first_x0": xs[0], "size": 10}}
+
+
+def test_narrow_number_columns_keep_size_and_only_overflowing_paragraph_shrinks(tmp_path):
+    """N14: узкие столбцы чисел (по 24 pt при полях ячейки 2,4 pt, ÜFK I л. 32) — кегль тот же: числа влезают; в столбце,
+    где шапка не влезает и слогом (код без мест переноса), мельче только шапка, а не «–» под ней (л. 9, 20.10)."""
+    xs = [40, 90] + [90 + 24 * i for i in range(1, 9)] + [342]
+    nums = [str(100 + 25 * i) for i in range(8)]
+    tab = _narrow_table([["Ág TH (°C)"] + nums + ["31RD31S201"], ["pI (bar)"] + nums + ["–"]], xs)
+    out = tmp_path / "n.docx"
+    mem = B.Memory([(t, t) for t in nums + ["31RD31S201", "–"]] + [("Ág TH (°C)", "Ветвь ТН (°C)"),
+                                                                  ("pI (bar)", "pI (бар)")])
+    B.Builder(mem, lambda img: png(), dict(PROFILE, table={"pad_left": 2.4})).build(
+        [tab], str(out), dict(LAYOUT, first_is_body=True))
+    t = Document(str(out)).tables[0]
+    sized = [[p.style.name.endswith("pt") for p in c.paragraphs] for r in t.rows for c in r.cells]
+    assert not any(any(s) for s in sized[1:9]) and not any(any(s) for s in sized[11:19])   # числа — своим кеглем
+    assert any(sized[9]) and not any(sized[19])                                            # код шапки — да, «–» — нет
+
+
+def test_running_counts_pages_not_pieces(tmp_path):
+    """Колонтитул — повтор на листах, а не кусков: строка таблицы из трёх кусков у верха одностраничного документа —
+    содержимое (30RDGT modj: шапка таблицы уходила в шапку DOCX); та же строка на двух листах — колонтитул."""
+    def pdf(path, pages):
+        doc = fitz.open()
+        for pno in range(pages):
+            pg = doc.new_page(width=595, height=842)
+            sh = pg.new_shape()
+            _grid(sh, [42, 98, 466, 570], [64, 88, 112, 300])
+            sh.commit()
+            for x, t in ((48, "Verzió"), (201, "A módosítás megnevezése"), (471, "Jóváhagyás dátuma")):
+                pg.insert_text((x, 80), t, fontsize=9, fontname="tiro")
+            for x, t in ((48, "0"), (102, "Ismételt új kiadás."), (473, "2010-03-29")):
+                pg.insert_text((x, 104), t, fontsize=9, fontname="tiro")
+            for k in range(8):
+                pg.insert_text((102, 130 + 18 * k), f"{pno + 1}. lap, {k + 1}. sor.", fontsize=9, fontname="tiro")
+        doc.save(str(path))
+    one, two = tmp_path / "one.pdf", tmp_path / "two.pdf"
+    pdf(one, 1)
+    pdf(two, 2)
+    assert not DL._running(_segs(one), 842, 1)
+    keys = DL._running(_segs(two), 842, 2)
+    assert ("head", "Verzió") in keys
+    blocks, _ = DL.load(str(one), _segs(one), text=True)
+    text = " ".join("".join(q.get("t", "") for q in x["runs"]) for b in blocks if b["k"] == "table"
+                    for r in b["rows"] for c in r for x in c["blocks"])
+    assert "Verzió" in text and "Jóváhagyás dátuma" in text

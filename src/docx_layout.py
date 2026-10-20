@@ -55,18 +55,20 @@ def _sig(text):
 def _running(segs, H, pages):
     """Колонтитулы: (зона, текст без цифр) или (зона, высота строки), что повторяется хотя бы на половине листов (и не
     меньше чем на двух). По высоте — потому что OCR режет шапку по-разному: «Megnevezés … UTASÍTÁSA 72» на одном листе
-    и «Verziószám: 0 Oldalszám:» отдельно — на другом (3PR42, 16.10)."""
-    cnt, pos = Counter(), {}
+    и «Verziószám: 0 Oldalszám:» отдельно — на другом (3PR42, 16.10). Считаются листы, а не куски: строка таблицы из
+    трёх кусков у верха одностраничного документа — не «три повтора» (30RDGT modj: шапка таблицы и первая строка
+    уходили в шапку DOCX, в таблице на их месте — пустые строки, 20.10)."""
+    cnt, pos = {}, {}
     for s in segs:
         z = _zone(s, H)
         if z:
-            cnt[(z, _sig(s["text"]))] += 1
-            pos.setdefault((z, round(s["loc"]["bbox"][1] / 4)), Counter())[_sig(s["text"])] += 1
+            cnt.setdefault((z, _sig(s["text"])), set()).add(s["page"])
+            pos.setdefault((z, round(s["loc"]["bbox"][1] / 4)), {}).setdefault(_sig(s["text"]), set()).add(s["page"])
     need = max(2, 0.5 * pages)
     # на высоте — и текст в основном тот же (≥ половины листов): название раздела в рамке на той же высоте меняется
     # от раздела к разделу — это текст, а не колонтитул
-    return {k for k, n in cnt.items() if n >= need} | \
-        {k for k, c in pos.items() if sum(c.values()) >= need and c.most_common(1)[0][1] >= 0.5 * pages}
+    return {k for k, ps in cnt.items() if len(ps) >= need} | \
+        {k for k, c in pos.items() if len(set().union(*c.values())) >= need and max(map(len, c.values())) >= 0.5 * pages}
 
 
 def _is_running(s, keys, H):
