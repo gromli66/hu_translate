@@ -379,6 +379,18 @@ def sub_rows(bs):
     return bs
 
 
+def _same_cols(a, b, tol=3.0):
+    """Две таблицы по линиям листа (docx_layout: frame.row_lines) — с теми же столбцами (на тех же местах: выравнивание
+    столбцов склеенной таблицы голосует по рамке первой части, docx_build._col_align): лист 2, начатый другой таблицей
+    с тем же числом столбцов, — не продолжение (ред-тим 20.10). Таблицы без линий листа (по разметке) — не
+    проверяются."""
+    fa, fb = a.get("frame") or {}, b.get("frame") or {}
+    if not (fa.get("row_lines") and fb.get("row_lines")):
+        return True
+    xa, xb = fa.get("xs") or [], fb.get("xs") or []
+    return len(xa) == len(xb) and all(abs(p - q) <= tol for p, q in zip(xa, xb))
+
+
 def join_tables(bs):
     """Таблица, которую Word при экспорте разрезал по листам (продолжение — отдельная таблица сразу за ней, без шапки,
     с тем же числом столбцов, на следующем листе), — снова одна: в DOCX она переносится сама и повторяет шапку
@@ -417,6 +429,7 @@ def join_tables(bs):
                 and (rep or not all(c["th"] for c in b["rows"][0]) or _tail_pairs(prev["rows"][-1], b["rows"][0])) \
                 and (rep or max(map(len, b["rows"])) == max(map(len, prev["rows"]))
                      or _tail_pairs(prev["rows"][-1], b["rows"][0])) \
+                and (rep or _same_cols(prev, b)) \
                 and (b.get("geom") or {}).get("page", 0) > (prev.get("geom") or {}).get("page", 0):
             rows = b["rows"][rep:]
             # картинки, что Word вложил в повтор шапки (значки строк прошлого листа, JPDS табл. 15), — не прочь:

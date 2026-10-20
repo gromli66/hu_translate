@@ -182,9 +182,16 @@ def _hyphen_points(word):
     return [k for k in cut if 2 <= k <= len(word) - 2]
 
 
-def _pieces(word):
-    """Куски слова между местами переноса (с дефисом), для ширины столбца; слово без них — целиком."""
-    if not re.fullmatch(r"[А-Яа-яЁё]{6,}", word):
+def _abbr(word, text):
+    """Аббревиатура — не переносится: заглавными посреди строчного текста («Шкаф ЦАСУТП») или со строчной перед
+    заглавной внутри («ТЭЦиПС»); слово заглавными в тексте заглавными (шапка «ЗНАЧЕНИЕ») — слово (ред-тим 20.10)."""
+    return word.isupper() and bool(re.search(r"[а-яё]", text)) or bool(re.search(r"[а-яё][А-ЯЁ]", word))
+
+
+def _pieces(word, text=""):
+    """Куски слова между местами переноса (с дефисом), для ширины столбца; слово без них — целиком. text — весь текст
+    ячейки (аббревиатура в нём — целиком)."""
+    if not re.fullmatch(r"[А-Яа-яЁё]{6,}", word) or _abbr(word, text):
         return [word]
     ks = _hyphen_points(word)
     return [word[a:b] + ("-" if b < len(word) else "") for a, b in zip([0] + ks, ks + [len(word)])]
@@ -193,12 +200,16 @@ def _pieces(word):
 def _soft_hyphens(run):
     """Мягкие переносы (w:softHyphen) в длинных русских словах прогона: узкий столбец, где слово не влезает, — перенос
     по слогам с дефисом, а не по буквам «ЖУР / НАЛ / СОБ / ЫТИ / Й» (30RDIT, 20.10). По каждому w:t отдельно:
-    табуляция и разрыв строки прогона остаются на месте («ВНИМАНИЕ!↵На» 3PR42 иначе слипалось)."""
+    табуляция и разрыв строки прогона остаются на месте («ВНИМАНИЕ!↵На» 3PR42 иначе слипалось). Аббревиатуры — без
+    переносов (_abbr, по тексту всего абзаца)."""
     from docx.oxml.ns import qn
     word = re.compile(r"[А-Яа-яЁё]{6,}")
+    par = next(run._r.iterancestors(qn("w:p")), None)
+    ctx = "".join(x.text or "" for x in (par if par is not None else run._r).iter(qn("w:t")))
     for t in list(run._r.findall(qn("w:t"))):
         text = t.text or ""
-        cuts = sorted(m.start() + k for m in word.finditer(text) for k in _hyphen_points(m.group()))
+        cuts = sorted(m.start() + k for m in word.finditer(text) if not _abbr(m.group(), ctx)
+                      for k in _hyphen_points(m.group()))
         if not cuts:
             continue
         pieces = [text[a:z] for a, z in zip([0] + cuts, cuts + [len(text)])]
@@ -1532,7 +1543,7 @@ class Builder:
                     ru = TAGS.sub("", (get(src) if src else None) or src)
                     bold = any(r.get("b") for r in x["runs"] if r.get("t", "").strip())
                     w = max((_text_w(wd, size, True) for wd in ru.split()), default=0) * (1.1 if bold else 1.0)
-                    wh = max((_text_w(pc, size, True) for wd in ru.split() for pc in _pieces(wd)),
+                    wh = max((_text_w(pc, size, True) for wd in ru.split() for pc in _pieces(wd, ru)),
                              default=0) * (1.1 if bold else 1.0)
                     need[ci] = max(need[ci], w + pad)
                     need_h[ci] = max(need_h[ci], wh + pad)
@@ -2079,9 +2090,10 @@ class Builder:
                     self._num_start(sec, ns["value"])
                     restart = True
             # логотипы обложки — те же, что в шапке тела, или стоящие в полосе шапки (выше поля тела; «atom erőmű» UTS
-            # уезжал за правый край), — шапкой титула из логотипов тела
+            # уезжал за правый край), — шапкой титула из логотипов тела. Картинка без xref (снимок скана титула) — не
+            # логотип, хоть у векторного логотипа шапки xref тоже нет: скан титула пропадал, лист 1 пустой (ред-тим 20.10)
             if in_title and b["k"] == "p" and b["runs"] and all("img" in r for r in b["runs"]) and head_x and (all(
-                    getattr(r["img"].get("stream"), "objid", None) in head_x for r in b["runs"])
+                    getattr(r["img"].get("stream"), "objid", None) in head_x - {None} for r in b["runs"])
                     or (g.get("bottom") or 999) <= L["top"] + 20):
                 prev_bottom = max(prev_bottom, g.get("bottom") or 0)   # отступ текста титула — от низа логотипов
                 logos_head = True

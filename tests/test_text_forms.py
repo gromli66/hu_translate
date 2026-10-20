@@ -253,6 +253,11 @@ def test_title_scan_without_text_is_the_title_not_background(tmp_path):
     out2 = tmp_path / "bg.docx"
     B.Builder(mem, lambda img: png(), PROFILE).build([big, p("Címlap", 1, 300), body], str(out2), dict(LAYOUT))
     assert count(out1) == 1 and count(out2) == 0
+    # логотип шапки — векторный (xref нет): снимок скана титула (тоже без xref) — не логотип (ред-тим 20.10: лист 1 пустой)
+    out3 = tmp_path / "vec.docx"
+    logo = {"xref": None, "x0": 60, "x1": 120, "top": 30, "bottom": 60}
+    B.Builder(mem, lambda img: png(), PROFILE).build([big, body], str(out3), dict(LAYOUT, head_imgs=[logo]))
+    assert count(out3) == 1
 
 
 def test_soft_hyphens_by_syllables():
@@ -293,3 +298,183 @@ def test_soft_hyphens_keep_tabs_and_breaks():
     B._soft_hyphens(run)
     assert len(run._r.findall(W + "br")) == 1 and len(run._r.findall(W + "tab")) == 1
     assert run.text.replace("-", "") == "ВНИМАНИЕ!\nНаблюдение\tЖУРНАЛ"
+
+
+# ---- красная команда 20.10 (docs/rules_contract/UNIVERSALITY.md): ложные срабатывания правил N3, N4, N8, N16, N17
+
+def _segs(path):
+    segs = []
+    for pno, pg in enumerate(fitz.open(str(path))):
+        for bl in pg.get_text("dict")["blocks"]:
+            for ln in bl.get("lines", []):
+                t = "".join(s["text"] for s in ln["spans"]).strip()
+                if t:
+                    bb = [round(v, 1) for v in ln["bbox"]]
+                    segs.append({"id": len(segs), "page": pno, "text": t, "src": t,
+                                 "loc": {"bbox": bb, "frags": [bb], "size": 10.0, "bold": False, "family": "Times",
+                                         "align": "left"}})
+    return segs
+
+
+def _grid(sh, xs, ys):
+    for x in xs:
+        sh.draw_line((x, ys[0]), (x, ys[-1]))
+    for y in ys:
+        sh.draw_line((xs[0], y), (xs[-1], y))
+    sh.finish(color=(0, 0, 0), width=0.6)
+
+
+def test_cells_drawn_one_by_one_are_not_form_marks_and_ticked_box_is_marked(tmp_path):
+    """N4: таблица из клеток 16×16 pt, каждая — своим прямоугольником (график по дням): пустые клетки — не «□»;
+    квадратик с галочкой внутри — «☒», а не пустой «□»."""
+    src = tmp_path / "g.pdf"
+    doc = fitz.open()
+    pg = doc.new_page(width=595, height=842)
+    sh = pg.new_shape()
+    for r in range(4):
+        cells = [fitz.Rect(60, 100 + 16 * r, 180, 116 + 16 * r)]
+        cells += [fitz.Rect(180 + 16 * m, 100 + 16 * r, 196 + 16 * m, 116 + 16 * r) for m in range(10)]
+        for c in cells:
+            sh.draw_rect(c)
+            sh.finish(color=(0, 0, 0), width=0.5)
+    sh.commit()
+    for r in range(4):
+        pg.insert_text((63, 110 + 16 * r), f"Szivattyú {r + 1}", fontsize=8, fontname="tiro")
+    doc.save(str(src))
+    blocks, _ = DL.load(str(src), _segs(src), text=True)
+    text = " ".join("".join(q.get("t", "") for q in x["runs"]) for b in blocks if b["k"] == "table"
+                    for r in b["rows"] for c in r for x in c["blocks"])
+    assert "Szivattyú 4" in text and "□" not in text
+    box = {"rect": (410, 138, 422, 150), "type": "s", "color": (0, 0, 0), "items": [("re", (410, 138, 422, 150))]}
+    tick = {"rect": (412, 139, 421, 148), "type": "s", "color": (0, 0, 0), "items": [("l", (412, 144), (415, 148))]}
+    assert [ch for _, ch in DL._form_marks([box, tick])] == ["☒"]
+    assert [ch for _, ch in DL._form_marks([box])] == ["□"]
+
+
+def test_inset_cell_frame_is_not_form_field():
+    """N17: внутренняя рамка ячейки «двойной» таблицы (отступ 1,5 pt со всех сторон) — не поле ввода; поле в большой
+    ячейке — поле; клетка, совпавшая с сеткой, — не отметка."""
+    xs, ys = [57, 250, 400], [100, 120, 160]
+    assert not DL._in_cell((58.5, 101.5, 248.5, 118.5), xs, ys, whole=True)
+    assert DL._in_cell((260, 125, 360, 141), xs, ys, whole=True)
+    assert not DL._in_cell((250, 100, 400, 120), xs, ys)
+
+
+def _two_tables(path, xs2):
+    """Лист 1: текст и внизу таблица A; лист 2 начат таблицей с тем же числом столбцов (столбцы xs2)."""
+    doc = fitz.open()
+    pg = doc.new_page(width=595, height=842)
+    for k in range(25):
+        pg.insert_text((57, 80 + 14 * k), f"Bevezeto szöveg {k + 1}. sora.", fontsize=10, fontname="tiro")
+    sh = pg.new_shape()
+    ys1 = [520 + 25 * k for k in range(11)]
+    _grid(sh, [57, 200, 400, 545], ys1)
+    sh.commit()
+    for r in range(10):
+        for c, x in enumerate((57, 200, 400)):
+            pg.insert_text((x + 4, ys1[r] + 16), f"A{r}{c}", fontsize=10, fontname="tiro")
+    pg2 = doc.new_page(width=595, height=842)
+    sh = pg2.new_shape()
+    ys2 = [60 + 25 * k for k in range(9)]
+    _grid(sh, xs2, ys2)
+    sh.commit()
+    for r in range(8):
+        for c, x in enumerate(xs2[:3]):
+            pg2.insert_text((x + 4, ys2[r] + 16), f"B{r}{c}", fontsize=10, fontname="tiro")
+    for k in range(20):
+        pg2.insert_text((57, 300 + 14 * k), f"Záró szöveg {k + 1}. sora.", fontsize=10, fontname="tiro")
+    doc.save(str(path))
+
+
+def test_next_page_starting_with_other_table_is_not_continuation(tmp_path):
+    """N3: лист 2, начатый другой таблицей (те же три столбца, другие ширины), — не продолжение таблицы листа 1;
+    продолжение с теми же столбцами — одна таблица."""
+    a, b = tmp_path / "a.pdf", tmp_path / "b.pdf"
+    _two_tables(a, [57, 260, 420, 545])
+    _two_tables(b, [57, 200, 400, 545])
+    tabs = lambda f: [x for x in DL.load(str(f), _segs(f), text=True)[0] if x["k"] == "table"]
+    assert len(tabs(a)) == 2
+    assert len(tabs(b)) == 1 and tabs(b)[0].get("split")
+
+
+def test_text_page_with_big_figure_is_not_scan_snapshot(tmp_path):
+    """N8: лист текстового слоя с крупным рисунком (картинка > ½ листа) и своим текстом — текст абзацами, а не снимок
+    листа: снимок — только у листа, распознанного OCR."""
+    import numpy as np
+    src = tmp_path / "fig.pdf"
+    doc = fitz.open()
+    for pno in range(3):
+        pg = doc.new_page(width=595, height=842)
+        if pno == 1:
+            a = np.full((520, 515, 3), 230, np.uint8)
+            a[50:470, 50:465] = 40
+            pg.insert_image(fitz.Rect(40, 50, 555, 570), pixmap=fitz.Pixmap(fitz.csRGB, 515, 520, a.tobytes(), False))
+            for k in range(8):
+                pg.insert_text((57, 625 + 16 * k), f"Magyarázat a rajzhoz, {k + 1}. sor.", fontsize=10, fontname="tiro")
+        else:
+            for k in range(30):
+                pg.insert_text((57, 80 + 16 * k), f"{pno + 1}. lap, {k + 1}. sor: szöveg.", fontsize=10, fontname="tiro")
+    doc.save(str(src))
+    assert DL.is_scan(fitz.open(str(src))[1])
+    blocks, _ = DL.load(str(src), _segs(src), text=True)
+    snaps = [x for x in blocks if x["k"] == "p" and x.get("runs") and x["runs"][0].get("img", {}).get("clip")]
+    text = " ".join("".join(q.get("t", "") for q in x.get("runs") or []) for x in blocks)
+    assert not snaps and "Magyarázat a rajzhoz, 8. sor." in text
+
+
+def test_title_box_in_head_zone_is_not_table_head_but_short_continuation_is(tmp_path):
+    """N2: штамп листа — таблица в зоне шапки, во второй строке текст меняется по листам, — не «шапка таблицы тела»
+    (она уходила в тело один раз); продолжение таблицы в одну строку вверху листа, чья шапка — шапка таблицы с телом
+    на прошлом листе, — шапка таблицы."""
+    src = tmp_path / "box.pdf"
+    doc = fitz.open()
+    for pno in range(3):
+        pg = doc.new_page(width=595, height=842)
+        sh = pg.new_shape()
+        _grid(sh, [98, 166, 564], [21, 66, 81])
+        put = lambda x, y, t: pg.insert_text((x, y), t, fontsize=9, fontname="tiro")
+        put(170, 45, "KKS NUMBERING PHILOSOPHY")
+        put(170, 77, "x" * (20 + 3 * pno))                 # меняется по листам
+        if pno == 0:
+            _grid(sh, [57, 250, 545], [600 + 25 * k for k in range(8)])
+            put(60, 616, "Megnevezés")
+            put(253, 616, "Művelet")
+            for k in range(1, 7):
+                put(60, 616 + 25 * k, f"Sor {k}")
+                put(253, 616 + 25 * k, "ZÁRVA")
+        if pno == 1:
+            _grid(sh, [57, 250, 545], [90, 115, 135])
+            put(60, 106, "Megnevezés")
+            put(253, 106, "Művelet")
+            put(60, 128, "Sor 7")
+            put(253, 128, "NYITVA")
+        if pno == 2:                                       # продолжение без шапки, две строки вверху листа
+            _grid(sh, [57, 250, 545], [86, 100, 114])
+            put(60, 96, "Sor 8")
+            put(253, 96, "NYITVA")
+            put(60, 110, "Sor 9")
+            put(253, 110, "ZÁRVA")
+        for k in range(10):
+            put(57, 200 + 18 * k, f"{pno + 1}. lap, {k + 1}. sor: folyó szöveg.")
+        sh.commit()
+    doc.save(str(src))
+    segs = _segs(src)
+    d = fitz.open(str(src))
+    H = d[0].rect.height
+    keys = DL._running(segs, H, len(d))
+    heads = DL._head_rows(d, DL._page_rules(d, True), segs, keys, H)
+    got = {(s["page"], s["text"]) for s in segs if s["id"] in heads}
+    assert not any("KKS" in t for _, t in got)
+    assert (1, "Megnevezés") in got and (0, "Megnevezés") in got and (2, "Sor 8") in got
+
+
+def test_soft_hyphens_skip_abbreviations():
+    """N16: аббревиатура заглавными посреди строчного текста — без мягких переносов; слово заглавными в тексте
+    заглавными (шапка) — с ними."""
+    run = Document().add_paragraph().add_run("Шкаф ЦАСУТП блока")
+    B._soft_hyphens(run)
+    assert not run._r.findall(W + "softHyphen")
+    run = Document().add_paragraph().add_run("ЗНАЧЕНИЕ ПАРАМЕТРА")
+    B._soft_hyphens(run)
+    assert run._r.findall(W + "softHyphen")
+    assert B._pieces("ЦАСУТП", "Шкаф ЦАСУТП") == ["ЦАСУТП"] and len(B._pieces("ЗНАЧЕНИЕ", "ЗНАЧЕНИЕ")) == 3

@@ -848,7 +848,25 @@ def _form_marks(drawings):
             out.append(((x0, y0, x1, y1), "○"))
         elif ks in (["re"], ["qu"]) or len(ks) == 4 and all(k == "l" for k in ks):
             out.append(((x0, y0, x1, y1), "□"))
+    if out:
+        # внутри — другой путь (галочка, крестик, точка): отметка поставлена — пустой «□» говорил обратное (ред-тим 20.10)
+        small = [o["rect"] for o in drawings if o["rect"][2] - o["rect"][0] <= 20 and o["rect"][3] - o["rect"][1] <= 20]
+        inner = lambda b, r: (b[0] - 1 <= r[0] and r[2] <= b[2] + 1 and b[1] - 1 <= r[1] and r[3] <= b[3] + 1
+                              and r[2] - r[0] < 0.9 * (b[2] - b[0]))
+        out = [(b, {"○": "◉", "□": "☒"}[ch] if any(inner(b, r) for r in small) else ch) for b, ch in out]
     return out
+
+
+def _in_cell(b, xs, ys, whole=False):
+    """Рамка b — внутри одной ячейки сетки xs × ys, не на её линиях: клетка таблицы, нарисованная своим
+    прямоугольником (график по дням, 16×16 pt), — не отметка бланка (ред-тим 20.10). whole — и не во всю ячейку:
+    внутренняя рамка ячейки «двойной» таблицы (отступ до 3 pt со всех сторон) — край ячейки, а не поле ввода."""
+    for c in range(len(xs) - 1):
+        for q in range(len(ys) - 1):
+            pad = (b[0] - xs[c], xs[c + 1] - b[2], b[1] - ys[q], ys[q + 1] - b[3])
+            if min(pad) > 1:
+                return not whole or max(pad) > 3
+    return False
 
 
 def _pua_glyph(page, bbox):
@@ -954,7 +972,7 @@ def _head_rows(doc, rules, body, keys, H):
     by_page = {}
     for s in body:
         by_page.setdefault(s["page"], []).append(s)
-    out = set()
+    sure, maybe = set(), []
     for pno, (hs, vs) in enumerate(per):
         segs = by_page.get(pno, [])
         for xs, ys, _, _ in _tables(hs, vs):
@@ -962,10 +980,24 @@ def _head_rows(doc, rules, body, keys, H):
                 continue
             head = fitz.Rect(xs[0], ys[0], xs[-1], ys[1])
             rest = fitz.Rect(xs[0], ys[1], xs[-1], ys[-1])
-            if not any(rest.contains(fitz.Point(*_center(s))) and not _is_running(s, keys, H) for s in segs):
+            body_ = [s for s in segs if rest.contains(fitz.Point(*_center(s))) and not _is_running(s, keys, H)]
+            if not body_:
                 continue                                    # штамп: вся таблица повторяется на листах — колонтитул
-            out |= {s["id"] for s in segs if head.contains(fitz.Point(*_center(s)))}
-    return out
+            ids = [s for s in segs if head.contains(fitz.Point(*_center(s)))]
+            # тело таблицы — и вне зон колонтитулов; таблица целиком в зоне шапки или подвала — штамп листа (ниже первой
+            # строки меняется текст: номер, раздел, мусор слоя «���» разной длины), если её первая строка стоит на том
+            # же месте и на других листах; тогда шапка таблицы — только если та же строка — шапка таблицы с телом на
+            # другом листе. Иначе штамп шёл в тело один раз, у остальных листов шапки не было (ред-тим 20.10);
+            # продолжение таблицы в одну-две строки вверху листа — по-прежнему таблица
+            if any(not _zone(s, H) for s in body_):
+                sure |= {s["id"] for s in ids}
+            else:
+                maybe.append(ids)
+    place = lambda s: (_sig(s["text"]), round(s["loc"]["bbox"][0] / 6), round(s["loc"]["bbox"][1] / 6))
+    seen = Counter(place(s) for p in by_page.values() for s in p)
+    sigs = {_sig(s["text"]) for p in by_page.values() for s in p if s["id"] in sure}
+    return sure | {s["id"] for ids in maybe if ids and (all(_sig(s["text"]) in sigs for s in ids)
+                                                         or not any(seen[place(s)] > 1 for s in ids)) for s in ids}
 
 
 def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
@@ -986,7 +1018,9 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
                      "bottom": r.y1}) for r in _figures(page, masks.get(pno, segs) if mask else segs, draw[pno],
                                                          scans[pno])]
         hs, vs = per[pno]
-        if mask is not None and scans[pno] and segs:
+        # скан — лист, распознанный OCR (своего текстового слоя нет); лист с крупным рисунком (> ½ листа) и текстом слоя —
+        # не скан: текст — абзацами (ред-тим 20.10)
+        if mask is not None and scans[pno] and segs and any(s["loc"].get("ocr") for s in segs):
             # скан посреди текстового слоя (лист регистрации, титул с подписями 32RDGT) — листом с переведённого PDF,
             # как отдельный скан формы (16.10): по сегментам сетка, подписи и штампы бланка рассыпались, 8 листов → 11
             # (20.10). Колонтитулы листа (повтор шапки других листов) посреди тела — не в снимке: их печатает шапка
@@ -1031,20 +1065,18 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
             inside = [s for s in segs if r.contains(fitz.Point(*_center(s)))]
             mine = [i for i, (f, _) in enumerate(figs) if r.contains(fitz.Point((f.x0 + f.x1) / 2, (f.y0 + f.y1) / 2))]
             # отметки бланка кривыми (кружок, квадратик) — знаком в своей ячейке, если там нет такого же текста
+            xs_, ys_ = t[0], t[1]
             mid = lambda b: fitz.Point((b[0] + b[2]) / 2, (b[1] + b[3]) / 2)
             glyphs = [{"id": -1 - 1000 * pno - k, "page": pno, "text": ch, "loc": {"bbox": list(b), "frags": [list(b)]}}
-                      for k, (b, ch) in enumerate(marks[pno][0]) if r.contains(mid(b))
+                      for k, (b, ch) in enumerate(marks[pno][0]) if r.contains(mid(b)) and _in_cell(b, xs_, ys_)
                       and not any(fitz.Rect(s["loc"]["bbox"]).contains(mid(b)) for s in inside)]
             pua = {}
             for s in inside:                                # одинокий значок частной области — по виду на листе
                 ch = s["text"].strip()
                 if len(ch) == 1 and "\uf020" <= ch <= "\uf0ff" and ch not in pua:
                     pua[ch] = _pua_glyph(page, s["loc"]["bbox"]) or ch
-            # поля ввода — внутри одной ячейки сетки, не на её линиях
-            xs_, ys_ = t[0], t[1]
-            fields = [f for f in marks[pno][1]
-                      if any(xs_[c] + 1 < f[0] and f[2] < xs_[c + 1] - 1 for c in range(len(xs_) - 1))
-                      and any(ys_[q] + 1 < f[1] and f[3] < ys_[q + 1] - 1 for q in range(len(ys_) - 1))]
+            # поля ввода — внутри одной ячейки сетки, не на её линиях и не во всю ячейку
+            fields = [f for f in marks[pno][1] if _in_cell(f, xs_, ys_, whole=True)]
             if inside:
                 used |= set(mine)
                 regs.append({"rect": r, "ids": {s["id"] for s in inside},

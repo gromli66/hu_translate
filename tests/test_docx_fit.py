@@ -71,3 +71,26 @@ def test_fit_shrinks_only_overflowing_sections(tmp_path):
     assert info == {"sections": 3, "over": 1, "fixed": 1, "left": 0}
     sz = [e.get(W + "val") for e in _body(ru).iter(W + "sz")]
     assert sz and all(int(v) < 22 for v in sz)
+
+
+def test_fit_leaves_sections_flowing_over_pages(tmp_path):
+    """Раздел, что и в оригинале шёл через листы (документ одним разделом), в переводе длиннее законно — кегль тот же
+    (ред-тим 20.10); подгоняется только раздел, что был одним листом."""
+    orig, ru = tmp_path / "o.docx", tmp_path / "r.docx"
+    _doc(orig, ["A", "B"])
+    _doc(ru, ["А длинный", "Б длинный"])
+
+    def printer(docx, pdf):
+        pdfd = fitz.open()
+        for i, sec in enumerate(F._sections(_body(docx))):
+            szs = [int(e.get(W + "val")) for e in sec[0].iter(W + "sz") if e.get(W + "val") != "2"]
+            longer = docx.name.startswith("ru_m") and not (szs and min(szs) < 22)
+            for k in range((2 if i == 0 else 1) + (1 if longer else 0)):           # раздел 0 — два листа оригинала
+                pg = pdfd.new_page()
+                pg.insert_text((72, 120), (F.MARK.format(i) + " ") if k == 0 else "folytatás", fontsize=10)
+                pg.insert_text((72, 700), "szöveg", fontsize=10)
+        pdfd.save(str(pdf))
+    info = F.fit(orig, ru, printer, tmp_path / "w")
+    assert info["over"] == 1 and info["fixed"] == 1                         # только раздел 1 (лист в оригинале)
+    p0, p1 = [p for p in _body(ru).iter(W + "p") if "".join(p.itertext()).strip()][:2]
+    assert p0.find(f".//{W}sz") is None and p1.find(f".//{W}sz") is not None
