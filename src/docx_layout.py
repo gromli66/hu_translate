@@ -1348,8 +1348,11 @@ def load(src, segs, text=False):
                 if text_mode and ch:
                     # место маркера и текста по оригиналу (как docx_struct.list_geo): тире НГТУ стояло на уровне
                     # текста абзацев, в оригинале — на 14 pt правее (19.10)
+                    # знак в тексте и пункт в несколько строк — место текста по второй строке (висячий отступ
+                    # оригинала: «•⇥Normal Environmental …» Eskom — 22 pt от маркера, по ширине «• » выходило 6)
                     import fitz
-                    tx = first[0] if sign.get("mk") else \
+                    fr = loc.get("frags") or []
+                    tx = first[0] if sign.get("mk") else fr[1][0] if len(fr) > 1 and fr[1][0] > x0 + 3 else \
                         x0 + fitz.get_text_length(sign["tm"].group(0), fontsize=geom.get("size") or 10)
                     cur["geo"] = {"marker": x0, "text": round(tx, 1)}
                 elif sign:

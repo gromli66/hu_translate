@@ -116,6 +116,18 @@ def test_scan_dash_beats_portal_heading_label(tmp_path):
     assert sum(b["k"] == "list" for b in blocks) >= 1
 
 
+def test_text_layer_item_text_place_from_its_second_line(tmp_path):
+    """Текстовый слой: пункт «•⇥Normal Environmental Conditions …» в две строки — место текста по второй строке пункта
+    (висячий отступ оригинала, 22 pt от маркера), а не по ширине «• » (6 pt, Eskom л. 10); пункт в одну строку — по
+    ширине знака, как прежде."""
+    src, segs = _text_page(tmp_path / "t.pdf", BODY)
+    two = {"id": 100, "page": 0, "text": "• Normal Environmental Conditions shall include all operating conditions",
+           "src": "", "loc": {"bbox": [72, 300, 520, 324], "frags": [[72, 300, 520, 311], [94, 313, 400, 324]],
+                              "size": 10.0, "bold": False, "family": "serif", "align": "left"}}
+    blocks, _ = DL.load(src, segs + [two], text=True)
+    assert next(b["geo"] for b in blocks if b["k"] == "list") == {"marker": 72, "text": 94}
+
+
 def test_unlabeled_letter_items_are_list(tmp_path):
     """Р9: лист без меток портала (портал не ответил) — «a)», «b)» в начале абзаца — пункты списка, как у PDF с
     разметкой (docx_struct.para_lists), а не абзацы."""
@@ -220,6 +232,21 @@ def test_list_place_on_sheet_always_and_same_in_numbering(tmp_path):
     for text, want in (("первый", (20.0, 38.0)), ("второй", (50.0, 70.0))):
         par = next(x for x in doc.paragraphs if x.text == text)
         assert _par_ind(par) == want and _num_ind(doc, par) == want
+
+
+def test_list_text_just_left_of_margin_stays_at_margin(tmp_path):
+    """Скан 3PR42: тире на 9,6 pt, текст на 0,8 pt левее поля набора — пункт у поля (место под знак), а не по профилю
+    документа (у 3PR42 профиль ставил текст на 155 pt от поля узким столбцом)."""
+    left = LAYOUT["left"]
+    b = dict(lst("Dash", [[p("A blokk aktuális állapotától", 2, 100, left - 0.8)]]),
+             geo={"marker": left - 9.6, "text": left - 0.8})
+    P = dict(PROFILE, lists_kind={"Dash": {"0": {"marker": 84.6, "text": 155.4}}})
+    out = tmp_path / "m.docx"
+    B.Builder(B.Memory([("A blokk aktuális állapotától", "Независимо от состояния")]), lambda img: None, P).build(
+        [b], str(out), LAYOUT)
+    doc = Document(str(out))
+    par = next(x for x in doc.paragraphs if x.text.startswith("Независимо"))
+    assert _par_ind(par) == (0.0, 9.0) and _num_ind(doc, par) == (0.0, 9.0)
 
 
 def test_cell_list_place_from_column_edge(tmp_path):
