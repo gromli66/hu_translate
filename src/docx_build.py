@@ -191,30 +191,28 @@ def _pieces(word):
 
 
 def _soft_hyphens(run):
-    """Мягкие переносы (w:softHyphen) в длинных русских словах прогона: узкий столбец, где слово не влезает и при
-    уменьшенном кегле, — перенос по слогам с дефисом, а не по буквам «ЖУР / НАЛ / СОБ / ЫТИ / Й» (30RDIT, 20.10)."""
+    """Мягкие переносы (w:softHyphen) в длинных русских словах прогона: узкий столбец, где слово не влезает, — перенос
+    по слогам с дефисом, а не по буквам «ЖУР / НАЛ / СОБ / ЫТИ / Й» (30RDIT, 20.10). По каждому w:t отдельно:
+    табуляция и разрыв строки прогона остаются на месте («ВНИМАНИЕ!↵На» 3PR42 иначе слипалось)."""
     from docx.oxml.ns import qn
-    text = run.text
-    if not re.search(r"[А-Яа-яЁё]{6,}", text):
-        return
-    parts, last = [], 0
-    for m in re.finditer(r"[А-Яа-яЁё]{6,}", text):
-        for k in _hyphen_points(m.group()):
-            parts.append(text[last:m.start() + k])
-            last = m.start() + k
-    parts.append(text[last:])
-    r = run._r
-    for el in list(r):
-        if el.tag in (qn("w:t"), qn("w:tab"), qn("w:br")):
-            r.remove(el)
-    for i, part in enumerate(parts):
-        if i:
-            r.append(_el("w:softHyphen"))
-        if part:
-            t = _el("w:t")
-            t.text = part
-            t.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
-            r.append(t)
+    word = re.compile(r"[А-Яа-яЁё]{6,}")
+    for t in list(run._r.findall(qn("w:t"))):
+        text = t.text or ""
+        cuts = sorted(m.start() + k for m in word.finditer(text) for k in _hyphen_points(m.group()))
+        if not cuts:
+            continue
+        pieces = [text[a:z] for a, z in zip([0] + cuts, cuts + [len(text)])]
+        prev = t
+        t.text = pieces[0]
+        t.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+        for piece in pieces[1:]:
+            sh = _el("w:softHyphen")
+            prev.addnext(sh)
+            nt = _el("w:t")
+            nt.text = piece
+            nt.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+            sh.addnext(nt)
+            prev = nt
 
 
 def _style_pt(st):
@@ -226,15 +224,16 @@ def _style_pt(st):
     return None
 
 
-def _text_w(text, size):
+def _text_w(text, size, caps=False):
     """Ширина строки, pt: латиница — по метрике Helvetica, кириллица и прочее — средней шириной Tahoma (у Helvetica
-    PDF кириллицы нет, шрифтов Word на сервере нет); заглавная кириллица шире — 0,72 кегля («КОНТРОЛЯ» в узком
-    столбце шапки 30RDIT считался влезающим и рвался по буквам, 20.10)."""
+    PDF кириллицы нет, шрифтов Word на сервере нет); caps — заглавная кириллица шире, 0,72 кегля (ширина столбца
+    таблицы: «КОНТРОЛЯ» в шапке 30RDIT считался влезающим и рвался по буквам, 20.10; табуляции «подпись ⇥ значение»
+    настроены по прежней мере — там как было)."""
     global _HELV
     if _HELV is None:
         import fitz
         _HELV = fitz.Font("helv")
-    return sum(_HELV.text_length(ch, fontsize=size) if ord(ch) < 256 else (0.72 if ch.isupper() else 0.6) * size
+    return sum(_HELV.text_length(ch, fontsize=size) if ord(ch) < 256 else (0.72 if caps and ch.isupper() else 0.6) * size
                for ch in text)
 
 
@@ -1532,8 +1531,8 @@ class Builder:
                     src = text_of(x["runs"]).strip()
                     ru = TAGS.sub("", (get(src) if src else None) or src)
                     bold = any(r.get("b") for r in x["runs"] if r.get("t", "").strip())
-                    w = max((_text_w(wd, size) for wd in ru.split()), default=0) * (1.1 if bold else 1.0)
-                    wh = max((_text_w(pc, size) for wd in ru.split() for pc in _pieces(wd)),
+                    w = max((_text_w(wd, size, True) for wd in ru.split()), default=0) * (1.1 if bold else 1.0)
+                    wh = max((_text_w(pc, size, True) for wd in ru.split() for pc in _pieces(wd)),
                              default=0) * (1.1 if bold else 1.0)
                     need[ci] = max(need[ci], w + pad)
                     need_h[ci] = max(need_h[ci], wh + pad)

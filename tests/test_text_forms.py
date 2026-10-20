@@ -285,3 +285,11 @@ def test_form_fields_become_bordered_runs(tmp_path):
         [b], str(out), dict(LAYOUT, first_is_body=True))
     body = Document(str(out)).element.body
     assert len(body.xpath(".//w:r[w:rPr/w:bdr]")) == 2 and "⁠" in "".join(body.itertext())
+
+
+def test_soft_hyphens_keep_tabs_and_breaks():
+    """Мягкие переносы не трогают табуляцию и разрыв строки прогона («ВНИМАНИЕ!↵На» 3PR42 слипалось)."""
+    run = Document().add_paragraph().add_run("ВНИМАНИЕ!\nНаблюдение\tЖУРНАЛ")
+    B._soft_hyphens(run)
+    assert len(run._r.findall(W + "br")) == 1 and len(run._r.findall(W + "tab")) == 1
+    assert run.text.replace("-", "") == "ВНИМАНИЕ!\nНаблюдение\tЖУРНАЛ"
