@@ -261,11 +261,14 @@ def _right_limit(frags, vs, bb, page_right):
     return lim
 
 
-def _partner(frags, vs, bb):
-    """Справа на той же линии есть другой фрагмент и линейки между ними нет (вторая колонка списка без таблицы)."""
+def _partner(frags, vs, bb, left=False):
+    """Справа на той же линии есть другой фрагмент и линейки между ними нет (вторая колонка списка без таблицы);
+    left — слева (значение против своей подписи)."""
     x0, y0, x1, y1 = bb
-    return any(f["bbox"][0] >= x1 + 5 and min(y1, f["bbox"][3]) - max(y0, f["bbox"][1]) > 0.5 * (y1 - y0)
-               and not _vrule_in(vs, x1, f["bbox"][0], y0, y1) for f in frags)
+    same = lambda f: min(y1, f["bbox"][3]) - max(y0, f["bbox"][1]) > 0.5 * (y1 - y0)
+    if left:
+        return any(f["bbox"][2] <= x0 - 5 and same(f) and not _vrule_in(vs, f["bbox"][2], x0, y0, y1) for f in frags)
+    return any(f["bbox"][0] >= x1 + 5 and same(f) and not _vrule_in(vs, x1, f["bbox"][0], y0, y1) for f in frags)
 
 
 def group(frags, hs, vs=(), form=False):
@@ -317,6 +320,11 @@ def group(frags, hs, vs=(), form=False):
                 # в двух колонках сплошного текста строка доходит до промежутка, остаток меньше 25 pt
                 pair = _partner(frags, vs, last) and _partner(frags, vs, f["bbox"])
                 if pair and lim - last[2] > 25:
+                    continue
+                # столбик коротких значений против своих подписей слева («BSZG állásjelzések … rendben» ×4, 31RDGT:
+                # «rendben rendben rendben rendben» шло одним абзацем); сплошной текст второй колонки — длинные строки
+                if len(p["frags"][-1]["t"].split()) <= 3 and len(f["t"].split()) <= 3 \
+                        and _partner(frags, vs, last, left=True) and _partner(frags, vs, f["bbox"], left=True):
                     continue
                 # строка по центру ячейки: свободное место — с двух сторон («Fejlesztő / környezet» в шапке
                 # таблицы 1 UTS переводились порознь: «Разработчик / среда»)

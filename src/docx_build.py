@@ -165,14 +165,87 @@ def merge_inline(blocks):
 _HELV = None
 
 
-def _text_w(text, size):
+def _hyphen_points(word):
+    """Места переноса русского слова по правилам П. Христова (гласная, согласная, «й/ь/ъ»): «ЖУР-НАЛ», «ЗНА-ЧЕ-НИЕ»."""
+    x, g, c, any_ = "[йьъ]", "[аеёиоуыэюя]", "[бвгджзклмнпрстфхцчшщ]", "[а-яё]"
+    rules = [(x, any_ + any_), (g, g + any_), (c + g, c + g), (g + c, c + g), (c + g, c + c + g), (g + c + c, c + c + g)]
+    w = word
+    for _ in range(2):                      # правила по порядку, каждое — по уже размеченному слову
+        for a, b in rules:
+            w = re.sub(f"({a})({b})", r"\1|\2", w, flags=re.I)
+    cut, k = [], 0
+    for ch in w:
+        if ch == "|":
+            cut.append(k)
+        else:
+            k += 1
+    return [k for k in cut if 2 <= k <= len(word) - 2]
+
+
+def _abbr(word, text):
+    """Аббревиатура — не переносится: заглавными посреди строчного текста («Шкаф ЦАСУТП») или со строчной перед
+    заглавной внутри («ТЭЦиПС»); слово заглавными в тексте заглавными (шапка «ЗНАЧЕНИЕ») — слово (ред-тим 20.10)."""
+    return word.isupper() and bool(re.search(r"[а-яё]", text)) or bool(re.search(r"[а-яё][А-ЯЁ]", word))
+
+
+def _pieces(word, text=""):
+    """Куски слова между местами переноса (с дефисом), для ширины столбца; слово без них — целиком. text — весь текст
+    ячейки (аббревиатура в нём — целиком). Места — в русской части слова, как у _soft_hyphens: «контуре(⁶)» —
+    «кон-ту-ре(⁶)» (ÜFK I л. 9: слово со скобкой считалось целым, и столбец мельчал, 20.10)."""
+    ks = sorted(m.start() + k for m in re.finditer(r"[А-Яа-яЁё]{6,}", word) if not _abbr(m.group(), text)
+                for k in _hyphen_points(m.group()))
+    return [word[a:b] + ("-" if b < len(word) else "") for a, b in zip([0] + ks, ks + [len(word)])]
+
+
+def _soft_hyphens(run):
+    """Мягкие переносы (w:softHyphen) в длинных русских словах прогона: узкий столбец, где слово не влезает, — перенос
+    по слогам с дефисом, а не по буквам «ЖУР / НАЛ / СОБ / ЫТИ / Й» (30RDIT, 20.10). По каждому w:t отдельно:
+    табуляция и разрыв строки прогона остаются на месте («ВНИМАНИЕ!↵На» 3PR42 иначе слипалось). Аббревиатуры — без
+    переносов (_abbr, по тексту всего абзаца)."""
+    from docx.oxml.ns import qn
+    word = re.compile(r"[А-Яа-яЁё]{6,}")
+    par = next(run._r.iterancestors(qn("w:p")), None)
+    ctx = "".join(x.text or "" for x in (par if par is not None else run._r).iter(qn("w:t")))
+    for t in list(run._r.findall(qn("w:t"))):
+        text = t.text or ""
+        cuts = sorted(m.start() + k for m in word.finditer(text) if not _abbr(m.group(), ctx)
+                      for k in _hyphen_points(m.group()))
+        if not cuts:
+            continue
+        pieces = [text[a:z] for a, z in zip([0] + cuts, cuts + [len(text)])]
+        prev = t
+        t.text = pieces[0]
+        t.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+        for piece in pieces[1:]:
+            sh = _el("w:softHyphen")
+            prev.addnext(sh)
+            nt = _el("w:t")
+            nt.text = piece
+            nt.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+            sh.addnext(nt)
+            prev = nt
+
+
+def _style_pt(st):
+    """Кегль стиля с учётом базовых, pt; не задан нигде — None."""
+    while st is not None:
+        if st.font.size:
+            return st.font.size.pt
+        st = st.base_style
+    return None
+
+
+def _text_w(text, size, caps=False):
     """Ширина строки, pt: латиница — по метрике Helvetica, кириллица и прочее — средней шириной Tahoma (у Helvetica
-    PDF кириллицы нет, шрифтов Word на сервере нет)."""
+    PDF кириллицы нет, шрифтов Word на сервере нет); caps — заглавная кириллица шире, 0,72 кегля (ширина столбца
+    таблицы: «КОНТРОЛЯ» в шапке 30RDIT считался влезающим и рвался по буквам, 20.10; табуляции «подпись ⇥ значение»
+    настроены по прежней мере — там как было)."""
     global _HELV
     if _HELV is None:
         import fitz
         _HELV = fitz.Font("helv")
-    return sum(_HELV.text_length(ch, fontsize=size) if ord(ch) < 256 else 0.6 * size for ch in text)
+    return sum(_HELV.text_length(ch, fontsize=size) if ord(ch) < 256 else (0.72 if caps and ch.isupper() else 0.6) * size
+               for ch in text)
 
 
 from docx.exceptions import InvalidSpanError
@@ -277,10 +350,12 @@ def _keep_tab(src, ru):
     return ru
 
 
-def _col_align(rows, xs, page):
+def _col_align(rows, xs, page, any_page=False):
     """Выравнивание столбцов таблицы по оригиналу (рамка xs на первом листе): {("head" | "body", столбец): "center" |
     "right"}; по однострочным ячейкам полных строк, большинством. Шапка UTS — по центру, номера версий — вправо, а
-    в переводе всё стояло влево (16.10)."""
+    в переводе всё стояло влево (16.10). any_page — столбцы на всех листах те же (таблица бланка по линиям листа,
+    docx_layout): голосуют все листы — на первом листе 30RDIT одна строка, заголовок раздела по центру, и центр
+    выходил у всего столбца (20.10)."""
     if len(xs) < 2:
         return {}
     ncol = len(xs) - 1
@@ -295,14 +370,19 @@ def _col_align(rows, xs, page):
             continue
         for ci, c in enumerate(r):
             g = c.get("geom")
-            if not g or g.get("page") != page or (g.get("lines") or 1) > 1:
+            if not g or not any_page and g.get("page") != page or (g.get("lines") or 1) > 1:
                 continue
             left, right = g["x0"] - xs[ci], xs[ci + 1] - g["x1"]
             v = "center" if abs(left - right) < 4 and left > 8 else "right" if right < 10 < left - 8 else "left"
             votes.setdefault((key, ci), []).append(v)
     out = {}
     for k, v in votes.items():
-        best = Counter(v).most_common(1)[0][0]
+        c = Counter(v)
+        best = c.most_common(1)[0][0]
+        # не влево — только явным большинством тела: один заголовок раздела по центру против одной строки влево
+        # центрировал весь столбец (31RDGT, 20.10); у шапки и первой строки голос один — как есть
+        if best != "left" and k[0] == "body" and c[best] <= c["left"]:
+            best = "left"
         if best != "left" or k[0] == "first":
             out[k] = best
     return out
@@ -694,8 +774,9 @@ class Builder:
             # абзаца с полужирной командой шла «кодом», и code_part возвращал венгерское «NYITNI» вместо перевода)
             key = (bool(r.get("b")), bool(r.get("i")),
                    (r.get("font") or "").lower().startswith(("consolas", "courier")) and not r.get("body_mono"),
-                   r.get("color") if r.get("color") not in ("000000", None) else None, bool(r.get("u")))
-            if groups and (groups[-1][0] == key or not r["t"].strip()):
+                   r.get("color") if r.get("color") not in ("000000", None) else None, bool(r.get("u")),
+                   r.get("box") or False)          # поле бланка — своё у каждого сегмента: соседние поля не сливаются
+            if groups and (groups[-1][0] == key or not r["t"].strip() and not key[5]):    # пустое поле — своя группа
                 groups[-1][1].append(r)
             else:
                 groups.append([key, [r]])
@@ -703,7 +784,7 @@ class Builder:
         # <f1></f1> и лишний запрос к порталу
         merged = []
         for g in groups:
-            if merged and not "".join(x["t"] for x in merged[-1][1]).strip():
+            if merged and not "".join(x["t"] for x in merged[-1][1]).strip() and not merged[-1][0][5]:
                 merged[-1] = [g[0], merged[-1][1] + g[1]]
             else:
                 merged.append(g)
@@ -753,6 +834,14 @@ class Builder:
             if out and out[0][1]:
                 out[0] = (out[0][0], " " + out[0][1].lstrip())
         def text_run(t, key):
+            if key and key[5] and t.strip(" \t") != t:
+                # поле бланка — рамкой только текст поля, табуляция рядом — без рамки (docx_layout._form_fields)
+                core = t.strip(" \t")
+                a = t.index(core) if core else len(t)
+                for piece, k in ((t[:a], key[:5] + (False,)), (core, key), (t[a + len(core):], key[:5] + (False,))):
+                    if piece:
+                        text_run(piece, k)
+                return
             # индексы распознавания портала («N<sub>R</sub>», «m<sup>3</sup>») — индексами, а не тегами в тексте (3PR42)
             for piece in re.split(r"(<su[bp]>.*?</su[bp]>)", t):
                 m = re.fullmatch(r"<(su[bp])>(.*?)</su[bp]>", piece, re.S)
@@ -767,7 +856,10 @@ class Builder:
                     else:
                         run.font.superscript = True
                 if key:
-                    b, i, code, color, u = key
+                    b, i, code, color, u, box = key
+                    if box:                                  # поле бланка — граница знаков
+                        rpr = run._r.get_or_add_rPr()
+                        rpr.append(_el("w:bdr", w__val="single", w__sz=4, w__space=0, w__color="000000"))
                     if b and not style_bold:
                         run.bold = True
                     if i:
@@ -778,6 +870,10 @@ class Builder:
                         run.font.name = "Consolas"
                     if color and color != "ffffff":
                         run.font.color.rgb = RGBColor.from_string(color.upper())
+                    if box and not piece.strip():
+                        # пустое поле (неразрывные пробелы) в конце абзаца: рамку пробелов в конце строки LibreOffice
+                        # не рисует — после него невидимый «соединитель слов» своим прогоном, без рамки
+                        par.add_run("\u2060")
         for key, t in out:
             while t and timgs and "	" in t:
                 k = t.index("	")
@@ -1166,6 +1262,7 @@ class Builder:
 
     def table(self, b):
         from docx.shared import Pt
+        self._room = {}                                 # узкий столбец → (ширина, поля ячейки) (_fit_words)
         rows = [r for r in b["rows"] if r]
         if not rows:
             return
@@ -1274,6 +1371,8 @@ class Builder:
                         widths[k] -= d
                         widths[c] = need[c]
             self._fit_words(rows, widths, fit_size)
+            if b.get("grid"):                           # сетка без линеек — свой кегль под ширину и поля 1 pt (3PR42)
+                self._room = {}
             t.autofit = False
             for c in range(ncol):
                 for cell in t.columns[c].cells:
@@ -1288,7 +1387,7 @@ class Builder:
             for el in ([] if mar is None else [mar.find(W + "left"), mar.find(W + "right")]):
                 if el is not None and int(el.get(W + "w")) / 20 > lim:
                     el.set(W + "w", str(round(lim * 20)))
-        aligns = _col_align(rows, xs, (b.get("geom") or {}).get("page"))
+        aligns = _col_align(rows, xs, (b.get("geom") or {}).get("page"), any_page=bool(fr.get("row_lines")))
         in_head = True
         for ri, row in enumerate(rows):
             if all("span" in c for c in row):               # ячейки по сетке линий (docx_layout) — места известны
@@ -1311,7 +1410,9 @@ class Builder:
             head = in_head and ri < 3 and len(rows) > 1
             # повтор шапки на новом листе — как в оригинале: таблица, разрезанная листом без повтора шапки, — без него
             # (JPDS «Перечень сокращений»: «БД База данных» печаталась второй раз вверху следующего листа, 18.10)
-            if head and len(rows) > 3 and (b.get("head_repeat") or not b.get("split")):
+            # строки, повторённые оригиналом на каждом листе (docx_struct.join_tables), — шапкой и без TH: шапка форм
+            # RDGT не полужирная и со второго листа не повторялась (20.10)
+            if (head or ri < b.get("repeat_rows", 0)) and len(rows) > 3 and (b.get("head_repeat") or not b.get("split")):
                 _trpr_put(t.rows[ri]._tr, _el("w:tblHeader"))
             # короткая строка не рвётся между листами (в оригинале строки целые; длинная — пусть рвётся, иначе не влезет)
             size = sum(len(text_of(x["runs"])) for c in row for x in c["blocks"] if x["k"] == "p")
@@ -1368,6 +1469,26 @@ class Builder:
                         used = True
                     else:
                         self.paragraph(x, style, tgt=dc)
+                room = self._room.get(starts[ci])
+                if spans[ci][1] == spans[ci][0] and room:
+                    # узкий столбец без запаса (_fit_words): мягкие переносы; абзац, где не влезает и слог, — кегль
+                    # меньше, до 60 % (стилем: прямой кегль — нарушение профиля), только он: соседние ячейки столбца —
+                    # своим кеглем («p ≥ 5» и «–» под длинной шапкой ÜFK I л. 9 мельчали вместе с ней, 20.10)
+                    cw, pad_fit = room
+                    for par in dc.paragraphs:
+                        eff = _style_pt(par.style) or fit_size
+                        st, sb = par.style, None
+                        while st is not None and sb is None:
+                            sb, st = st.font.bold, st.base_style
+                        txt = par.text
+                        wh = max((_text_w(pc, eff, True) for wd in txt.split() for pc in _pieces(wd, txt)),
+                                 default=0) * (1.1 if sb or any(r.bold for r in par.runs) else 1.0)
+                        if wh and wh + pad_fit > cw + 0.5:
+                            k = max(0.6, (cw - pad_fit) / wh)
+                            if eff * k < eff - 0.25:
+                                par.style = self._sized(par.style, round(eff * k * 2) / 2)
+                        for run in par.runs:
+                            _soft_hyphens(run)
                 if not used and len(dc.paragraphs) > 1:      # ячейка начинается со списка — пустой первый абзац прочь
                     first._p.getparent().remove(first._p)
                 elif not used:                               # пустая ячейка — стилем таблицы: «Обычный» (8 pt после,
@@ -1412,17 +1533,24 @@ class Builder:
         pad = 2 * ((self.P.get("table") or {}).get("pad_left") or 5.4) + 5
         ncol = len(widths)
         need = [0.0] * ncol
+        self._room = {}
         for row in rows:
-            if len(row) != ncol:
+            # строка с объединёнными ячейками по сетке линий (docx_layout: span) — её ячейки в один столбец тоже: шапка
+            # таблицы параметров 30RDIT в два яруса в счёт не шла, «ЗНАЧЕНИЕ» рвалось по буквам (20.10)
+            if len(row) == ncol:
+                cols = list(enumerate(row))
+            elif all("span" in c for c in row) and sum(c["span"] for c in row) == ncol:
+                cols = [(sum(c["span"] for c in row[:i]), c) for i, c in enumerate(row) if c["span"] == 1]
+            else:
                 continue
-            for ci, cell in enumerate(row):
+            for ci, cell in cols:
                 for x in cell["blocks"]:
                     if x["k"] != "p" or not x["runs"]:
                         continue
                     src = text_of(x["runs"]).strip()
                     ru = TAGS.sub("", (get(src) if src else None) or src)
                     bold = any(r.get("b") for r in x["runs"] if r.get("t", "").strip())
-                    w = max((_text_w(wd, size) for wd in ru.split()), default=0) * (1.1 if bold else 1.0)
+                    w = max((_text_w(wd, size, True) for wd in ru.split()), default=0) * (1.1 if bold else 1.0)
                     need[ci] = max(need[ci], w + pad)
         for c in range(ncol):
             short = need[c] - widths[c]
@@ -1433,6 +1561,15 @@ class Builder:
             if give > 0:
                 widths[c] += give
                 widths[d] -= give
+        # запаса нет — мягкие переносы по слогам, а кегль меньше — только у абзаца, где не влезает и слог (table()).
+        # «Влезает ли» — по полям, что станут в ячейке (table() урезает их до lim у узких столбцов), и запасу 1 pt: по
+        # полям профиля с запасом 5 pt (16 pt вместо 6) числа «250» в столбцах по 24 pt ÜFK I л. 32 «не влезали», и
+        # весь столбец мельчал до 60 % (20.10)
+        side = (self.P.get("table") or {}).get("pad_left") or 5.4
+        pad_fit = 2 * min(side, max(1.0, (min(widths) - 12) / 2)) + 1
+        for c in range(ncol):
+            if need[c] > pad and need[c] - pad + pad_fit - widths[c] > 0.5:
+                self._room[c] = (widths[c], pad_fit)
 
     def _title_styles(self, blocks):
         """Стили крупного, «переднего» и мелкого текста (титул) — шрифтом, кеглем и начертанием оригинала: было
@@ -1444,6 +1581,17 @@ class Builder:
             if runs:
                 font, size, bold = Counter((r.get("font"), r.get("size"), bool(r.get("b"))) for r in runs).most_common(1)[0][0]
                 self._font(self.doc.styles[name], font or "Tahoma", size or 10, bold)
+
+    def _sized(self, style, size):
+        """Стиль абзаца ячейки кеглем size (узкий столбец, _fit_words) — производный от его стиля."""
+        from docx.enum.style import WD_STYLE_TYPE
+        from docx.shared import Pt
+        name = f"{style.name} {size:g}pt"
+        if name not in [x.name for x in self.doc.styles]:
+            st = self.doc.styles.add_style(name, WD_STYLE_TYPE.PARAGRAPH)
+            st.base_style = style
+            st.font.size = Pt(size)
+        return self.doc.styles[name]
 
     def _aligned(self, style, al):
         """Стиль ячейки с выравниванием столбца оригинала (стилем, а не прямым оформлением абзаца)."""
@@ -1915,8 +2063,14 @@ class Builder:
         Lf = dict(L, **{k: v for k, v in (front or {}).items() if k != "to"},
                   page_tok=None if front and "head_grid" in front else L.get("page_tok")) if front else None
         in_front = False
+        restart = False                         # раздел только что начал нумерацию с числа оригинала
+        # фон обложки — картинка во весь лист под текстом титула (UTS); титул без текста — один скан с подписями
+        # (ИН-1065): это сам титул, картинкой — прежде он пропадал как фон, лист 1 выходил пустым (20.10)
+        title_text = any(((b.get("geom") or {}).get("page") or 1) == 1 and b["k"] in ("p", "h")
+                         and text_of(b.get("runs") or []).strip() for b in blocks)
         if not in_title and ns:
             self._num_start(first, ns["value"])
+            restart = True
         title_foot = []
         for b in blocks:
             g = b.get("geom") or {}
@@ -1932,6 +2086,7 @@ class Builder:
                 self._footer(sec, Lf if in_front else L)
                 if ns and not in_front:
                     self._num_start(sec, ns["value"])
+                    restart = True
             if in_front and page is not None and page > front["to"]:
                 in_front = False
                 sec = self.doc.add_section(WD_SECTION.NEW_PAGE)
@@ -1941,22 +2096,33 @@ class Builder:
                 self._footer(sec, L)
                 if ns:
                     self._num_start(sec, ns["value"])
+                    restart = True
             # логотипы обложки — те же, что в шапке тела, или стоящие в полосе шапки (выше поля тела; «atom erőmű» UTS
-            # уезжал за правый край), — шапкой титула из логотипов тела
+            # уезжал за правый край), — шапкой титула из логотипов тела. Картинка без xref (снимок скана титула) — не
+            # логотип, хоть у векторного логотипа шапки xref тоже нет: скан титула пропадал, лист 1 пустой (ред-тим 20.10)
             if in_title and b["k"] == "p" and b["runs"] and all("img" in r for r in b["runs"]) and head_x and (all(
-                    getattr(r["img"].get("stream"), "objid", None) in head_x for r in b["runs"])
+                    getattr(r["img"].get("stream"), "objid", None) in head_x - {None} for r in b["runs"])
                     or (g.get("bottom") or 999) <= L["top"] + 20):
                 prev_bottom = max(prev_bottom, g.get("bottom") or 0)   # отступ текста титула — от низа логотипов
                 logos_head = True
                 continue
             if in_title and b["k"] == "p" and b["runs"] and all("img" in r for r in b["runs"]) and g.get("x1") \
-                    and (g["x1"] - g["x0"]) * ((g.get("bottom") or g["top"]) - g["top"]) > 0.4 * L["W"] * L["H"]:
+                    and (g["x1"] - g["x0"]) * ((g.get("bottom") or g["top"]) - g["top"]) > 0.4 * L["W"] * L["H"] \
+                    and title_text:
                 continue                                     # фон обложки (UTS) — не картинкой в потоке
             # юридический текст внизу титула — в подвал титула; только ниже поля тела (UTS: 780 pt при поле 728),
             # дата титула выше поля — в потоке (OAH 4.22: «2015. szeptember» на 681 pt уходила в подвал к логотипу)
             if in_title and b["k"] == "p" and g.get("top", 0) > max(0.8 * L["H"], L["H"] - L["bottom"] - 2):
                 title_foot.append(b)
                 continue
+            if restart and b["k"] == "table":
+                # LibreOffice теряет начало нумерации раздела (pgNumType start), если раздел начат таблицей: листы
+                # 31RDGT печатались с «1» вместо «2» оригинала (20.10) — перед таблицей пустой абзац в 1 pt
+                from docx.enum.text import WD_LINE_SPACING
+                sp = self.doc.add_paragraph().paragraph_format
+                sp.space_before = sp.space_after = Pt(0)
+                sp.line_spacing, sp.line_spacing_rule = Pt(1), WD_LINE_SPACING.EXACTLY
+            restart = False
             self.block(b)
             pg = g.get("page")
             if not in_title and pg in sparse and b["k"] in ("p", "h") and g.get("top") and self.doc.paragraphs:

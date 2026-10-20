@@ -220,10 +220,13 @@ def extract(inputs, work, progress=_quiet):
                 segs, info = S.pdf_segments(f, roles=True)
                 struct["roles"] = sum(1 for s in segs if s["loc"].get("roles")) > 0
                 log(f"извлечение: {f.name} — роли строк порталом: {'да' if struct['roles'] else 'нет (сбой портала)'}")
-        if f.suffix.lower() == ".pdf" and not info.get("ocr_pages") and not struct:
+        if f.suffix.lower() == ".pdf" and (not info.get("ocr_pages") or few_ocr) and not struct:
             # PDF с текстовым слоем без разметки (Word без тегов, виртуальный принтер): DOCX — по сегментам листа,
             # начертание — по шрифтам слоя, колонтитулы — правилами размеченного (docx_layout, режим "text").
             # Прежде — DOCX из оригинала через pdf2docx (docx_src): рамки и строки вразброс, Eskom 13 листов → 23
+            # И с отдельными сканами (меньше половины листов: лист регистрации и титул с подписями 32RDGT) — скан идёт
+            # снимком листа с переведённого PDF (docx_layout._regions); прежде такой PDF целиком шёл переводом поверх
+            # и pdf2docx — таблицы вразброс, текст титула пропадал (20.10)
             struct = {"mode": "text"}
             log(f"извлечение: {f.name} — PDF без разметки: DOCX по сегментам листа и шрифтам текстового слоя")
             if os.environ.get("HU_ROLES", "1") != "0":
