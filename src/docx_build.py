@@ -182,6 +182,14 @@ def _hyphen_points(word):
     return [k for k in cut if 2 <= k <= len(word) - 2]
 
 
+def _pieces(word):
+    """Куски слова между местами переноса (с дефисом), для ширины столбца; слово без них — целиком."""
+    if not re.fullmatch(r"[А-Яа-яЁё]{6,}", word):
+        return [word]
+    ks = _hyphen_points(word)
+    return [word[a:b] + ("-" if b < len(word) else "") for a, b in zip([0] + ks, ks + [len(word)])]
+
+
 def _soft_hyphens(run):
     """Мягкие переносы (w:softHyphen) в длинных русских словах прогона: узкий столбец, где слово не влезает и при
     уменьшенном кегле, — перенос по слогам с дефисом, а не по буквам «ЖУР / НАЛ / СОБ / ЫТИ / Й» (30RDIT, 20.10)."""
@@ -220,12 +228,14 @@ def _style_pt(st):
 
 def _text_w(text, size):
     """Ширина строки, pt: латиница — по метрике Helvetica, кириллица и прочее — средней шириной Tahoma (у Helvetica
-    PDF кириллицы нет, шрифтов Word на сервере нет)."""
+    PDF кириллицы нет, шрифтов Word на сервере нет); заглавная кириллица шире — 0,72 кегля («КОНТРОЛЯ» в узком
+    столбце шапки 30RDIT считался влезающим и рвался по буквам, 20.10)."""
     global _HELV
     if _HELV is None:
         import fitz
         _HELV = fitz.Font("helv")
-    return sum(_HELV.text_length(ch, fontsize=size) if ord(ch) < 256 else 0.6 * size for ch in text)
+    return sum(_HELV.text_length(ch, fontsize=size) if ord(ch) < 256 else (0.72 if ch.isupper() else 0.6) * size
+               for ch in text)
 
 
 from docx.exceptions import InvalidSpanError
@@ -1450,10 +1460,12 @@ class Builder:
                     else:
                         self.paragraph(x, style, tgt=dc)
                 k = self._shrink.get(starts[ci])
-                if k and spans[ci][1] == spans[ci][0]:       # узкий столбец без запаса — кегль меньше (_fit_words),
-                    for par in dc.paragraphs:                # стилем: прямой кегль — нарушение профиля; только меньше
+                if spans[ci][1] == spans[ci][0] and (k or starts[ci] in self._hyph):
+                    # узкий столбец без запаса (_fit_words): мягкие переносы, а если не влезает и слог — кегль меньше
+                    # (стилем: прямой кегль — нарушение профиля; только меньше)
+                    for par in dc.paragraphs:
                         eff = _style_pt(par.style) or fit_size
-                        if fit_size * k < eff - 0.25:
+                        if k and fit_size * k < eff - 0.25:
                             par.style = self._sized(par.style, round(max(0.6 * eff, fit_size * k) * 2) / 2)
                         if starts[ci] in self._hyph:
                             for run in par.runs:
@@ -1502,6 +1514,7 @@ class Builder:
         pad = 2 * ((self.P.get("table") or {}).get("pad_left") or 5.4) + 5
         ncol = len(widths)
         need = [0.0] * ncol
+        need_h = [0.0] * ncol                           # то же с мягкими переносами (самый длинный слог-кусок)
         self._shrink, self._hyph = {}, set()
         for row in rows:
             # строка с объединёнными ячейками по сетке линий (docx_layout: span) — её ячейки в один столбец тоже: шапка
@@ -1520,7 +1533,10 @@ class Builder:
                     ru = TAGS.sub("", (get(src) if src else None) or src)
                     bold = any(r.get("b") for r in x["runs"] if r.get("t", "").strip())
                     w = max((_text_w(wd, size) for wd in ru.split()), default=0) * (1.1 if bold else 1.0)
+                    wh = max((_text_w(pc, size) for wd in ru.split() for pc in _pieces(wd)),
+                             default=0) * (1.1 if bold else 1.0)
                     need[ci] = max(need[ci], w + pad)
+                    need_h[ci] = max(need_h[ci], wh + pad)
         for c in range(ncol):
             short = need[c] - widths[c]
             if short <= 0:
@@ -1530,11 +1546,12 @@ class Builder:
             if give > 0:
                 widths[c] += give
                 widths[d] -= give
-            # запаса нет (много узких столбцов) — кегль ячеек столбца меньше, до 60 %, а не слово по буквам
+            # запаса нет — сначала мягкие переносы по слогам (кегль тот же: в таблице UTS один столбец мельче
+            # соседних выглядел чужим), и только если не влезает и слог — кегль ячеек столбца меньше, до 60 %
             if need[c] - widths[c] > 0.5 and need[c] > pad:
-                self._shrink[c] = max(0.6, (widths[c] - pad) / (need[c] - pad))
-                if (widths[c] - pad) / (need[c] - pad) < 0.6:
-                    self._hyph.add(c)                   # не влезло и при 60 % — мягкие переносы (_soft_hyphens)
+                self._hyph.add(c)
+                if need_h[c] - widths[c] > 0.5 and need_h[c] > pad:
+                    self._shrink[c] = max(0.6, (widths[c] - pad) / (need_h[c] - pad))
 
     def _title_styles(self, blocks):
         """Стили крупного, «переднего» и мелкого текста (титул) — шрифтом, кеглем и начертанием оригинала: было
