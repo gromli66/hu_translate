@@ -151,6 +151,18 @@ def _norm(tok):
     return _NORM.sub("", tok.lower())
 
 
+# полужирный Markdown в чтении портала: «**» в начале слова … «**» в конце слова той же строки, без «**» между ними.
+# Звёздочки кода — не пара: «(**GB02)» 3SZ19, «a **RD31P702B1» 30RDIT — за ними буква, перед ними скобка или пробел
+_BOLD_MD = re.compile(r"(?<!\S)\*\*(?=[^\s*])((?:(?!\*\*)[^\n])+?)(?<=[^\s*])\*\*(?![\w*])")
+
+
+def _unmark(text):
+    """Текст чтения портала без полужирной разметки Markdown: «**3PR42**», «**1.19/2. … szintnövekedése**» — звёздочки
+    у «кодовых» слов шли в текст (слово портала), у обычных — нет: заголовок «**1.19/2. …» не совпадал с названием в
+    рамке и печатался дважды (3PR42 л. 72, 20.10)."""
+    return _BOLD_MD.sub(r"\1", text)
+
+
 def _codeish(tok):
     # ≤ ≥ < > — тоже «код»: иначе «ti ≤ 70» портала проигрывало «tiz 70» Tesseract (→ «при 10 70 °C», 01.10)
     core = re.sub(r"[^\w%Δ÷±≤≥<>„”\"]", "", tok)
@@ -287,7 +299,7 @@ def ocr_words(words, portal_text):
     # «• RD 3.1.;» портала доставался буллету «e» и пропадал вместе с ним (32RDGT, 07.10)
     ws = [w for w in ws if not w["box_like"]]
     ptoks, pline = [], []
-    for li, ln in enumerate(portal_text.splitlines()):
+    for li, ln in enumerate(_unmark(portal_text).splitlines()):
         for t in ln.split():
             if not re.fullmatch(r"[•·▪●○◦■□☐☑☒✓✔]+", t):
                 ptoks.append(t); pline.append(li)

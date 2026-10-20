@@ -192,6 +192,19 @@ def test_comparison_sign_survives_neighbour_line_in_portal_chunk():
     assert [w["t"] for w in out][:4] == ["megnőtt:", "t", "<", "45°C."]
 
 
+def test_portal_markdown_bold_is_not_text_but_code_stars_are():
+    """Чтение скана порталом с Markdown: «**1.19/2. Gőzfejlesztő(k) szintnövekedése**», «Azonosító: **3PR42**» —
+    звёздочки шли в текст у «кодовых» слов (берётся слово портала), заголовок «**1.19/2. …» не совпадал с названием в
+    рамке и печатался дважды (3PR42 л. 72, 20.10). Звёздочки кода — «(**GB02)» 3SZ19, «a **RD31P702B1» 30RDIT — текст."""
+    ws = [word("1.19/2.", 170, 139), word("Gőzfejlesztő(k)", 205, 139, w=60), word("szintnövekedése", 270, 139, w=60),
+          word("(**GB02)", 10, 160, line=(1, 2, 1)), word("a", 45, 160, w=5, line=(1, 2, 1)),
+          word("**RD31P702B1", 55, 160, w=50, line=(1, 2, 1)),
+          word("Azonosító:", 10, 180, w=40, line=(1, 3, 1)), word("3PR42", 55, 180, line=(1, 3, 1))]
+    out, _ = S.ocr_words(ws, "**1.19/2. Gőzfejlesztő(k) szintnövekedése**\n(**GB02) a **RD31P702B1\nAzonosító: **3PR42**")
+    assert [w["t"] for w in out] == ["1.19/2.", "Gőzfejlesztő(k)", "szintnövekedése", "(**GB02)", "a", "**RD31P702B1",
+                                     "Azonosító:", "3PR42"]
+
+
 def test_degree_unit_not_matched_to_misread_sign():
     """«t < 98 °C.»: Tesseract — «t c 98 9C.», портал — «t < 98 °C.»; без знака градуса в сравнении «°C.» становилось «c»
     и совпадало с «c» вместо «<» — выходило «t < 98 c 98 9C.» (3SZ19, 19.10)."""
