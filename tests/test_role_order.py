@@ -128,6 +128,20 @@ def test_text_layer_item_text_place_from_its_second_line(tmp_path):
     assert next(b["geo"] for b in blocks if b["k"] == "list") == {"marker": 72, "text": 94}
 
 
+def test_marker_segment_beside_multiline_item_is_marker(tmp_path):
+    """Маркер отдельным сегментом слева от пункта в три строки (Eskom л. 10) — маркер: строка пункта — первая строка
+    его сегмента, а не середина всего сегмента; текст — на своём месте (102 pt), а не по ширине знака."""
+    src, segs = _text_page(tmp_path / "t.pdf", BODY)
+    loc = lambda bb, fr: {"bbox": bb, "frags": fr, "size": 10.0, "bold": False, "family": "serif", "align": "left"}
+    segs += [{"id": 100, "page": 0, "text": "•", "src": "", "loc": loc([76, 534, 82, 547], [[76, 534, 82, 547]])},
+             {"id": 101, "page": 0, "text": "Normal Environmental Conditions – This section shall include all", "src": "",
+              "loc": loc([102, 535, 542, 572], [[102, 535, 542, 547], [102, 547, 541, 560], [102, 560, 542, 572]])}]
+    blocks, _ = DL.load(src, segs, text=True)
+    lst_ = next(b for b in blocks if b["k"] == "list")
+    assert lst_["geo"] == {"marker": 76, "text": 102}
+    assert TEXT(lst_["items"][0][0]).startswith("Normal")
+
+
 def test_unlabeled_letter_items_are_list(tmp_path):
     """Р9: лист без меток портала (портал не ответил) — «a)», «b)» в начале абзаца — пункты списка, как у PDF с
     разметкой (docx_struct.para_lists), а не абзацы."""

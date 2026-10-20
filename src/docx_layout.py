@@ -1244,10 +1244,13 @@ def load(src, segs, text=False):
     marks = {}          # текстовый слой: маркер пункта — свой сегмент слева от текста пункта (layout.frags_from_text)
     if text:            # только в потоке: «-» в ячейке таблицы — значение (НГТУ)
         bullet = [s for s in flow if re.fullmatch(r"\s*[•▪◦·●○■□o–\-\uf020-\uf0ff]\s*", s["text"])]
-        # маркер — если справа на той же строке ближе 40 pt есть пункт; иначе «-» — значение («Revision: ⇥ -»)
+        # маркер — если справа на той же строке ближе 40 pt есть пункт; иначе «-» — значение («Revision: ⇥ -»);
+        # строка пункта — первая строка его сегмента: у пункта в несколько строк середина всего сегмента ниже маркера,
+        # и маркер Symbol Eskom не узнавался (текст пункта — по ширине знака, а не на своём месте, 20.10)
+        head = lambda t: (t["loc"].get("frags") or [t["loc"]["bbox"]])[0]
         lone = {s["id"] for s in bullet if any(
-            t["page"] == s["page"] and t["id"] != s["id"] and 0 < t["loc"]["bbox"][0] - s["loc"]["bbox"][2] < 40
-            and abs((t["loc"]["bbox"][1] + t["loc"]["bbox"][3]) - (s["loc"]["bbox"][1] + s["loc"]["bbox"][3])) / 2
+            t["page"] == s["page"] and t["id"] != s["id"] and 0 < head(t)[0] - s["loc"]["bbox"][2] < 40
+            and abs((head(t)[1] + head(t)[3]) - (s["loc"]["bbox"][1] + s["loc"]["bbox"][3])) / 2
             < 0.6 * max(s["loc"]["bbox"][3] - s["loc"]["bbox"][1], 6) for t in flow)}
         for s in flow:
             if s["id"] in lone:
