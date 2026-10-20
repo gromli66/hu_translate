@@ -617,13 +617,14 @@ def assemble_all(jf, d, out_dir=None, progress=None):
     outd.mkdir(parents=True, exist_ok=True)
     rows = []
     if src.suffix.lower() == ".docx":
-        info = build_docx(src, outd / f"{stem}_RU.docx", d["segs"], d["res"])
+        sfx = "_EN" if d.get("pair") == "ru-en" else "_RU"          # перевод RU→EN (проект "pair": "ru-en")
+        info = build_docx(src, outd / f"{stem}{sfx}.docx", d["segs"], d["res"])
         # раздел перевода — не больше листов, чем в оригинале (docx_fit: «раздел = лист» 3PR04 расползался 514 → 651);
         # без LibreOffice — как есть
         import docx_fit
         import subprocess
         try:
-            info["fit"] = docx_fit.fit(src, outd / f"{stem}_RU.docx", lo_convert)
+            info["fit"] = docx_fit.fit(src, outd / f"{stem}{sfx}.docx", lo_convert)
         except (OSError, RuntimeError, subprocess.SubprocessError) as e:
             info["fit"] = {"skipped": f"{type(e).__name__}: {e}"[:200]}
     else:

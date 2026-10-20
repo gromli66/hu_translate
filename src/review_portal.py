@@ -95,10 +95,46 @@ USER_COMPACT = USER_RICH.replace(
 _TR = None
 
 
-def configure(terms=None, conventions=None, glossary=None):
-    """Глоссарий комплекта, основной глоссарий и свод соглашений (раздел «## Уже принято» или весь файл)."""
-    global CONVENTIONS, SYSTEM_RICH, TERMS, GLOSSARY, _TR
-    TERMS, GLOSSARY, _TR = terms, glossary, None
+# Обратное направление RU→EN (проект "pair": "ru-en", 20.10): тот же разбор по элементам, оригинал русский, перевод
+# английский; венгерские ловушки и свод русских соглашений не нужны
+SYSTEM_RU_EN = """You check translations of technical documentation from Russian into English.
+Look only for errors of MEANING that would make a specialist understand a requirement differently: wrong term or object,
+lost or added condition/action/object/requirement, reversed meaning (negation), wrong number, unit, time limit,
+wrong modality (должен → shall, допускается → may, не допускается → shall not).
+NOT errors: style, word order, synonyms with the same meaning, English abbreviations and terms from the glossary,
+codes and names in Latin, decimal point instead of decimal comma, formatting of numbers and dates."""
+
+USER_COMPACT_RU_EN = """Text before the fragment (original → accepted translation):
+{prev}
+
+Fragment UNDER REVIEW.
+Original (RU):
+{hu}
+
+Translation (EN):
+{ru}
+
+Text after the fragment:
+{next}
+{terms}
+Work step by step in your reasoning.
+1. List the meaning elements of the original: equipment/systems, actions, conditions, limits, numbers with units,
+negations, modality.
+2. For each element find its counterpart in the translation: OK / DISTORTED / MISSING.
+3. Find what the translation adds that is not in the original: ADDED.
+4. A serious error exists only if an element is DISTORTED or MISSING, or something ADDED changes the requirement.
+If in doubt, there is no serious error.
+In the answer list only the problems found.
+Answer with JSON only:
+{{"problems": ["element: what is wrong"], "serious": true|false, "reason": "кратко, по-русски", "fix": "corrected English translation of the whole fragment if serious = true; otherwise empty"}}"""
+PAIR = None
+
+
+def configure(terms=None, conventions=None, glossary=None, pair=None):
+    """Глоссарий комплекта, основной глоссарий и свод соглашений (раздел «## Уже принято» или весь файл);
+    pair="ru-en" — проверка английского перевода русского оригинала."""
+    global CONVENTIONS, SYSTEM_RICH, TERMS, GLOSSARY, _TR, PAIR
+    TERMS, GLOSSARY, _TR, PAIR = terms, glossary, None, pair
     if conventions and Path(conventions).exists():
         t = Path(conventions).read_text(encoding="utf-8")
         CONVENTIONS = t.split("## Уже принято", 1)[1].split("\n## ", 1)[0].strip() if "## Уже принято" in t else t.strip()
@@ -123,7 +159,11 @@ def _ctx(pairs):
 def review(hu, ru, vote=0, think=True, ctx=None, compact=False):
     """ctx (насыщенный режим): {"prev": [(hu, ru)], "next": [(hu, ru)], "other": второй перевод}.
     compact: в ответ только проблемы, вердикт и исправленный перевод (fix) — короче вывод, без отдельного автоисправления."""
-    if ctx is None:
+    if PAIR == "ru-en":
+        sysm = SYSTEM_RU_EN
+        user = USER_COMPACT_RU_EN.format(prev=_ctx((ctx or {}).get("prev", [])), hu=hu, ru=ru,
+                                         next=_ctx((ctx or {}).get("next", [])), terms=_terms(hu, 50))
+    elif ctx is None:
         sysm, user = SYSTEM, USER.format(hu=hu, ru=ru, terms=_terms(hu))
     else:
         other, mh = ctx.get("other") or "", morph.hint(hu)

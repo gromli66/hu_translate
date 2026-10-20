@@ -23,7 +23,8 @@ HU_WORD = re.compile(r"[a-záéíóöőúüű]{2,}")
 def needs_translation(text):
     """Есть ли что переводить: строчное слово или аббревиатура из букв (не чистые коды/числа)."""
     t = re.sub(r"<\/?f\d+>", "", text)
-    return bool(HU_WORD.search(t)) or bool(re.search(r"\b[A-ZÁÉÍÓÖŐÚÜŰ]{2,}\b", t))
+    return bool(HU_WORD.search(t)) or bool(re.search(r"\b[A-ZÁÉÍÓÖŐÚÜŰ]{2,}\b", t)) \
+        or bool(re.search(r"[А-Яа-яЁё]", t))          # русский источник (проект "pair": "ru-en"): и «№ п/п»
 
 
 # ---------------------------------------------------------------- DOCX
@@ -82,6 +83,38 @@ def _symbol_run(r, t):
     return False
 
 
+# поле номера страницы: его результат («24» в «Стр.24») — не текст. Прежде он шёл в сегмент, перевод «Page 24»
+# ложился в первый прогон, а результат поля пустел — LibreOffice/Word пересчитывали поле, и выходило «Page 2402»
+# (ТЗ тренажёра RU→EN, 20.10)
+PAGE_FIELD = re.compile(r"^\s*(PAGE|NUMPAGES|SECTIONPAGES)\b")
+
+
+def _field_result_runs(runs):
+    """Номера прогонов — результатов полей номера страницы (сложное поле fldChar begin…separate…end или fldSimple)."""
+    out, stack = set(), []                 # stack: [инструкция, идёт результат] на каждое открытое поле
+    for i, r in enumerate(runs):
+        par = r.getparent()
+        if par is not None and par.tag == W + "fldSimple" and PAGE_FIELD.match(par.get(W + "instr") or ""):
+            out.add(i)
+            continue
+        fc = r.find(W + "fldChar")
+        if fc is not None:
+            kind = fc.get(W + "fldCharType")
+            if kind == "begin":
+                stack.append(["", False])
+            elif kind == "separate" and stack:
+                stack[-1][1] = True
+            elif kind == "end" and stack:
+                stack.pop()
+            continue
+        it = r.find(W + "instrText")
+        if it is not None and stack:
+            stack[-1][0] += it.text or ""
+        elif stack and stack[-1][1] and PAGE_FIELD.match(stack[-1][0]):
+            out.add(i)
+    return out
+
+
 def docx_parts(path):
     """Имена XML-частей с текстом: тело, колонтитулы, сноски."""
     with zipfile.ZipFile(path) as z:
@@ -103,8 +136,9 @@ def docx_segments(path):
                     continue
                 # группы подряд идущих прогонов с одинаковым начертанием
                 groups = []
+                page_no = _field_result_runs(runs)
                 for ri, (r, t) in enumerate(zip(runs, texts)):
-                    if not t:
+                    if not t or ri in page_no:     # номер страницы (поле) — не текст, прогон не трогается
                         continue
                     # значки шрифтов Wingdings/Symbol (флажки «□») — не текст: модель их выбрасывает,
                     # прогон остаётся на месте нетронутым

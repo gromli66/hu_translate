@@ -32,6 +32,26 @@ SYSTEM = """Ты — профессиональный переводчик эк�
 - Служебные метки: [TAB] — табуляция, [TAB×3] — три табуляции подряд, [BR] — перенос строки, [BR×2] — два переноса; переноси каждую метку в перевод в точности как есть и на то же место относительно текста. Метки форматирования <f1>…</f1>, <f2>…</f2> сохраняй все, переводи текст внутри них.
 - Формат ответа: на каждый входной <s id="N">…</s> ровно один <s id="N">перевод</s>, в том же порядке. Никакого другого текста."""
 
+# Обратное направление RU→EN (проект "pair": "ru-en"; ТЗ тренажёра, 20.10): свой промпт и свои проверки.
+# Венгерские проверки (остатки венгерского = любая латиница, «нет кириллицы») английский перевод валили бы целиком.
+SYSTEM_RU_EN_DOMAIN = "You are a professional translator of technical documentation from Russian into English."
+SYSTEM_RU_EN = SYSTEM_RU_EN_DOMAIN + """
+
+Glossary rules (mandatory):
+{rules}
+
+Additional rules:
+- Translate completely and accurately, without omissions, abridgement, explanations or comments of your own. Style: formal technical English of a technical specification, consistent American spelling.
+- Use the terms from "Glossary terms for this fragment" exactly as given. In an entry "Russian → English [note]" the note is a hint for you; do not copy it into the translation.
+- No Cyrillic in the translation. A Russian abbreviation missing from the glossary is translated by its meaning (an established English abbreviation or the full English term), never transliterated.
+- Codes, identifiers, Latin names and abbreviations (Thai Binh 2 Power Plant, Babcock & Wilcox, KKS, SCADA, TCP/IP), section and item numbers (1.1.1.3, 7.2.) are copied character by character. Numbers stay as in the original; the decimal comma becomes a decimal point (0,4 кВ → 0.4 kV). Units are written in English (кВ → kV, МВт → MW, т/ч → t/h, сек → s).
+- Words written in CAPITALS in the original stay in CAPITALS in the translation.
+- Russian quotation marks «…» become "…".
+- Service markers: [TAB] is a tab, [TAB×3] three tabs in a row, [BR] a line break, [BR×2] two line breaks; copy each marker into the translation exactly as is, in the same position relative to the text (between the corresponding words). Keep all formatting markers <f1>…</f1>, <f2>…</f2>, translating the text inside them.
+- Answer format: for each input <s id="N">…</s> exactly one <s id="N">translation</s>, in the same order. No other text."""
+CYR_LEFT = re.compile(r"[А-Яа-яЁё]+")
+LAT_NAME = re.compile(r"(?<![A-Za-z])[A-Za-z][A-Za-z&]+(?![A-Za-z])")
+
 CODE = re.compile(r"[\wÀ-ɏ.\-/÷()+±%]*\d[\wÀ-ɏ.\-/÷()+±%]*")
 HU_SUFFIX = re.compile(r"-[a-záéíóöőúüű]+$")
 LATIN_WORD = re.compile(r"(?<![\w])[A-Za-zÁÉÍÓÖŐÚÜŰáéíóöőúüű][a-záéíóöőúüű]{2,}(?![\w])")
@@ -196,6 +216,42 @@ def check(src, ru, allowed_latin=frozenset(), gloss_abbr=frozenset(), vocab=froz
     return issues
 
 
+def check_en(src, en):
+    """Жёсткие замечания к английскому переводу русского сегмента (RU→EN): пусто, метки, [TAB]/[BR], числа (десятичная
+    запятая → точка), лишние числа, латиница оригинала (названия, коды), кириллица в переводе, иероглифы, длина."""
+    if not en.strip():
+        return ["пусто"]
+    issues = []
+    if sorted(TAG.findall(src)) != sorted(TAG.findall(en)):
+        issues.append("метки форматирования")
+    if src.count("\t") != en.count("\t") or src.count("\n") != en.count("\n"):
+        issues.append("[TAB]/[BR]")
+    nums = lambda t: {n.replace(",", ".") for n in re.findall(r"\d+(?:[.,]\d+)?", TAG.sub(" ", t))}
+    s_n, e_n = nums(src), nums(en)
+    miss = sorted(s_n - e_n)
+    if miss:
+        issues.append("нет кодов/чисел: " + ", ".join(miss[:6]))
+    extra = sorted(n for n in e_n - s_n if len(re.sub(r"\D", "", n)) >= 2)
+    if extra:
+        issues.append("лишнее число: " + ", ".join(extra[:4]))
+    lost = sorted(set(LAT_NAME.findall(TAG.sub(" ", src))) - set(LAT_NAME.findall(TAG.sub(" ", en))))
+    if lost:
+        issues.append("латиница потеряна: " + ", ".join(lost[:6]))
+    cyr = CYR_LEFT.findall(TAG.sub(" ", en))
+    if len(cyr) > 0.5 * len(re.findall(r"\w+", TAG.sub(" ", en))):
+        issues.append("не переведено")                 # badness: хуже любого перевода с замечаниями
+    elif cyr:
+        issues.append("кириллица осталась: " + ", ".join(dict.fromkeys(cyr[:6])))
+    if CJK.search(en):
+        issues.append("иероглифы")
+    plain_src = TAG.sub("", src)
+    if len(plain_src) >= 25:
+        k = len(TAG.sub("", en)) / len(plain_src)
+        if not 0.45 <= k <= 2.0:
+            issues.append(f"длина ×{k:.2f}")
+    return issues
+
+
 UNITS = [("mg/dm3", "мг/дм³"), ("g/dm3", "г/дм³"), ("mg/kg", "мг/кг"), ("g/kg", "г/кг"), ("kg/cm2", "кгс/см²"),
          ("m3/h", "м³/ч"), ("mm/s", "мм/с"), ("t/h", "т/ч"), ("l/h", "л/ч"), ("mbar", "мбар"), ("bar", "бар"),
          ("kV", "кВ"), ("KV", "кВ"), ("kW", "кВт"), ("MW", "МВт"), ("Hz", "Гц"), ("mA", "мА"), ("nA", "нА")]
@@ -236,7 +292,7 @@ def fix_caps(src, ru):
     return CYR_CAPS.sub(low, ru)
 
 
-LIST_ISSUES = ("нет кодов/чисел", "лишнее число", "латиница потеряна", "венгерский остался")
+LIST_ISSUES = ("нет кодов/чисел", "лишнее число", "латиница потеряна", "венгерский остался", "кириллица осталась")
 
 
 def badness(issues):
@@ -285,7 +341,7 @@ def gloss_misses(src, ru, entries, outer=None):
 
 
 class Translator:
-    def __init__(self, glossary, think=False, retry_think=True, extra=None, domain=None, tm=None):
+    def __init__(self, glossary, think=False, retry_think=True, extra=None, domain=None, tm=None, pair=None):
         self.tm = json.loads(Path(tm).read_text(encoding="utf-8")) if tm and Path(tm).exists() else {}
         self.rules, self.entries = G.load(glossary)
         self.main_ids = {id(e) for e in self.entries}             # записи основного глоссария — приоритет в промпте
@@ -307,9 +363,10 @@ class Translator:
         self.gloss_abbr = frozenset(set(self.abbrs) | {w for e in self.entries for seq in e.alts for w in seq if G._is_abbr(w)})
         self.think, self.retry_think = think, retry_think
         self.vocab = frozenset()
-        self.system = SYSTEM.format(rules=self.rules)
+        self.ru_en = pair == "ru-en"
+        self.system = (SYSTEM_RU_EN if self.ru_en else SYSTEM).format(rules=self.rules)
         if domain:                                  # другая предметная область/комплект — первая фраза промпта
-            self.system = self.system.replace(SYSTEM_DOMAIN, domain)
+            self.system = self.system.replace(SYSTEM_RU_EN_DOMAIN if self.ru_en else SYSTEM_DOMAIN, domain)
 
     def term_issues(self, src, ru):
         """Обязательные термины глоссария комплекта, которых нет в переводе (по основам).
@@ -323,6 +380,8 @@ class Translator:
         return [f"термин документа: {m} → {ru_of.get(m, '?')}" for m in miss[:3]]
 
     def full_check(self, src, ru):
+        if self.ru_en:
+            return check_en(src, ru) + (self.term_issues(src, ru) if ru else [])
         return check(src, ru, self.allowed_latin, self.gloss_abbr, self.vocab, frozenset(self.abbrs)) + \
             (self.term_issues(src, ru) if ru else [])
 
@@ -366,20 +425,22 @@ class Translator:
         hits += G.paren_abbr_hits(text, self.entries, found)     # второе значение сокращения: «… (TG) → турбогенератор»
         parts = []
         if hits:
-            parts.append("Термины глоссария для этого фрагмента:\n" + "\n".join(self.term_line(e) for e in hits))
+            parts.append(("Glossary terms for this fragment:\n" if self.ru_en else "Термины глоссария для этого фрагмента:\n")
+                         + "\n".join(self.term_line(e) for e in hits))
         # правило первого употребления «СУЗ (SZBV)» модель внутри пачки не держит (ставит скобки
         # в каждое упоминание, замер 01.10) — его расставляет first_use() по всему документу
         if context:
-            parts.append("Предыдущий текст документа (для контекста, НЕ переводить):\n" + to_model(context))
+            parts.append(("Preceding text of the document (for context, do NOT translate):\n" if self.ru_en else
+                          "Предыдущий текст документа (для контекста, НЕ переводить):\n") + to_model(context))
         if note:
             parts.append(note)
         # разбор слов с отрицающими морфемами (tömör+telen+ség): без него «негерметичность» становилась
         # «герметичностью»/«разрывом»/«закупоркой» (49 из 86 верно); с ним 6 из 6 исправлено (опыт 01.10)
-        h = morph.hint(text)
+        h = "" if self.ru_en else morph.hint(text)
         if h:
             parts.append(h)
         segs = "\n".join(f'<s id="{i+1}">{to_model(u["text"])}</s>' for i, u in enumerate(units))
-        parts.append("Переведи сегменты:\n" + segs)
+        parts.append(("Translate the segments:\n" if self.ru_en else "Переведи сегменты:\n") + segs)
         return "\n\n".join(parts)
 
     def _call(self, units, first_abbr, context, think, note=""):
@@ -416,6 +477,10 @@ class Translator:
                         ". Исправь. Если в оригинале есть код или число — оно должно быть в переводе без изменений." +
                         (" Проверь, что каждое отрицание оригинала сохранено (см. разбор слов выше)."
                          if any(i.startswith("отрицание") for i in cur["issues"]) else ""))
+                if self.ru_en:
+                    note = ("The previous translation of this segment failed the check (issues in Russian): "
+                            + "; ".join(cur["issues"]) + ". Fix it and answer in English. Every number and code of the "
+                            "original must be in the translation unchanged (decimal comma → decimal point).")
                 g2, _ = self._call([u], [a for a in plan["first_abbr"] if a in u["text"]], plan["context"],
                                    self.retry_think, note + ("" if attempt == 0 else " (повторная попытка)"))
                 ru2 = g2.get(0, "")

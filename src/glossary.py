@@ -14,7 +14,12 @@ from pathlib import Path
 
 GLOSS_MD = None                                  # основной глоссарий задаётся проектом (projects/<имя>/project.json)
 
-WORD = re.compile(r"[0-9A-Za-zÀ-ɏ]+")
+WORD = re.compile(r"[0-9A-Za-zÀ-ɏА-Яа-яЁё]+")       # кириллица — для русского источника (проект "pair": "ru-en")
+CYR_W = re.compile(r"[А-Яа-яЁё]")
+# окончания русских слов: основа термина = слово без окончания; слово текста = основа (или всё слово) + окончание
+RU_TAILS = frozenset("""а я о е ы и у ю ь й ом ем ой ей ою ею ам ям ах ях ами ями ов ев ий ия ие ии ию ией ием иям иях
+иями ья ье ью ьи ьей ьям ьях ьями ая яя ое ее ую юю ые ый ого его ому ему ым им ых их ыми ими""".split())
+RU_ENDS = sorted(RU_TAILS, key=len, reverse=True)
 
 
 @dataclass
@@ -37,6 +42,9 @@ def _is_abbr(w):
 
 def _stem(w):
     lw = w.lower()
+    if CYR_W.match(lw):
+        lw = lw.replace("ё", "е")
+        return next((lw[:-len(e)] for e in RU_ENDS if lw.endswith(e) and len(lw) - len(e) >= 3), lw)
     if len(lw) >= 5 and lw[-1] in "ae":
         return lw[:-1]
     return lw
@@ -80,7 +88,7 @@ def load(path=None):
         if ln.startswith("## "):
             section = ln[3:].strip()
             continue
-        if not ln.startswith("|") or ln.startswith("|---") or ln.startswith("| Венгерский"):
+        if not ln.startswith("|") or ln.startswith("|---") or ln.startswith(("| Венгерский", "| Русский")):
             continue
         cells = [c.strip() for c in ln.strip().strip("|").split("|")]
         if len(cells) < 2:
@@ -106,6 +114,10 @@ def _word_hit(tw, pw):
         return pw == tw or (len(tw) >= 4 and pw[:1].isupper() and pw.upper() == tw)
     if tw[0].isdigit():
         return pw == tw
+    if CYR_W.match(tw):
+        # русское слово: основа или всё слово термина + окончание («останов» → «останова»: основа «остан» + «ова» — нет)
+        lp, full = pw.lower().replace("ё", "е"), tw.lower().replace("ё", "е")
+        return any(lp.startswith(b) and (lp[len(b):] == "" or lp[len(b):] in RU_TAILS) for b in (full, _stem(tw)))
     st, lp = _stem(tw), pw.lower()
     if len(st) < 3:
         return lp == tw.lower()
@@ -168,7 +180,7 @@ def _candidates(toks, entries):
             _INDEX[id(entries)] = (entries, len(entries), idx)    # сильная ссылка: пока список в кэше, его id занят
     keys = set()
     for t in toks:
-        lt = t.lower()
+        lt = t.lower().replace("ё", "е")
         keys.add(lt)
         keys.update(lt[:k] for k in (2, 3, 4))
     pos = set()

@@ -58,7 +58,7 @@ def load_project(path):
 
 def make_translator(prj, think=True):
     return Translator(think=think, extra=prj.get("terms"), glossary=prj["glossary"], domain=prj.get("domain"),
-                      tm=prj.get("tm"))
+                      tm=prj.get("tm"), pair=prj.get("pair"))
 
 
 def doc_files(work):
@@ -360,15 +360,20 @@ def translate(work, prj, workers=4, redo=False, progress=_quiet):
     main = [e for e in tr.entries if id(e) in tr.main_ids]
     for stem, d in docs.items():
         out = {s["id"]: done[stem][s["id"]] for s in d["segs"]}
-        # перевод из памяти переводов утверждён редактором — постобработка его не трогает
-        tr.first_use(d["segs"], {k: v for k, v in out.items() if not v.get("tm")})
+        # перевод из памяти переводов утверждён редактором — постобработка его не трогает;
+        # RU→EN: без «СУЗ (SZBV)» и русских единиц/прописных — это правила перевода на русский
+        if not tr.ru_en:
+            tr.first_use(d["segs"], {k: v for k, v in out.items() if not v.get("tm")})
         for s in d["segs"]:
             r = out[s["id"]]
             if not r.get("copied") and not r.get("tm") and r["ru"]:
-                r["ru"] = fix_units(fix_caps(s["text"], r["ru"]))
+                if not tr.ru_en:
+                    r["ru"] = fix_units(fix_caps(s["text"], r["ru"]))
                 r["issues"] = tr.full_check(s["text"], r["ru"])
                 r["gloss_miss"] = gloss_misses(TAG.sub("", s["text"]), r["ru"], main, outer=tr.entries)
         d["res"] = {str(k): v for k, v in out.items()}
+        if prj.get("pair"):
+            d["pair"] = prj["pair"]                 # сборка: суффикс файла перевода (_EN)
         d.pop("polish", None)                       # перевод новый — шлифовка заново
         save_doc(work, stem, d)
         log(f"перевод: {stem} — на вычитку {sum(1 for r in d['res'].values() if r.get('issues'))}")
@@ -445,7 +450,8 @@ NOTE_FIX = ("Независимая проверка смысла нашла в 
 
 def review(work, prj, workers=6, compact=True, progress=_quiet):
     import review_portal as RP
-    RP.configure(terms=prj.get("terms"), conventions=prj.get("conventions"), glossary=prj["glossary"])
+    RP.configure(terms=prj.get("terms"), conventions=prj.get("conventions"), glossary=prj["glossary"],
+                 pair=prj.get("pair"))
     tr = make_translator(prj)
     main = [e for e in tr.entries if id(e) in tr.main_ids]
     t0, cnt, lock = time.time(), {"n": 0}, threading.Lock()
@@ -458,7 +464,7 @@ def review(work, prj, workers=6, compact=True, progress=_quiet):
         for i, s in enumerate(segs):
             r, hu = d["res"][str(s["id"])], cl(s["text"])
             if r.get("copied") or r.get("tm") or r.get("edited") or "review" in r \
-                    or not re.search(r"[A-Za-zÁÉÍÓÖŐÚÜŰáéíóöőúüű]{3,}", hu):
+                    or not re.search(r"[A-Za-zÁÉÍÓÖŐÚÜŰáéíóöőúüűА-Яа-яЁё]{3,}", hu):
                 continue
             key = (hu, ru(s))
             first.setdefault(key, []).append(str(s["id"]))
@@ -484,7 +490,8 @@ def review(work, prj, workers=6, compact=True, progress=_quiet):
                     got, _ = tr._call([{"key": 0, "text": s["text"]}], [], "", True, NOTE_FIX.format(reason=rv["reason"], ru=key[1]))
                     cand = got.get(0, "")
                 if cand:
-                    cand = fix_units(fix_caps(s["text"], cand))
+                    if not tr.ru_en:
+                        cand = fix_units(fix_caps(s["text"], cand))
                     rv2 = RP.review(key[0], cl(cand), think=True, ctx=ctx, compact=compact)
                     fx = {"ru": cand, "issues": tr.full_check(s["text"], cand), "rv2": rv2}
             with lock:
@@ -529,6 +536,9 @@ def polish(work, prj, progress=_quiet, chat=None):
     в d["polish"] (листы «шлифовка» и «нарушения» таблицы вычитки), у сегмента — r["polish"] (колонка H)."""
     import conventions as C
     import polish as PL
+    if prj.get("pair") == "ru-en":
+        # соглашения шлифовки — о русском тексте (ё, кавычки «», латиница/кириллица) — к английскому не применимы
+        log("шлифовка: перевод на английский — русские языковые соглашения не применяются, шаг пропущен"); return
     if chat is None:
         from llm import chat
     files = doc_files(work)
