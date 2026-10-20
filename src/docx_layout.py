@@ -460,11 +460,24 @@ def _tables(hs, vs):
             parent[i] = parent[parent[i]]
             i = parent[i]
         return i
+    across = lambda h, v: h[1] - 2 <= v[0] <= h[2] + 2
+    # вертикаль ячейки начинается в 3–4 pt под линейкой строки и доходит до следующей линейки — так у двух и больше
+    # вертикалей под одной линейкой или у одной вертикали в двух и больше строках (ÜFK л. 82–84 текстовым слоем:
+    # таблицы «Beavatkozások», «Ellenőrzési követelmények» без боковых рамок распадались на куски по одной линейке и
+    # уходили рисунком, 20.10) — тоже касание; одиночная вертикаль рамки чертежа (S2t) и засечки графика с зазором
+    # снизу (T4) — нет
+    gap = [(k, v) for k, h in enumerate(hs) for v in vs if across(h, v) and 2 < v[1] - h[0] <= 4
+           and any(across(h2, v) and abs(v[2] - h2[0]) <= 2 for h2 in hs)]
+    per_h, per_x = Counter(k for k, _ in gap), Counter(round(v[0]) for _, v in gap)
+    below = {}
+    for k, v in gap:
+        if per_h[k] >= 2 or per_x[round(v[0])] >= 2:
+            below.setdefault(k, []).append(v)
     for i, (oi, a) in enumerate(rules):
         if oi != "h":
             continue
         for j, (oj, b) in enumerate(rules):
-            if oj == "v" and b[1] - 2 <= a[0] <= b[2] + 2 and a[1] - 2 <= b[0] <= a[2] + 2:
+            if oj == "v" and (b[1] - 2 <= a[0] <= b[2] + 2 and across(a, b) or b in below.get(i, ())):
                 parent[find(i)] = find(j)
     groups = {}
     for i, r in enumerate(rules):
@@ -478,7 +491,7 @@ def _tables(hs, vs):
         y0, y1 = min(v[1] for v in gv), max(v[2] for v in gv)
         # таблица без боковых рамок (ÜFK, скан: внутренние вертикали есть, крайних нет — шла текстом, 303 строки из
         # 303) — края по горизонталям, если от двух они одинаково выходят за крайние вертикали с обеих сторон
-        hh = [h for h in gh if y0 - 3 <= h[0] <= y1 + 3]
+        hh = [h for h in gh if y0 - 4 <= h[0] <= y1 + 4]                    # запас — как у касания выше
         lo, hi = [h[1] for h in hh if h[1] < x0 - 15], [h[2] for h in hh if h[2] > x1 + 15]
         edges = [min(lo), max(hi)] if len(lo) >= 2 and len(hi) >= 2 and max(lo) - min(lo) <= 6 \
             and max(hi) - min(hi) <= 6 else []

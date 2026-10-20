@@ -538,3 +538,38 @@ def test_running_counts_pages_not_pieces(tmp_path):
     text = " ".join("".join(q.get("t", "") for q in x["runs"]) for b in blocks if b["k"] == "table"
                     for r in b["rows"] for c in r for x in c["blocks"])
     assert "Verzió" in text and "Jóváhagyás dátuma" in text
+
+
+def test_cell_rules_short_of_row_lines_still_make_table(tmp_path):
+    """Таблица без боковых рамок: вертикали ячеек не доходят до линеек строк на 3–4 pt, шапка залита серым (ÜFK I
+    л. 83 текстовым слоем, «Beavatkozások»): сетка распадалась на куски по одной линейке, и таблица вместе с подписью
+    над ней уходила рисунком. Должна быть таблица 3 столбца с шапкой, подпись — абзацем."""
+    src = tmp_path / "t.pdf"
+    doc = fitz.open()
+    pg = doc.new_page(width=595, height=842)
+    sh = pg.new_shape()
+    sh.draw_rect(fitz.Rect(57, 255, 542, 286))
+    sh.finish(color=None, fill=(0.85, 0.85, 0.85))
+    ys = [255, 286, 368, 489]
+    for y in ys:
+        sh.draw_line((57, y), (542, y))
+    for x in (228, 461):
+        for a, b in zip(ys, ys[1:]):
+            sh.draw_line((x, a + 3.5), (x, b - 0.5))
+    sh.finish(color=(0, 0, 0), width=0.5)
+    sh.commit()
+    for x, y, t in ((57, 248, "Beavatkozások:"), (100, 275, "Eltérés"), (290, 275, "Szükséges beavatkozás"),
+                    (466, 275, "Végrehajtási határ"), (62, 300, "A. A korlátozó feltétel"),
+                    (62, 312, "NEM TELJESÜL."), (232, 300, "A.1. Helyre kell állítani."), (466, 300, "A.1. 360 óra"),
+                    (62, 380, "B. Az A.1. időtartam LETELT."), (232, 380, "B.1. A blokkot le kell állítani."),
+                    (466, 380, "B.1. 288 óra")):
+        pg.insert_text((x, y), t, fontsize=9, fontname="tiro")
+    doc.save(str(src))
+    blocks, _ = DL.load(str(src), _segs(src), text=True)
+    assert not any(b.get("figure") for b in blocks)
+    tab = [b for b in blocks if b["k"] == "table"]
+    assert len(tab) == 1 and max(len(r) for r in tab[0]["rows"]) == 3 and len(tab[0]["rows"]) == 3
+    cell = lambda c: " ".join("".join(q.get("t", "") for q in x.get("runs") or []) for x in c["blocks"])
+    assert [cell(r[-1]) for r in tab[0]["rows"][1:]] == ["A.1. 360 óra", "B.1. 288 óra"]
+    assert [cell(c) for c in tab[0]["rows"][0]] == ["Eltérés", "Szükséges beavatkozás", "Végrehajtási határ"]
+    assert any(b["k"] == "p" and "Beavatkozások:" in "".join(q.get("t", "") for q in b["runs"]) for b in blocks)
