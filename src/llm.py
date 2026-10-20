@@ -2,7 +2,7 @@
 """Клиент портала go.ai-rosatom.ru (Open WebUI, OpenAI-совместимый) для перевода.
 Токен — ROSATOM_AI_TOKEN из окружения или .env в корне репозитория, в вывод не печатается.
 Кэш на диск по sha1(модель+параметры+сообщения): повтор прогона стоит ноль."""
-import sys, json, time, base64, hashlib, threading, urllib.request, urllib.error
+import sys, json, time, base64, hashlib, tempfile, threading, urllib.request, urllib.error
 from pathlib import Path
 
 import os
@@ -40,6 +40,52 @@ _lock = threading.Lock()
 STAT = {"calls": 0, "cached": 0, "sec": 0.0, "out_tok": 0, "in_tok": 0}
 
 
+def _busy_retry(fn):
+    """Windows: пока файл открыт другим или его подменяет os.replace другого процесса, открытие и replace
+    дают PermissionError — повтор в пределах секунды, потом отказ наружу."""
+    for _ in range(20):
+        try:
+            return fn()
+        except PermissionError:
+            time.sleep(0.05)
+    return fn()
+
+
+def _read_cache(f):
+    """Запись кэша или None (промах). Испорченная или пустая запись — тоже промах с причиной в журнал:
+    ответ перезапросится и перезапишет её (20.10 два ответа склеились в одном файле — сборка падала)."""
+    try:
+        b = _busy_retry(f.read_bytes)
+    except FileNotFoundError:
+        return None
+    except PermissionError as e:
+        print(f"llm: кэш {f.name} не прочитан ({e!r}) — перезапрос", file=sys.stderr, flush=True)
+        return None
+    try:
+        d = json.loads(b.decode("utf-8"))
+    except ValueError as e:  # UnicodeDecodeError (обрыв посреди буквы) и JSONDecodeError (пусто, склейка, обрыв)
+        why = f"не JSON: {e}"
+    else:
+        if isinstance(d, dict) and isinstance(d.get("text"), str) and d["text"].strip():
+            return d
+        why = "нет текста ответа"
+    print(f"llm: кэш {f.name} испорчен ({why}, {len(b)} байт) — перезапрос", file=sys.stderr, flush=True)
+    return None
+
+
+def _write_cache(f, out):
+    """Атомарно: во временный файл в той же папке, затем os.replace — читатель видит старую запись
+    или новую целиком. Не записалось — ответ всё равно возвращается, просто не кэшируется."""
+    fd, tmp = tempfile.mkstemp(dir=f.parent, prefix=f.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as h:
+            h.write(json.dumps(out, ensure_ascii=False, indent=1))
+        _busy_retry(lambda: os.replace(tmp, f))
+    except OSError as e:
+        print(f"llm: кэш {f.name} не записан ({e!r}) — ответ не кэширован", file=sys.stderr, flush=True)
+        Path(tmp).unlink(missing_ok=True)
+
+
 def chat(messages, max_tokens=8000, think=False, temperature=0, tag="", images=None, sampling=None):
     """messages: список {role, content}. images: base64-JPEG/PNG (не больше двух) к последнему user.
     Возвращает dict: text, usage, sec, reasoning_len (или error)."""
@@ -55,10 +101,11 @@ def chat(messages, max_tokens=8000, think=False, temperature=0, tag="", images=N
     key = hashlib.sha1(json.dumps([MODEL, max_tokens, think, temperature, msgs] + ([sampling] if sampling else []),
                                   ensure_ascii=False).encode()).hexdigest()
     f = CACHE / f"{key}.json"
-    if f.exists():
+    hit = _read_cache(f)
+    if hit is not None:
         with _lock:
             STAT["cached"] += 1
-        return json.loads(f.read_text(encoding="utf-8"))
+        return hit
     with _lock:
         if _TOK is None:
             _TOK = _token()
@@ -92,7 +139,7 @@ def chat(messages, max_tokens=8000, think=False, temperature=0, tag="", images=N
             out = {"tag": tag, "text": txt, "usage": d.get("usage"), "sec": round(time.time() - t0, 1),
                    "finish": d["choices"][0].get("finish_reason"),
                    "reasoning_len": len(msg.get("reasoning_content") or msg.get("reasoning") or "")}
-            f.write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
+            _write_cache(f, out)
             with _lock:
                 STAT["calls"] += 1; STAT["sec"] += out["sec"]
                 u = out["usage"] or {}
