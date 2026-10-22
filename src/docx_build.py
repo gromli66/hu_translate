@@ -1299,7 +1299,7 @@ class Builder:
             m.append(_el(f"w:{side}", w__w=max(0, round((v - cut) * 20)), w__type="dxa"))
         _tblpr_put(t, m)
 
-    def table(self, b):
+    def table(self, b, tgt=None):
         from docx.shared import Pt
         self._room = {}                                 # узкий столбец → (ширина, поля ячейки) (_fit_words)
         rows = [r for r in b["rows"] if r]
@@ -1308,7 +1308,7 @@ class Builder:
         # ячейки по сетке линий (docx_layout, «span»): столбцов — по сетке; ни в одной строке может не быть всех
         ncol = max(sum(c["span"] for c in r) for r in rows) if all("span" in c for r in rows for c in r) \
             else max(len(r) for r in rows)
-        t = self.doc.add_table(rows=len(rows), cols=ncol)
+        t = (tgt or self.doc).add_table(rows=len(rows), cols=ncol)
         fr = b.get("frame") or {}
         # линии — у каждой ячейки свои, как в оригинале (docx_struct.cell_edges), если сетка там неполная
         edges = [c.get("edges") for r in rows for c in r]
@@ -1503,6 +1503,14 @@ class Builder:
                 for x in cell["blocks"]:
                     if x["k"] == "list":
                         self.list_(x, 0, dc); continue
+                    if x["k"] == "table":
+                        # таблица в ячейке (листовка из Word свёрстана таблицей в таблице) — вложенной таблицей; раньше
+                        # пропускалась вместе с текстом (№09 партии 2: 94 % слов, 22.10)
+                        keep = self._room, self._tab_base, getattr(self, "_cell_base", None)
+                        self.table(x, tgt=dc)
+                        self._room, self._tab_base, self._cell_base = keep
+                        used = True
+                        continue
                     if x["k"] != "p" or not x["runs"]:
                         continue
                     if not used:
@@ -1556,7 +1564,8 @@ class Builder:
                     for p in tc.iter(W + "p"):
                         p.get_or_add_pPr().get_or_add_keepNext()
         self._tab_base = None
-        self.doc.add_paragraph(style="Table Text")        # Word: после таблицы — абзац
+        if tgt is None:                                   # в ячейке абзац после таблицы ставит python-docx
+            self.doc.add_paragraph(style="Table Text")    # Word: после таблицы — абзац
 
     def _cell_borders(self, dc, edges, color):
         tcpr = dc._tc.get_or_add_tcPr()
@@ -1701,12 +1710,14 @@ class Builder:
                     pf.line_spacing = Pt(info["pitch"])     # шаг строк — как в оглавлении оригинала
                 s.font.bold = bold
 
-    def toc(self, b=None):
+    def toc(self, b=None, brk=False):
         info = (b or {}).get("info") or {}
         figs = info.get("figures", self._toc_n > 0)
         title = (info.get("title") or {}).get("t")
         text = (self.tr(title) if title else None) or ("Список рисунков" if figs else "Содержание")
-        self.doc.add_paragraph(text, style="TOF Title UTS" if figs else "TOC Title UTS")
+        head = self.doc.add_paragraph(text, style="TOF Title UTS" if figs else "TOC Title UTS")
+        if brk:                                     # разрыв листа оригинала (docx_struct.mark_breaks)
+            head.paragraph_format.page_break_before = True
         par = self.doc.add_paragraph()
         if figs:
             _field(par, 'TOC \\h \\z \\c "Рисунок"', "[Список рисунков: в Word — правой кнопкой → «Обновить поле»]")
@@ -1759,7 +1770,7 @@ class Builder:
                 par.paragraph_format.line_spacing = Pt(1)
             self.table(b)
         elif k == "toc":
-            self.toc(b)
+            self.toc(b, brk=bool(b.get("break")) and not fresh)
 
     # ---------------------------------------------------------------- лист, колонтитулы, титул
     def _page(self, sec, L, left, right, top, bottom, size=None):
@@ -2365,7 +2376,17 @@ def blocks_layout(pdf, segs, mode):
         import docx_layout
         blocks, info = docx_layout.load(str(pdf), segs, text=mode == "text")
         if mode == "text":
-            return blocks, dict(docx_struct.layout(str(pdf), blocks, content=info.get("content_boxes")), sizes=True)
+            L = dict(docx_struct.layout(str(pdf), blocks, content=info.get("content_boxes")), sizes=True)
+            # логотип своей шапки первого листа (L["first"]) — уже в колонтитуле; рисунком тела он шёл второй копией
+            # (E42 корпуса: логотип OAH дважды, 22.10)
+            first = L.get("first") or {}
+            him = (first.get("head_imgs") or []) + [r["img"] for r in ((first.get("head_grid") or {}).get("paras")
+                                                                       or {}).get("rows", []) if r.get("img")]
+            half = lambda r, i, a, z: min(r[z], i[z]) - max(r[a], i[a]) > 0.5 * (i[z] - i[a])
+            dup = lambda r: any(half(r, i, "x0", "x1") and half(r, i, "top", "bottom") for i in him)
+            blocks = [b for b in blocks if not (him and b["k"] == "p" and (b.get("geom") or {}).get("page") == 1
+                                                and b.get("runs") and all("img" in r and dup(r["img"]) for r in b["runs"]))]
+            return blocks, L
         return blocks, docx_layout.layout(str(pdf), blocks, segs, info)
     blocks, _ = docx_struct.load(str(pdf))
     blocks = docx_struct.compose_figures(blocks, str(pdf))   # не в load: load зовёт и coverage при извлечении

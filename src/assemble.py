@@ -594,11 +594,30 @@ def _h_note_main(r):
     return ""
 
 
+def _patch_xlsx_text():
+    """Управляющие знаки текста PDF (как у DOCX: docx_build._patch_xml_text) openpyxl не пишет и роняет таблицу вычитки,
+    а с ней сборку всей задачи (брошюра HERCA на проверке порталом, 22.10): строки всех листов таблицы — без них
+    (одна точка: Worksheet.append)."""
+    from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+    from openpyxl.worksheet.worksheet import Worksheet
+    if getattr(Worksheet.append, "_xml_safe", False):
+        return
+    orig = Worksheet.append
+    clean = lambda v: ILLEGAL_CHARACTERS_RE.sub("", v) if isinstance(v, str) else v
+
+    def append(self, iterable):
+        return orig(self, {k: clean(v) for k, v in iterable.items()} if isinstance(iterable, dict)
+                    else [clean(v) for v in iterable])
+    append._xml_safe = True
+    Worksheet.append = append
+
+
 def review_xlsx(out, segs, res, title, polish=None, extra_rows=(), pair=None):
     """Лист «вычитка»; после шлифовки (polish — d["polish"]: журнал и оставшиеся нарушения) или проверки DOCX по
     разметке (extra_rows — нарушения оформления и соглашений в готовом DOCX) — ещё листы «шлифовка» и «нарушения»."""
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill
+    _patch_xlsx_text()
     wb = Workbook(); ws = wb.active; ws.title = "вычитка"
     import langs as L
     sl, tl = L.parse_pair(pair)

@@ -72,13 +72,19 @@ def test_upright_copy_of_rotated_pages(tmp_path):
     d = fitz.open()
     pg = d.new_page(width=612, height=792)
     pg.insert_text((100, 100), "Mérés eredménye", fontsize=11, rotate=270)
+    pg.insert_text((100, 720), "Helyszín", fontsize=11, rotate=270)     # у дальнего края: show_pdf_page его срезала
     pg.set_rotation(90)
     d.save(str(src))
     up = S.upright(src, tmp_path / "up")
     assert up != src
-    w = fitz.open(str(up))[0].get_text("words")
+    page = fitz.open(str(up))[0]
+    w = page.get_text("words")
     x0, y0, x1, y1 = w[0][:4]
     assert x1 - x0 > y1 - y0                                    # слово лежит строкой, а не столбиком
+    # все слова — там же, где их видно на повёрнутом листе
+    seen = sorted((t[4], round((fitz.Rect(t[:4]) * pg.rotation_matrix).x0)) for t in fitz.open(str(src))[0].get_text("words"))
+    assert page.rect == fitz.Rect(0, 0, 792, 612)
+    assert sorted((t[4], round(t[0])) for t in w) == seen
     plain = tmp_path / "plain.pdf"
     fitz.open().new_page().insert_text((50, 50), "a")
     d2 = fitz.open(); d2.new_page().insert_text((50, 50), "szöveg"); d2.save(str(plain))
@@ -97,3 +103,105 @@ def test_ocr_layer_only_invisible_text_over_scan():
         pg.insert_image(pg.rect, stream=buf.getvalue())
         pg.insert_text((72, 100), "Szöveg a háttér felett", render_mode=mode)
     assert DL._ocr_layer(doc[0]) and not DL._ocr_layer(doc[1])
+
+
+def test_nested_table_in_cell_keeps_its_text(tmp_path):
+    """Таблица в ячейке таблицы (листовка Word) — вложенной таблицей, а не пропуском вместе с текстом."""
+    inner = {"k": "table", "rows": [[{"blocks": [p("Belső szöveg")], "th": False}],
+                                    [{"blocks": [p("Második sor")], "th": False}]]}
+    outer = {"k": "table", "rows": [[{"blocks": [p("Külső"), inner, p("Utána")], "th": False},
+                                     {"blocks": [p("Jobb")], "th": False}]]}
+    mem = B.Memory([("Belső szöveg", "Внутренний текст"), ("Második sor", "Вторая строка"), ("Külső", "Внешний"),
+                    ("Utána", "После"), ("Jobb", "Справа")])
+    out = tmp_path / "n.docx"
+    B.Builder(mem, lambda img: png(), PROFILE).build([outer], str(out), LAYOUT)
+    doc = Document(str(out))
+    cell = doc.tables[0].cell(0, 0)
+    assert [c.text for r in cell.tables[0].rows for c in r.cells] == ["Внутренний текст", "Вторая строка"]
+    texts = [q.text for q in cell.paragraphs if q.text]
+    assert texts == ["Внешний", "После"] and doc.tables[0].cell(0, 1).text == "Справа"
+
+
+def test_paragraph_styled_like_chapter_heading_starts_new_page():
+    """E41: абзац с видом заголовков 1-го уровня (те — с нового листа), первым на листе на их высоте, — с нового листа;
+    обычный абзац первым на листе и такой же жирный ниже по листу — нет."""
+    import docx_struct as D
+
+    def blk(k, text, page, top, size, bold, **kw):
+        return dict({"k": k, "runs": [{"t": text, "size": size, "b": bold}],
+                     "geom": {"page": page, "top": top, "bottom": top + 14, "x0": 70}}, **kw)
+    blocks = [blk("h", "1. BEVEZETÉS", 2, 104, 14, True, level=1), blk("p", "Szöveg.", 2, 140, 12, False),
+              blk("h", "2. FOGALMAK", 3, 104, 14, True, level=1), blk("p", "Szöveg.", 3, 140, 12, False),
+              blk("p", "ELŐSZÓ", 4, 104, 14, True), blk("p", "Folytatás a lap tetején", 5, 104, 12, False),
+              blk("p", "Kiemelt sor", 5, 300, 14, True)]
+    tops = {2: 104, 3: 104, 4: 104, 5: 104}
+    bots = {1: 760, 2: 760, 3: 760, 4: 760, 5: 760}
+    D.mark_breaks(blocks, tops, bots)
+    for b in blocks[:4]:
+        b["break"] = b["k"] == "h"                    # заголовки 1-го уровня — с нового листа (как стилем у Word)
+    D.mark_breaks(blocks, tops, bots)
+    assert [bool(b.get("break")) for b in blocks[4:]] == [True, False, False]
+
+
+def test_toc_first_on_page_after_short_page_starts_new_page(tmp_path):
+    """E41: оглавление первым на листе после листа, занятого на четверть, — с нового листа (и в DOCX)."""
+    import docx_struct as D
+    body = p("Előszó szövege.", 5, 100)
+    body["geom"]["bottom"] = 250
+    toc = {"k": "toc", "info": {"page": 6, "levels": 2}, "geom": {"page": 6}}
+    blocks = [body, toc]
+    D.mark_breaks(blocks, {5: 100}, {1: 760, 2: 760, 3: 760, 4: 760, 5: 250})
+    assert toc.get("break")
+    out = tmp_path / "t.docx"
+    B.Builder(B.Memory([("Előszó szövege.", "Текст предисловия.")]), lambda img: png(), PROFILE).build(
+        blocks, str(out), LAYOUT)
+    doc = Document(str(out))
+    head = next(q for q in doc.paragraphs if q.style.name.startswith("TOC Title"))
+    assert head.paragraph_format.page_break_before
+
+
+def test_header_logo_is_not_a_screenshot():
+    """E42: небольшая картинка у верха листа (логотип шапки) — не скриншот для перевода надписей; та же в теле — да."""
+    import io
+    from PIL import Image
+    import shots as SH
+    buf = io.BytesIO()
+    Image.new("RGB", (240, 150), "navy").save(buf, "PNG")
+    doc = fitz.open()
+    pg = doc.new_page(width=842, height=595)
+    pg.insert_image(fitz.Rect(61, 54, 169, 120), stream=buf.getvalue())
+    pg2 = doc.new_page(width=842, height=595)
+    pg2.insert_image(fitz.Rect(61, 300, 169, 366), stream=buf.getvalue())
+    got = SH.find_shots(doc)
+    assert [n for places in got.values() for n, _ in places] == [1]
+
+
+def test_upright_sideways_text_without_rotate(tmp_path):
+    """Таблица, напечатанная «набок» на книжном листе без /Rotate (Danfoss л. 155–159), — выпрямляется, как /Rotate:
+    повёрнутый текст сегменты пропускают, и лист терялся целиком."""
+    import segments as S
+    src = tmp_path / "side.pdf"
+    d = fitz.open()
+    pg = d.new_page(width=595, height=842)
+    for k in range(12):
+        pg.insert_text((80 + 30 * k, 700), f"6-{30 + k} X30/11-es csatlakozó, alsó feszültség", fontsize=9, rotate=90)
+    d.new_page(width=595, height=842).insert_text((72, 72), "Normál szöveg " * 20, fontsize=9)
+    d.save(str(src))
+    up = S.upright(src, tmp_path / "up")
+    assert up != src
+    out = fitz.open(str(up))
+    assert out[0].rect.width > out[0].rect.height and out[1].rect.width < out[1].rect.height
+    w = out[0].get_text("words")
+    assert len(w) == len(d[0].get_text("words")) and all(t[2] - t[0] > t[3] - t[1] for t in w if len(t[4]) > 3)
+
+
+def test_review_xlsx_survives_control_chars(tmp_path):
+    """Управляющий знак в тексте PDF (брошюра HERCA) — не роняет таблицу вычитки (а с ней сборку задачи)."""
+    import assemble as A
+    from openpyxl import load_workbook
+    segs = [{"id": 0, "page": 0, "text": "Elkerülhető\x03 vizsgálat", "loc": {}}]
+    res = {"0": {"ru": "Можно\x0b избежать", "issues": [], "tries": 1, "gloss_miss": []}}
+    out = tmp_path / "v.xlsx"
+    A.review_xlsx(out, segs, res, "t")
+    row = [c.value for c in load_workbook(out).active[2]]
+    assert row[2] == "Elkerülhető vizsgálat" and row[3] == "Можно избежать"
