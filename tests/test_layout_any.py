@@ -193,3 +193,15 @@ def test_upright_sideways_text_without_rotate(tmp_path):
     assert out[0].rect.width > out[0].rect.height and out[1].rect.width < out[1].rect.height
     w = out[0].get_text("words")
     assert len(w) == len(d[0].get_text("words")) and all(t[2] - t[0] > t[3] - t[1] for t in w if len(t[4]) > 3)
+
+
+def test_review_xlsx_survives_control_chars(tmp_path):
+    """Управляющий знак в тексте PDF (брошюра HERCA) — не роняет таблицу вычитки (а с ней сборку задачи)."""
+    import assemble as A
+    from openpyxl import load_workbook
+    segs = [{"id": 0, "page": 0, "text": "Elkerülhető\x03 vizsgálat", "loc": {}}]
+    res = {"0": {"ru": "Можно\x0b избежать", "issues": [], "tries": 1, "gloss_miss": []}}
+    out = tmp_path / "v.xlsx"
+    A.review_xlsx(out, segs, res, "t")
+    row = [c.value for c in load_workbook(out).active[2]]
+    assert row[2] == "Elkerülhető vizsgálat" and row[3] == "Можно избежать"
