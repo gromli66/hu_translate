@@ -256,3 +256,75 @@ def test_on_lines_rect_is_text_not_picture():
     seg = {"loc": {"bbox": [65, 452, 554, 532], "frags": [[65, 452, 554, 480], [84, 504, 535, 532]]}}
     assert DL._on_lines(fitz.Rect(83, 508, 535, 532), [seg])
     assert not DL._on_lines(fitz.Rect(32, 439, 73, 538), [seg])
+
+
+def test_split_columns_of_borderless_table_not_justified_text():
+    """E43: «Dátum ⇥ Határozat száma» (просвет 27 pt при прочих 3 pt) — два куска; выключка по ширине (просветы
+    поровну), номер пункта и номер листа у просвета — один кусок."""
+    import layout as LY
+    R = fitz.Rect
+
+    def frag(words):
+        t = " ".join(w for _, w in words)
+        return {"t": t, "bbox": list(R(words[0][0]) | R(words[-1][0])), "chars": [(len(t), 11, False, "serif")]}
+    cols = [((71, 177, 109, 192), "Dátum"), ((136, 177, 191, 192), "Határozat"), ((194, 177, 229, 192), "száma")]
+    just = [((70, 300, 110, 312), "Az"), ((130, 300, 170, 312), "MVM"), ((190, 300, 240, 312), "Paksi")]
+    num = [((70, 400, 90, 412), "1.2"), ((120, 400, 170, 412), "Bevezető"), ((173, 400, 220, 412), "rész")]
+    words = [(R(b), w) for b, w in cols + just + num]
+    out = LY._split_columns([frag(cols), frag(just), frag(num)], words)
+    assert [f["t"] for f in out] == ["Dátum", "Határozat száma", "Az MVM Paksi", "1.2 Bevezető rész"]
+
+
+def test_two_text_columns_read_column_by_column_borderless_table_not():
+    """E46: две колонки сплошного текста — просвет найден, абзацы колонка за колонкой; таблица без линий (абзацы слева
+    и справа на одной высоте) — не колонки."""
+    import layout as LY
+
+    def par(x0, y0, x1, y1, t):
+        return {"bbox": [x0, y0, x1, y1], "frags": [{"bbox": [x0, y0, x1, y1], "t": t}], "text": t}
+    head = par(57, 40, 540, 52, "Fejezet címe")
+    left = [par(57, 80 + 60 * k, 290, 120 + 60 * k, f"bal {k}") for k in range(4)]
+    right = [par(310, 95 + 60 * k, 540, 135 + 60 * k, f"jobb {k}") for k in range(4)]
+    pars = [head] + [p for pair in zip(left, right) for p in pair]
+    g = LY.gutter(pars, 595)
+    assert g is not None and 290 < g < 310
+    assert [p["text"] for p in LY.column_order(pars, g)] == ["Fejezet címe"] + [f"bal {k}" for k in range(4)] + \
+        [f"jobb {k}" for k in range(4)]
+    table = [head] + [p for k in range(4) for p in (par(57, 80 + 30 * k, 200, 92 + 30 * k, f"a{k}"),
+                                                    par(320, 80 + 30 * k, 500, 92 + 30 * k, f"b{k}"))]
+    assert LY.gutter(table, 595) is None
+    # список «сокращение ⇥ расшифровка» (u_T3): узкий столбец слева — таблица, а не колонка текста
+    abbr = [head] + [par(57, 80 + 45 * k, 100, 92 + 45 * k, f"LA{k}") for k in range(4)] +         [par(160, 86 + 45 * k, 540, 120 + 45 * k, f"rendszer {k}") for k in range(4)]
+    assert LY.gutter(abbr, 595) is None
+
+
+def test_cut_span_pieces_do_not_rejoin_across_column_line(tmp_path):
+    """Строка PDF через линии столбцов («47,05281 19,11048 Kunszentmiklós», HAKSER) — тремя кусками: рамка куска
+    без пробела у линии, склейка видит линию."""
+    import layout as LY
+    d = fitz.open()
+    pg = d.new_page(width=792, height=612)
+    pg.insert_text((108, 150), "47,05281 19,11048 Kunszentmiklós", fontsize=10)
+    xs = [fitz.get_text_length("47,05281 ", fontsize=10), fitz.get_text_length("47,05281 19,11048 ", fontsize=10)]
+    vs = [(139, 165, 108 + x - 1.5) for x in xs]            # линия — у пробела, вплотную к началу следующего куска
+    for _, _, x in vs:
+        pg.draw_line((x, 139), (x, 165))
+    fr = LY.frags_from_text(pg, vs)
+    assert [f["t"] for f in fr] == ["47,05281", "19,11048", "Kunszentmiklós"]
+
+
+def test_each_landscape_page_own_section_with_fit_want(tmp_path):
+    """Каждый альбомный лист — своим разделом; листов оригинала у альбомных разделов — fit_want (docx_fit ужимает
+    перелившийся на второй лист): таблица, идущая через два альбомных листа одним блоком, — раздел в 2 листа."""
+    blocks = [p("Első", 1, 100), p("Második", 2, 100), p("Harmadik", 3, 100), p("Negyedik", 5, 100),
+              p("Ötödik", 6, 100)]
+    mem = B.Memory([("Első", "Первый"), ("Második", "Второй"), ("Harmadik", "Третий"), ("Negyedik", "Четвёртый"),
+                    ("Ötödik", "Пятый")])
+    land, port = (841.9, 595.3), (595.3, 841.9)
+    L = dict(LAYOUT, first_is_body=True, page_sizes=[port, land, land, land, land, port])
+    out = tmp_path / "o.docx"
+    bld = B.Builder(mem, lambda img: png(), PROFILE)
+    bld.build(blocks, str(out), L)
+    secs = Document(str(out)).sections
+    assert [s.page_width > s.page_height for s in secs] == [False, True, True, True, False]
+    assert bld.fit_want == {1: 1, 2: 2, 3: 1}

@@ -468,7 +468,8 @@ def _p2d_child(pdf, out):
         print(" ".join(f"ERR {type(e).__name__}: {e}"[:200].split()), flush=True)
 
 
-def build_struct_docx(src, out, segs, res, rules=None, progress=None, mode="struct", overlay=None, lang_check=True):
+def build_struct_docx(src, out, segs, res, rules=None, progress=None, mode="struct", overlay=None, lang_check=True,
+                      printer=None):
     """DOCX размеченного PDF (экспорт Word со StructTreeRoot, pipeline.extract → d["struct"]): блоки — по дереву
     разметки (docx_struct), оформление — профилем оригинала (docx_profile), сборка — docx_build.Builder; перевод — из
     сегментов задачи (после проверки, шлифовки и правок редактора), скриншоты — переведённые (shots.render).
@@ -547,11 +548,24 @@ def build_struct_docx(src, out, segs, res, rules=None, progress=None, mode="stru
         cache[x] = data
         return data
 
+    bld = B.Builder(mem, image, prof)
     try:
-        B.Builder(mem, image, prof).build(blocks, str(out), L)
+        bld.build(blocks, str(out), L)
     finally:
         if ov is not None:
             ov.close()                      # PDF из DOCX ляжет на его место (Windows держит открытый файл)
+    fit = None
+    want = getattr(bld, "fit_want", None) or {}
+    if 1 in want.values():
+        # альбомный лист оригинала — своим разделом; раздел, перелившийся на второй лист, — мельче кеглем (docx_fit;
+        # HAKSER: таблицы во весь альбомный лист уходили 2–3 строками на следующий). printer(docx, pdf) — печать
+        # LibreOffice; без неё — как есть
+        import subprocess
+        import docx_fit
+        try:
+            fit = docx_fit.fit(None, out, printer or lo_convert, want=want)
+        except (OSError, RuntimeError, subprocess.SubprocessError) as e:
+            fit = {"skipped": f"{type(e).__name__}: {e}"[:200]}
     tick(0.8)
     viol = F.check(str(out), prof, blocks, L)
     dx, lang = Document(str(out)), []
@@ -563,8 +577,11 @@ def build_struct_docx(src, out, segs, res, rules=None, progress=None, mode="stru
     rows = [("", v["rule"], f"оформление: {v['where']} — {v['was']} (нужно: {v['need']})", "") for v in viol] \
         + [("", r, f"в DOCX: {why}", t) for r, why, t in lang]
     tick(1.0)
-    return {"converter": {"layout": "сегменты листа", "text": "текстовый слой"}.get(mode, "разметка PDF"), "missed": len(set(mem.missing)),
-            "format": len(viol), "lang": len(lang)}, rows
+    info = {"converter": {"layout": "сегменты листа", "text": "текстовый слой"}.get(mode, "разметка PDF"),
+            "missed": len(set(mem.missing)), "format": len(viol), "lang": len(lang)}
+    if fit is not None:
+        info["fit"] = fit
+    return info, rows
 
 
 def _h_note(r):

@@ -2148,15 +2148,23 @@ class Builder:
         cur_land = land(1)
         if cur_land:
             self._page(first, L, L["left"], L["right"], L["top"], L["bottom"], sizes[0])
+        # начала разделов тела: (номер раздела, лист оригинала, альбомный) — сколько листов оригинала у альбомного
+        # раздела (fit_want, для docx_fit)
+        starts, last = [], 1                # первый лист — уже первый раздел
         for b in blocks:
             g = b.get("geom") or {}
             page = g.get("page")
-            # лист другой ориентации, чем раздел (альбомные листы посреди книжного документа) — свой раздел
-            if not in_title and page and sizes and land(page) != cur_land:
+            # лист другой ориентации, чем раздел (альбомные листы посреди книжного документа) — свой раздел; и каждый
+            # альбомный лист — своим разделом: таблица во весь альбомный лист оригинала переливалась 2–3 строками на
+            # следующий (HAKSER: 74 листа → 94), а раздел в один лист оригинала docx_fit ужимает кеглем (22.10)
+            if not in_title and page and sizes and (land(page) != cur_land or cur_land and page > last):
                 cur_land = land(page)
                 sec = self.doc.add_section(WD_SECTION.NEW_PAGE)
                 self.fresh = True
                 self._page(sec, L, L["left"], L["right"], L["top"], L["bottom"], sizes[page - 1])
+                starts.append((len(self.doc.sections) - 1, page, cur_land))
+            if page:
+                last = max(last, page)
             if in_title and page is not None and page >= 2:
                 in_title = False
                 sec = self.doc.add_section(WD_SECTION.NEW_PAGE)
@@ -2263,6 +2271,9 @@ class Builder:
                 first_p._p.getparent().remove(first_p._p)
         self._tab_groups()
         self.doc.settings.element.append(_el("w:updateFields", w__val="true"))
+        # листов оригинала у альбомных разделов: {номер раздела: листов} (docx_fit ужимает разделы в один лист)
+        nxt = [p for _, p, _ in starts[1:]] + [len(sizes) + 1]
+        self.fit_want = {i: n - p for (i, p, ld), n in zip(starts, nxt) if ld}
         self.doc.save(out)
         font_table(out, (L or {}).get("font_class") or {})
 
