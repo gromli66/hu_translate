@@ -663,13 +663,14 @@ def page_rules(page, dpi=300):
 
 
 def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, ratio=0.85, progress=None, shots=True,
-                 roles=False):
+                 roles=False, lang=None):
     """ocr: 'auto' — страница идёт через OCR, если в текстовом слое < ratio слов Tesseract и заметной доли
     настоящих слов Tesseract в слое нет (page_missing_share > 15 %).
     progress(доля 0..1) — ход по страницам: первая половина — Tesseract, вторая — чтение сканов порталом
     (на 146 сканах это 10 минут, а процент стоял на нуле — «зависло», 07.10).
     shots — надписи скриншотов на страницах с текстовым слоем (shots.shot_segments): сегменты идут сразу после
-    текста своей страницы, номера сегментов — по порядку.
+    текста своей страницы, номера сегментов — по порядку; lang — язык источника (только для скриншотов: распознавание
+    сканов — венгерское).
     roles — листы с текстовым слоем: границы абзацев и роли строк (заголовок, пункт, подпись) — метками портала
     (roles.py; PDF без разметки, режим "text"); сбой портала — лист по правилам."""
     import fitz
@@ -798,9 +799,9 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
                     segs[-1]["loc"]["role"] = p["role"]
     n_shots = 0
     text_pages = {p for p in rng if not plan[p]}
-    if shots and text_pages and SRC_LANG == "hu":          # надписи скриншотов — словарь и правила венгерского (shots.py)
+    if shots and text_pages:                      # надписи скриншотов — на языке источника (shots.py)          # надписи скриншотов — словарь и правила венгерского (shots.py)
         import shots as SH
-        extra = SH.shot_segments(doc, work / "shots", len(segs), pages=text_pages)
+        extra = SH.shot_segments(doc, work / "shots", len(segs), pages=text_pages, lang=lang or SRC_LANG)
         n_shots = len(extra)
         order = {p: i for i, p in enumerate(rng)}
         segs = sorted(segs + extra, key=lambda x: (order[x["page"]], "shot" in x["loc"]))

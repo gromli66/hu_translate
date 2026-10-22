@@ -87,11 +87,13 @@ def _target(runs, g):
 
 def build_docx(src, out, segs, res):
     from lxml import etree
+    import shots as SH
     by_part = {}
     for s in segs:
         r = res.get(str(s["id"]))
-        if r and not r.get("copied") and r["ru"]:
+        if r and not r.get("copied") and r["ru"] and "part" in s["loc"]:     # надписи картинок — не абзацы (shots)
             by_part.setdefault(s["loc"]["part"], []).append((s, r["ru"]))
+    media, shot_err = SH.docx_media(src, segs, res)      # картинки с переведёнными надписями — в те же записи
     broken = 0
     with zipfile.ZipFile(src) as zin, zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zout:
         for item in zin.infolist():
@@ -118,8 +120,15 @@ def build_docx(src, out, segs, res):
                 data = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
             elif item.filename in ("docProps/core.xml", "docProps/custom.xml", "docProps/app.xml"):
                 data = _props(data, segs, res)
+            elif item.filename in media:
+                data = media[item.filename]
             zout.writestr(item, data)
-    return {"broken_tags": broken}
+    info = {"broken_tags": broken}
+    if media or shot_err:
+        info["shots"] = len(media)
+        if shot_err:
+            info["shot_errors"] = shot_err
+    return info
 
 
 def _props(data, segs, res):
@@ -609,7 +618,8 @@ def review_xlsx(out, segs, res, title, polish=None, extra_rows=(), pair=None):
         ws.append([s["id"], (s["page"] + 1) if s["page"] is not None else "", TAG.sub("", s["text"]),
                    TAG.sub("", r["ru"]), "; ".join(r["issues"]),
                    "; ".join(r.get("warn", []) + r.get("gloss_miss", [])), None,
-                   " | ".join(x for x in ("Надпись на скриншоте" if s["loc"].get("shot") else "", _h_note(r)) if x)])
+                   " | ".join(x for x in (("Надпись на картинке" if "media" in s["loc"]["shot"] else "Надпись на скриншоте")
+                                          if s["loc"].get("shot") else "", _h_note(r)) if x)])
         row = ws.max_row
         # автоисправление (autofix.py): слепая вычитка 05.10 — серьёзных 32 → 14 на 123, но 12 внесено заново → голубым
         if (r.get("autofix") or {}).get("accepted") or (r.get("rag") and not r["rag"].get("numbers")):
