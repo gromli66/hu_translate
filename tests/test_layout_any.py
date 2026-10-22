@@ -114,3 +114,24 @@ def test_nested_table_in_cell_keeps_its_text(tmp_path):
     assert [c.text for r in cell.tables[0].rows for c in r.cells] == ["Внутренний текст", "Вторая строка"]
     texts = [q.text for q in cell.paragraphs if q.text]
     assert texts == ["Внешний", "После"] and doc.tables[0].cell(0, 1).text == "Справа"
+
+
+def test_paragraph_styled_like_chapter_heading_starts_new_page():
+    """E41: абзац с видом заголовков 1-го уровня (те — с нового листа), первым на листе на их высоте, — с нового листа;
+    обычный абзац первым на листе и такой же жирный ниже по листу — нет."""
+    import docx_struct as D
+
+    def blk(k, text, page, top, size, bold, **kw):
+        return dict({"k": k, "runs": [{"t": text, "size": size, "b": bold}],
+                     "geom": {"page": page, "top": top, "bottom": top + 14, "x0": 70}}, **kw)
+    blocks = [blk("h", "1. BEVEZETÉS", 2, 104, 14, True, level=1), blk("p", "Szöveg.", 2, 140, 12, False),
+              blk("h", "2. FOGALMAK", 3, 104, 14, True, level=1), blk("p", "Szöveg.", 3, 140, 12, False),
+              blk("p", "ELŐSZÓ", 4, 104, 14, True), blk("p", "Folytatás a lap tetején", 5, 104, 12, False),
+              blk("p", "Kiemelt sor", 5, 300, 14, True)]
+    tops = {2: 104, 3: 104, 4: 104, 5: 104}
+    bots = {1: 760, 2: 760, 3: 760, 4: 760, 5: 760}
+    D.mark_breaks(blocks, tops, bots)
+    for b in blocks[:4]:
+        b["break"] = b["k"] == "h"                    # заголовки 1-го уровня — с нового листа (как стилем у Word)
+    D.mark_breaks(blocks, tops, bots)
+    assert [bool(b.get("break")) for b in blocks[4:]] == [True, False, False]

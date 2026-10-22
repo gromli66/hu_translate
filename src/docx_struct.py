@@ -2148,6 +2148,21 @@ def mark_breaks(blocks, tops, bots):
             continue
         if gap > 72:
             b["break"] = True
+    # абзац, оформленный как заголовки первого уровня, идущие с нового листа (кегль и жирность те же, стоит первым на
+    # листе на их высоте, коротко, без точки в конце): «ELŐSZÓ» OAH AKF1.32 — абзац, не заголовок, прошлый лист полон,
+    # и по просвету разрыв не находился (E41 корпуса, 22.10)
+    look = lambda b: next(((r.get("size"), bool(r.get("b"))) for r in b.get("runs") or [] if (r.get("t") or "").strip()),
+                          None)
+    h1 = [b for b in blocks if b["k"] == "h" and b.get("level") == 1 and b.get("break")
+          and (b.get("geom") or {}).get("top") is not None]
+    if len(h1) < 2:
+        return
+    sig, ys = {look(b) for b in h1}, [b["geom"]["top"] for b in h1]
+    for b in blocks:
+        g = b.get("geom") or {}
+        pn, t = g.get("page"), text_of(b.get("runs") or []).strip() if b["k"] == "p" else ""
+        if t and not b.get("break") and pn in tops and g.get("top") is not None and abs(g["top"] - tops[pn]) < 2                 and len(t.split()) <= 6 and t[-1] not in ".:;," and look(b) in sig and min(abs(g["top"] - y) for y in ys) < 6:
+            b["break"] = True
 
 
 def cell_fills(rows, fills):
