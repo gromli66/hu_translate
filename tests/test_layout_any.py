@@ -174,3 +174,22 @@ def test_header_logo_is_not_a_screenshot():
     pg2.insert_image(fitz.Rect(61, 300, 169, 366), stream=buf.getvalue())
     got = SH.find_shots(doc)
     assert [n for places in got.values() for n, _ in places] == [1]
+
+
+def test_upright_sideways_text_without_rotate(tmp_path):
+    """Таблица, напечатанная «набок» на книжном листе без /Rotate (Danfoss л. 155–159), — выпрямляется, как /Rotate:
+    повёрнутый текст сегменты пропускают, и лист терялся целиком."""
+    import segments as S
+    src = tmp_path / "side.pdf"
+    d = fitz.open()
+    pg = d.new_page(width=595, height=842)
+    for k in range(12):
+        pg.insert_text((80 + 30 * k, 700), f"6-{30 + k} X30/11-es csatlakozó, alsó feszültség", fontsize=9, rotate=90)
+    d.new_page(width=595, height=842).insert_text((72, 72), "Normál szöveg " * 20, fontsize=9)
+    d.save(str(src))
+    up = S.upright(src, tmp_path / "up")
+    assert up != src
+    out = fitz.open(str(up))
+    assert out[0].rect.width > out[0].rect.height and out[1].rect.width < out[1].rect.height
+    w = out[0].get_text("words")
+    assert len(w) == len(d[0].get_text("words")) and all(t[2] - t[0] > t[3] - t[1] for t in w if len(t[4]) > 3)

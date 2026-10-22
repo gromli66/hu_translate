@@ -611,6 +611,19 @@ def page_rules(page, dpi=300):
     return hs + ih, vs + iv
 
 
+def _sideways(page):
+    """Лист без /Rotate, где почти весь текст повёрнут на 90° (таблица параметров, напечатанная «набок» на книжном
+    листе: Danfoss л. 155–159), — 90 или 270, как если бы у листа был /Rotate; иначе 0. Повёрнутый текст сегменты
+    пропускают (layout.frags_from_text), и такие листы терялись целиком (22.10)."""
+    n = {0: 0, 90: 0, 270: 0}
+    for b in page.get_text("dict", flags=0)["blocks"]:
+        for ln in b.get("lines", []):
+            dy = ln["dir"][1]
+            n[90 if dy < -0.9 else 270 if dy > 0.9 else 0] += len("".join(s["text"] for s in ln["spans"]).strip())
+    r = max((90, 270), key=n.get)
+    return r if sum(n.values()) >= 200 and n[r] >= 0.8 * sum(n.values()) else 0
+
+
 def upright(path, out_dir):
     """PDF с повёрнутыми листами (/Rotate 90/270 — альбомные таблицы, «положенные набок») без разметки — копия, где
     каждый лист нарисован прямо: текст, линии и рисунки — в координатах листа, как он виден. Иначе слова повёрнутого
@@ -620,7 +633,11 @@ def upright(path, out_dir):
     import fitz
     path = Path(path)
     with fitz.open(str(path)) as src:
-        if not any(pg.rotation for pg in src) or src.xref_get_key(src.pdf_catalog(), "StructTreeRoot")[0] != "null":
+        if src.xref_get_key(src.pdf_catalog(), "StructTreeRoot")[0] != "null":
+            return path
+        # лист «набок» без /Rotate — тем же поворотом, что /Rotate (_sideways)
+        turn = [pg.rotation or _sideways(pg) for pg in src]
+        if not any(turn):
             return path
         out = Path(out_dir) / path.name
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -629,8 +646,7 @@ def upright(path, out_dir):
         # подпись таблицы; 53 слова листа 34 → 46, 22.10)
         new = fitz.open()
         new.insert_pdf(src)
-        for pg in new:
-            r = pg.rotation
+        for pg, r in zip(new, turn):
             if r not in (90, 180, 270) or not pg.get_contents():
                 continue
             mb = pg.mediabox
