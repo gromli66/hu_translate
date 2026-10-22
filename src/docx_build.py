@@ -2354,7 +2354,7 @@ def job_memory(segs, res):
 def word_export(meta):
     """PDF — экспорт из Word (дерево разметки по соглашениям Word): «Microsoft Word», «Microsoft® Office Word 2007» и
     надстройка Acrobat «PDFMaker … for Word» (отчёт OAH 2003 и №35, №37 партии 2 шли текстовым слоем, 22.10)."""
-    return bool(re.search(r"Microsoft\W{0,3}(?:Office\s+)?Word|PDFMaker.{0,30}Word",
+    return bool(re.search(r"Microsoft\W{0,3}(?:Office\s+)?Word|PDFMaker.{0,30}Word",
                           (meta.get("producer") or "") + " " + (meta.get("creator") or ""), re.I))
 
 
