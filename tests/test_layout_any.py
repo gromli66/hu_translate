@@ -248,3 +248,11 @@ def test_textless_copy_keeps_pictures_drops_text():
     pg.insert_text((80, 100), "Fejléc marad", fontsize=12)
     c = DL._textless(d, 0, [(78, 388, 300, 404)])
     assert c[0].get_text().strip() == "Fejléc marad" and len(c[0].get_images()) == 1
+
+
+def test_on_lines_rect_is_text_not_picture():
+    """Рамка почти целиком на строке сегмента — строка текста (растр с «запечённым» текстом под ней), не рисунок."""
+    import docx_layout as DL
+    seg = {"loc": {"bbox": [65, 452, 554, 532], "frags": [[65, 452, 554, 480], [84, 504, 535, 532]]}}
+    assert DL._on_lines(fitz.Rect(83, 508, 535, 532), [seg])
+    assert not DL._on_lines(fitz.Rect(32, 439, 73, 538), [seg])

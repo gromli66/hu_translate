@@ -593,6 +593,15 @@ def _grid_cells(xs, ys, gh, gv):
     return rows
 
 
+def _on_lines(r, segs):
+    """Рамка почти целиком (≥ 80 %) на строках сегментов — это сама строка текста, а не рисунок: светлый цветной текст,
+    не вычтенный из краски листа, или растр с «запечённым» текстом под живой строкой (эффект InDesign). Картинкой
+    такая строка оставалась в DOCX на языке оригинала (брошюра HERCA, 22.10)."""
+    import fitz
+    lines = [fitz.Rect(f) for s in segs for f in (s["loc"].get("frags") or [s["loc"]["bbox"]])]
+    return sum((r & q).get_area() for q in lines if r.intersects(q)) >= 0.8 * r.get_area()
+
+
 def _raster(page, segs, figs, reused, infos):
     """Картинки текстового слоя мельче рисунка-кластера (_figures: от 50×40 pt) — логотип в таблице титула, подписи
     (Eskom: логотип 121×37 pt и подписи пропадали): вставленные растры от 20×15 pt в пределах текста тела листа, не
@@ -608,7 +617,7 @@ def _raster(page, segs, figs, reused, infos):
         r = fitz.Rect(im["bbox"]) & page.rect
         if r.width < 20 or r.height < 15 or r.get_area() > 0.5 * area or r.y1 < ytop or r.y0 > ybot \
                 or (im["xref"] and reused[im["xref"]] > 1) or any(r.intersects(f) for f, _ in figs) \
-                or any(r.intersects(q) for q in rects) or any(r.contains(fitz.Point(*_center(s))) for s in segs):
+                or any(r.intersects(q) for q in rects) or any(r.contains(fitz.Point(*_center(s))) for s in segs)                 or _on_lines(r, segs):
             continue
         rects.append(r)
     # картинки одного ряда (четыре подписи титула Eskom) — одной картинкой по месту: порознь шли столбиком
@@ -1216,6 +1225,9 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
     for pno, page in enumerate(doc):
         segs = by_page.get(pno, [])
         rects = _figures(page, masks.get(pno, segs) if mask else segs, draw[pno], scans[pno])
+        # «рисунок», почти целиком лежащий на строках сегментов, — сама строка текста (светлый цветной текст, не
+        # вычтенный из краски листа): картинкой она оставалась в DOCX на языке оригинала (брошюра HERCA, 22.10)
+        rects = [r for r in rects if not _on_lines(r, segs)]
         # текстовый слой: рисунок — без текста сегментов, задевающих его краем (их перевод идёт абзацем; в картинке
         # оставался оригинал: брошюра HERCA, «akkor nincs szükség…» поверх плашки)
         hit = [s["loc"]["bbox"] for s in segs if any(fitz.Rect(s["loc"]["bbox"]).intersects(r) for r in rects)]             if mask is not None else []
