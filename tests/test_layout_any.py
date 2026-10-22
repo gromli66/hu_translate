@@ -42,3 +42,10 @@ def test_landscape_pages_get_landscape_sections(tmp_path):
     B.Builder(mem, lambda img: png(), PROFILE).build(blocks, str(out), L)
     secs = Document(str(out)).sections
     assert [s.page_width > s.page_height for s in secs] == [False, True, False]
+
+
+def test_word_export_recognizes_pdfmaker():
+    """PDF из Word через Acrobat PDFMaker — экспорт Word (разметка по его соглашениям), как «Microsoft Word»."""
+    assert B.word_export({"creator": "Acrobat PDFMaker 5.0 for Word", "producer": "Acrobat Distiller 5.0"})
+    assert B.word_export({"producer": "Microsoft® Office Word 2007"})
+    assert not B.word_export({"creator": "PDF24 Creator", "producer": "GPL Ghostscript"})
