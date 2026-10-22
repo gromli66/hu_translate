@@ -433,7 +433,7 @@ def _p2d_child(pdf, out):
         print(" ".join(f"ERR {type(e).__name__}: {e}"[:200].split()), flush=True)
 
 
-def build_struct_docx(src, out, segs, res, rules=None, progress=None, mode="struct", overlay=None):
+def build_struct_docx(src, out, segs, res, rules=None, progress=None, mode="struct", overlay=None, lang_check=True):
     """DOCX размеченного PDF (экспорт Word со StructTreeRoot, pipeline.extract → d["struct"]): блоки — по дереву
     разметки (docx_struct), оформление — профилем оригинала (docx_profile), сборка — docx_build.Builder; перевод — из
     сегментов задачи (после проверки, шлифовки и правок редактора), скриншоты — переведённые (shots.render).
@@ -522,7 +522,8 @@ def build_struct_docx(src, out, segs, res, rules=None, progress=None, mode="stru
     dx, lang = Document(str(out)), []
     for el in dx.element.body.iter(B.W + "p"):
         p = Paragraph(el, dx)
-        if p.style.name not in ("Code UTS", "Code Center UTS"):              # код — дословно, соглашения не к нему
+        # код — дословно, соглашения не к нему; соглашения — о русском переводе венгерского (lang_check: только hu-ru)
+        if lang_check and p.style.name not in ("Code UTS", "Code Center UTS"):
             lang += [(r, why, p.text[:90]) for r, why in C.check_text(p.text, rules or {})]
     rows = [("", v["rule"], f"оформление: {v['where']} — {v['was']} (нужно: {v['need']})", "") for v in viol] \
         + [("", r, f"в DOCX: {why}", t) for r, why, t in lang]
@@ -557,13 +558,15 @@ def _h_note_main(r):
     return ""
 
 
-def review_xlsx(out, segs, res, title, polish=None, extra_rows=()):
+def review_xlsx(out, segs, res, title, polish=None, extra_rows=(), pair=None):
     """Лист «вычитка»; после шлифовки (polish — d["polish"]: журнал и оставшиеся нарушения) или проверки DOCX по
     разметке (extra_rows — нарушения оформления и соглашений в готовом DOCX) — ещё листы «шлифовка» и «нарушения»."""
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill
     wb = Workbook(); ws = wb.active; ws.title = "вычитка"
-    ws.append(["№", "стр.", "Венгерский (источник)", "Русский (портал)", "Замечания проверки", "Предупреждения (варианты расходились; термины не найдены)",
+    import langs as L
+    sl, tl = L.parse_pair(pair)
+    ws.append(["№", "стр.", f"{L.NAME_RU[sl].capitalize()} (источник)", f"{L.NAME_RU[tl].capitalize()} (портал)", "Замечания проверки", "Предупреждения (варианты расходились; термины не найдены)",
                "Исправление (редактор)", "Смысловая проверка (портал)"])
     for c in ws[1]:
         c.font = Font(bold=True)
@@ -651,11 +654,12 @@ def assemble_all(jf, d, out_dir=None, progress=None):
     out_dir — куда класть файлы (по умолчанию рядом с JSON). progress(доля 0..1) — ход по страницам PDF и DOCX."""
     tick = progress or (lambda x: None)
     src = source_path(d)
+    import langs as L
+    sfx = L.suffix(d.get("pair"))                       # _RU (hu-ru), _EN, _HU — по паре проекта
     outd, stem = Path(out_dir or Path(jf).parent), Path(jf).stem
     outd.mkdir(parents=True, exist_ok=True)
     rows = []
     if src.suffix.lower() == ".docx":
-        sfx = "_EN" if d.get("pair") == "ru-en" else "_RU"          # перевод RU→EN (проект "pair": "ru-en")
         info = build_docx(src, outd / f"{stem}{sfx}.docx", d["segs"], d["res"])
         # раздел перевода — не больше листов, чем в оригинале (docx_fit: «раздел = лист» 3PR04 расползался 514 → 651);
         # без LibreOffice — как есть
@@ -668,20 +672,21 @@ def assemble_all(jf, d, out_dir=None, progress=None):
     else:
         if d.get("struct"):
             # размеченный PDF: DOCX по дереву разметки и профилю оформления оригинала
-            info = build_pdf(src, outd / f"{stem}_RU.pdf", d["segs"], d["res"], progress=lambda x: tick(0.4 * x))
+            info = build_pdf(src, outd / f"{stem}{sfx}.pdf", d["segs"], d["res"], progress=lambda x: tick(0.4 * x))
             try:
-                info["docx"], rows = build_struct_docx(src, outd / f"{stem}_RU.docx", d["segs"], d["res"],
+                info["docx"], rows = build_struct_docx(src, outd / f"{stem}{sfx}.docx", d["segs"], d["res"],
                                                        (d.get("polish") or {}).get("rules"),
                                                        progress=lambda x: tick(0.4 + 0.6 * x),
                                                        mode=d["struct"].get("mode") or "struct",
-                                                       overlay=outd / f"{stem}_RU.pdf")
+                                                       overlay=outd / f"{stem}{sfx}.pdf",
+                                                       lang_check=L.parse_pair(d.get("pair")) == ("hu", "ru"))
                 import subprocess
                 try:                                    # PDF — из этого DOCX; без LibreOffice — в вёрстке оригинала
-                    info["pdf"] = pdf_from_docx(outd / f"{stem}_RU.docx", outd / f"{stem}_RU.pdf")
+                    info["pdf"] = pdf_from_docx(outd / f"{stem}{sfx}.docx", outd / f"{stem}{sfx}.pdf")
                 except (OSError, RuntimeError, subprocess.SubprocessError) as e:
                     info["pdf"] = {"from": "вёрстка оригинала", "reason": f"{type(e).__name__}: {e}"[:200]}
             except Exception as e:                      # noqa: BLE001 — DOCX прежним путём, причина — в отчёт сборки
-                info["docx"] = docx_from_pdf(outd / f"{stem}_RU.pdf", outd / f"{stem}_RU.docx",
+                info["docx"] = docx_from_pdf(outd / f"{stem}{sfx}.pdf", outd / f"{stem}{sfx}.docx",
                                              progress=lambda x: tick(0.4 + 0.6 * x))
                 info["docx"]["fallback"] = f"{type(e).__name__}: {e}"[:200]
         elif d.get("docx"):
@@ -689,36 +694,38 @@ def assemble_all(jf, d, out_dir=None, progress=None):
             import docx_src
             shots_pdf = outd / f"{stem}_shots.tmp.pdf"
             try:
-                info = build_pdf(src, outd / f"{stem}_RU.pdf", d["segs"], d["res"], progress=lambda x: tick(0.4 * x),
+                info = build_pdf(src, outd / f"{stem}{sfx}.pdf", d["segs"], d["res"], progress=lambda x: tick(0.4 * x),
                                  shots_out=shots_pdf)
                 try:
-                    info["docx"] = docx_src.build(shots_pdf, outd / f"{stem}_RU.docx", d["segs"], d["res"], d["docx"])
+                    info["docx"] = docx_src.build(shots_pdf, outd / f"{stem}{sfx}.docx", d["segs"], d["res"], d["docx"])
                 except Exception as e:                  # noqa: BLE001 — DOCX прежним путём, причина — в отчёт сборки
-                    info["docx"] = docx_from_pdf(outd / f"{stem}_RU.pdf", outd / f"{stem}_RU.docx",
+                    info["docx"] = docx_from_pdf(outd / f"{stem}{sfx}.pdf", outd / f"{stem}{sfx}.docx",
                                                  progress=lambda x: tick(0.4 + 0.6 * x))
                     info["docx"]["fallback"] = f"{type(e).__name__}: {e}"[:200]
             finally:
                 shots_pdf.unlink(missing_ok=True)
         else:
-            info = build_pdf(src, outd / f"{stem}_RU.pdf", d["segs"], d["res"], progress=lambda x: tick(0.4 * x))
+            info = build_pdf(src, outd / f"{stem}{sfx}.pdf", d["segs"], d["res"], progress=lambda x: tick(0.4 * x))
             try:
                 import docx_layout as DL
                 if not DL.suits(src, (d.get("info") or {}).get("ocr_pages")):
                     raise ValueError("не распознанный PDF или скан")
                 # распознанный PDF (текст листа — контурами): DOCX по сегментам листа (docx_layout) — один кегль, стили,
                 # пункты, колонтитулы; PDF — из него. Раньше DOCX был из переведённого PDF: строки резались, налезали
-                info["docx"], rows = build_struct_docx(src, outd / f"{stem}_RU.docx", d["segs"], d["res"],
+                info["docx"], rows = build_struct_docx(src, outd / f"{stem}{sfx}.docx", d["segs"], d["res"],
                                                        (d.get("polish") or {}).get("rules"),
-                                                       progress=lambda x: tick(0.4 + 0.6 * x), mode="layout")
+                                                       progress=lambda x: tick(0.4 + 0.6 * x), mode="layout",
+                                                       lang_check=L.parse_pair(d.get("pair")) == ("hu", "ru"))
                 import subprocess
                 try:
-                    info["pdf"] = pdf_from_docx(outd / f"{stem}_RU.docx", outd / f"{stem}_RU.pdf")
+                    info["pdf"] = pdf_from_docx(outd / f"{stem}{sfx}.docx", outd / f"{stem}{sfx}.pdf")
                 except (OSError, RuntimeError, subprocess.SubprocessError) as e:
                     info["pdf"] = {"from": "вёрстка оригинала", "reason": f"{type(e).__name__}: {e}"[:200]}
             except Exception as e:                      # noqa: BLE001 — DOCX прежним путём, причина — в отчёт сборки
-                info["docx"] = docx_from_pdf(outd / f"{stem}_RU.pdf", outd / f"{stem}_RU.docx",
+                info["docx"] = docx_from_pdf(outd / f"{stem}{sfx}.pdf", outd / f"{stem}{sfx}.docx",
                                              progress=lambda x: tick(0.4 + 0.6 * x))
                 if not isinstance(e, ValueError):
                     info["docx"]["fallback"] = f"{type(e).__name__}: {e}"[:200]
-    review_xlsx(outd / f"{stem}_вычитка.xlsx", d["segs"], d["res"], stem, polish=d.get("polish"), extra_rows=rows)
+    review_xlsx(outd / f"{stem}_вычитка.xlsx", d["segs"], d["res"], stem, polish=d.get("polish"), extra_rows=rows,
+                pair=d.get("pair"))
     return info

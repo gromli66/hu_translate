@@ -130,6 +130,21 @@ Answer with JSON only:
 PAIR = None
 
 
+def generic_prompts(src, tgt):
+    """Прочие пары (ru-hu, en-ru, hu-en, en-hu; 22.10): промпты RU→EN с языками пары, модальность — без примеров."""
+    import langs as L
+    S, T = L.NAME_EN[src], L.NAME_EN[tgt]
+    system = SYSTEM_RU_EN.replace("from Russian into English", f"from {S} into {T}") \
+        .replace("wrong modality (должен → shall, допускается → may, не допускается → shall not)",
+                 "wrong modality (obligation, permission, prohibition)") \
+        .replace("English abbreviations and terms from the glossary", f"{T} abbreviations and terms from the glossary") \
+        .replace("decimal point instead of decimal comma", "decimal separator of the target language")
+    user = USER_COMPACT_RU_EN.replace("Original (RU):", f"Original ({src.upper()}):") \
+        .replace("Translation (EN):", f"Translation ({tgt.upper()}):") \
+        .replace("corrected English translation", f"corrected {T} translation")
+    return system, user
+
+
 def configure(terms=None, conventions=None, glossary=None, pair=None):
     """Глоссарий комплекта, основной глоссарий и свод соглашений (раздел «## Уже принято» или весь файл);
     pair="ru-en" — проверка английского перевода русского оригинала."""
@@ -144,7 +159,7 @@ def configure(terms=None, conventions=None, glossary=None, pair=None):
 def _terms(hu, limit=30):
     global _TR
     if _TR is None:
-        _TR = Translator(extra=TERMS, glossary=GLOSSARY)
+        _TR = Translator(extra=TERMS, glossary=GLOSSARY, pair=PAIR)      # глоссарий обратной пары — развёрнутым
     found = G.find(hu, _TR.entries, limit=100000)
     main = [e for e in found if id(e) in _TR.main_ids]
     rest = [e for e in found if id(e) not in _TR.main_ids]
@@ -159,10 +174,12 @@ def _ctx(pairs):
 def review(hu, ru, vote=0, think=True, ctx=None, compact=False):
     """ctx (насыщенный режим): {"prev": [(hu, ru)], "next": [(hu, ru)], "other": второй перевод}.
     compact: в ответ только проблемы, вердикт и исправленный перевод (fix) — короче вывод, без отдельного автоисправления."""
-    if PAIR == "ru-en":
-        sysm = SYSTEM_RU_EN
-        user = USER_COMPACT_RU_EN.format(prev=_ctx((ctx or {}).get("prev", [])), hu=hu, ru=ru,
-                                         next=_ctx((ctx or {}).get("next", [])), terms=_terms(hu, 50))
+    import langs as L
+    pair = L.parse_pair(PAIR)
+    if pair != ("hu", "ru"):
+        sysm, tpl = (SYSTEM_RU_EN, USER_COMPACT_RU_EN) if pair == ("ru", "en") else generic_prompts(*pair)
+        user = tpl.format(prev=_ctx((ctx or {}).get("prev", [])), hu=hu, ru=ru,
+                          next=_ctx((ctx or {}).get("next", [])), terms=_terms(hu, 50))
     elif ctx is None:
         sysm, user = SYSTEM, USER.format(hu=hu, ru=ru, terms=_terms(hu))
     else:

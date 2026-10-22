@@ -77,28 +77,40 @@ def _alts(hu, ru=""):
     return [s for s, l in zip(out, low) if ("nem",) + l not in low]
 
 
-def load(path=None):
+def load(path=None, pair=None):
+    """pair ("src", "tgt") или "src-tgt": таблица с шапкой в обратную сторону («| Венгерский | Русский |» для ru-hu)
+    читается развёрнутой — термин цели становится ключом, правила применения (они о другом направлении) не берутся.
+    Без шапки и без pair — как записано."""
+    import langs as L
     path = path or GLOSS_MD
     if not path:
         raise ValueError("не задан основной глоссарий (project.json: glossary)")
+    want = L.parse_pair(pair) if isinstance(pair, str) or pair is None else tuple(pair)
     text = Path(path).read_text(encoding="utf-8")
     rules = text.split("## Правила применения", 1)[1].split("\n## ", 1)[0].strip() if "## Правила применения" in text else ""
-    entries, section = [], ""
+    entries, section, flip, flipped = [], "", False, False
     for ln in text.splitlines():
         if ln.startswith("## "):
             section = ln[3:].strip()
             continue
-        if not ln.startswith("|") or ln.startswith("|---") or ln.startswith(("| Венгерский", "| Русский")):
+        if not ln.startswith("|") or ln.startswith("|---"):
             continue
         cells = [c.strip() for c in ln.strip().strip("|").split("|")]
+        head = L.header_langs(cells)
+        if head:                                    # шапка таблицы: направление её колонок
+            flip = pair is not None and head == (want[1], want[0])
+            flipped |= flip
+            continue
         if len(cells) < 2:
             continue
         hu, ru, note = cells[0], cells[1], (cells[2] if len(cells) > 2 else "")
+        if flip:
+            hu, ru = ru, hu
         e = Entry(hu, ru, note, section)
         e.alts = _alts(hu, ru)
         if e.alts:
             entries.append(e)
-    return rules, entries
+    return ("" if flipped else rules), entries
 
 
 def _tokens(text):

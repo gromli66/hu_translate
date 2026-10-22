@@ -16,6 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 OCR_DIR = ROOT / "work" / "ocr"                  # переопределяется конвейером: <рабочая папка>/ocr
+SRC_LANG = "hu"                                  # язык источника (pipeline.extract, пара проекта): Tesseract, OCR портала
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 HU_WORD = re.compile(r"[a-záéíóöőúüű]{2,}")
 
@@ -176,6 +177,16 @@ def docx_segments(path):
 OCR_PROMPT = ("Перепиши весь текст страницы дословно, на языке оригинала (венгерский), сохраняя порядок, "
               "нумерацию пунктов, переносы абзацев и все коды/обозначения посимвольно (буквы с диакритикой: "
               "á é í ó ö ő ú ü ű) и знаки ≤ ≥ < > ± ÷ Δ ° %. Ничего не переводи, не пропускай и не добавляй. Выведи только текст.")
+
+
+def ocr_prompt():
+    """Промпт OCR порталом по языку источника: венгерский — прежний (проверен), прочие — тот же без венгерских букв."""
+    if SRC_LANG == "hu":
+        return OCR_PROMPT
+    import langs as L
+    return ("Перепиши весь текст страницы дословно, на языке оригинала (" + L.NAME_RU[SRC_LANG] + "), сохраняя порядок, "
+            "нумерацию пунктов, переносы абзацев и все коды/обозначения посимвольно и знаки ≤ ≥ < > ± ÷ Δ ° %. "
+            "Ничего не переводи, не пропускай и не добавляй. Выведи только текст.")
 # знак градуса — в сравнении слов: без него «°C.» портала становилось «c» и совпадало с «c», которым Tesseract прочёл
 # «<» («t < 98 °C.» → «t < 98 c 98 9C.», 3SZ19, 19.10)
 _NORM = re.compile(r"[^\w%Δ÷±≤≥<>°]+")
@@ -542,7 +553,8 @@ def ocr_frags(words, vs=()):
 
 
 def _tess_words(png_path, dpi):
-    r = subprocess.run(["tesseract", str(png_path), "stdout", "-l", "hun", "--psm", "4", "tsv"],
+    import langs as L
+    r = subprocess.run(["tesseract", str(png_path), "stdout", "-l", L.TESS.get(SRC_LANG, "hun"), "--psm", "4", "tsv"],
                        capture_output=True, text=True, encoding="utf-8")
     words = []
     for ln in r.stdout.splitlines()[1:]:
@@ -713,7 +725,7 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
     def portal(pno):
         from llm import chat, img_b64
         png = fitz.open(path)[pno].get_pixmap(dpi=dpi_portal, colorspace=fitz.csGRAY).tobytes("png")
-        return chat([{"role": "user", "content": OCR_PROMPT}], images=[img_b64(png)], max_tokens=8000, tag=f"ocr{pno}")
+        return chat([{"role": "user", "content": ocr_prompt()}], images=[img_b64(png)], max_tokens=8000, tag=f"ocr{pno}")
 
     from layout import hidden_text, _covered
     plan = {}
@@ -781,7 +793,7 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
                     segs[-1]["loc"]["role"] = p["role"]
     n_shots = 0
     text_pages = {p for p in rng if not plan[p]}
-    if shots and text_pages:
+    if shots and text_pages and SRC_LANG == "hu":          # надписи скриншотов — словарь и правила венгерского (shots.py)
         import shots as SH
         extra = SH.shot_segments(doc, work / "shots", len(segs), pages=text_pages)
         n_shots = len(extra)

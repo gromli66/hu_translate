@@ -123,7 +123,7 @@ def unpack_portfolio(f, dest):
     return out
 
 
-def rebuild_portfolios(work, out):
+def rebuild_portfolios(work, out, sfx="_RU"):
     """Переведённое портфолио: копия исходного, где каждое вложение заменено своим переводом (PDF — PDF «на месте»,
     DOCX — DOCX). Заказчик получает один файл той же структуры, что прислал; переводы по отдельности тоже остаются."""
     import fitz
@@ -133,7 +133,7 @@ def rebuild_portfolios(work, out):
         keys = d.embfile_names()                 # по ключам, не по номерам: удаление сдвигает номера
         done = 0
         for idx, name in m["map"].items():
-            ru = Path(out) / f"{Path(name).stem}_RU{Path(name).suffix.lower()}"
+            ru = Path(out) / f"{Path(name).stem}{sfx}{Path(name).suffix.lower()}"
             if ru.exists():
                 key = keys[int(idx)]
                 info = d.embfile_info(key)
@@ -142,14 +142,16 @@ def rebuild_portfolios(work, out):
                 d.embfile_add(key, ru.read_bytes(), filename=info.get("filename"), ufilename=info.get("ufilename"),
                               desc=info.get("desc"))
                 done += 1
-        target = Path(out) / f"{Path(m['source']).stem}_RU.pdf"
+        target = Path(out) / f"{Path(m['source']).stem}{sfx}.pdf"
         d.save(target, garbage=3, deflate=True)
         log(f"сборка: {target.name} — портфолио, переведённых вложений {done} из {len(m['map'])}")
 
 
-def extract(inputs, work, progress=_quiet):
+def extract(inputs, work, progress=_quiet, src_lang="hu"):
+    """src_lang — язык источника (пара проекта): Tesseract, OCR порталом, надписи скриншотов (только hu)."""
     work = Path(work); (work / "json").mkdir(parents=True, exist_ok=True)
     S.OCR_DIR = work / "ocr"
+    S.SRC_LANG = src_lang
     queue = []
     for x in inputs:
         x = Path(x)
@@ -323,7 +325,7 @@ def translate(work, prj, workers=4, redo=False, progress=_quiet):
     # венгерское слово заглавными («HIBA», «VAGY», «NYITVA») — не сокращение: оно есть строчными в тексте
     # комплекта (tr.vocab) или в HU_CAPS_WORDS (красная команда 15.10: 90 сегментов «HIBA» остались бы без перевода)
     known = {e.hu.strip() for e in tr.entries}
-    keep_abbr = lambda t: (bool(re.fullmatch(r"[A-Z][A-Z0-9]{1,6}", t.strip())) and t.strip() not in known
+    keep_abbr = lambda t: (tr.src != "en" and bool(re.fullmatch(r"[A-Z][A-Z0-9]{1,6}", t.strip())) and t.strip() not in known
                            and t.strip().lower() not in tr.vocab and t.strip().lower() not in HU_CAPS_WORDS)
 
     def run_stream(job):
@@ -362,18 +364,17 @@ def translate(work, prj, workers=4, redo=False, progress=_quiet):
         out = {s["id"]: done[stem][s["id"]] for s in d["segs"]}
         # перевод из памяти переводов утверждён редактором — постобработка его не трогает;
         # RU→EN: без «СУЗ (SZBV)» и русских единиц/прописных — это правила перевода на русский
-        if not tr.ru_en:
+        if tr.hu_ru:
             tr.first_use(d["segs"], {k: v for k, v in out.items() if not v.get("tm")})
         for s in d["segs"]:
             r = out[s["id"]]
             if not r.get("copied") and not r.get("tm") and r["ru"]:
-                if not tr.ru_en:
-                    r["ru"] = fix_units(fix_caps(s["text"], r["ru"]))
+                r["ru"] = tr.post(s["text"], r["ru"])
                 r["issues"] = tr.full_check(s["text"], r["ru"])
                 r["gloss_miss"] = gloss_misses(TAG.sub("", s["text"]), r["ru"], main, outer=tr.entries)
         d["res"] = {str(k): v for k, v in out.items()}
         if prj.get("pair"):
-            d["pair"] = prj["pair"]                 # сборка: суффикс файла перевода (_EN)
+            d["pair"] = prj["pair"]                 # сборка: суффикс файла перевода (_EN, _HU)
         d.pop("polish", None)                       # перевод новый — шлифовка заново
         save_doc(work, stem, d)
         log(f"перевод: {stem} — на вычитку {sum(1 for r in d['res'].values() if r.get('issues'))}")
@@ -427,7 +428,7 @@ def struct_fill(work, prj, progress=_quiet):
                     r = dict(got[t])
                     if r["ru"]:
                         # моноширинные части: команды — дословно, заполнитель <…> — в скобках (docx_build.code_part)
-                        r["ru"] = B.keep_code(t, fix_units(fix_caps(t, r["ru"])), code)
+                        r["ru"] = B.keep_code(t, tr.post(t, r["ru"]), code)
                         r["issues"] = tr.full_check(t, r["ru"])
                         r["gloss_miss"] = gloss_misses(TAG.sub("", t), r["ru"], main, outer=tr.entries)
                 sid = max(int(s["id"]) for s in d["segs"]) + 1
@@ -454,6 +455,8 @@ def review(work, prj, workers=6, compact=True, progress=_quiet):
                  pair=prj.get("pair"))
     tr = make_translator(prj)
     main = [e for e in tr.entries if id(e) in tr.main_ids]
+    # автоисправления смысловой проверки — по умолчанию только там, где проверены (hu-ru); проект может задать сам
+    autofix = prj.get("review_autofix", tr.hu_ru)
     t0, cnt, lock = time.time(), {"n": 0}, threading.Lock()
     plans = []
     for f in doc_files(work):
@@ -490,8 +493,7 @@ def review(work, prj, workers=6, compact=True, progress=_quiet):
                     got, _ = tr._call([{"key": 0, "text": s["text"]}], [], "", True, NOTE_FIX.format(reason=rv["reason"], ru=key[1]))
                     cand = got.get(0, "")
                 if cand:
-                    if not tr.ru_en:
-                        cand = fix_units(fix_caps(s["text"], cand))
+                    cand = tr.post(s["text"], cand)
                     rv2 = RP.review(key[0], cl(cand), think=True, ctx=ctx, compact=compact)
                     fx = {"ru": cand, "issues": tr.full_check(s["text"], cand), "rv2": rv2}
             with lock:
@@ -514,11 +516,10 @@ def review(work, prj, workers=6, compact=True, progress=_quiet):
                 if fx:
                     # "review_autofix": false (проект RU→EN) — исправления только предлагаются (candidate): для RU→EN
                     # портал «исправлял» буквы приложений и станционный жаргон (ТЗ тренажёра, 20.10: 13 из 27 вредные)
-                    accept = ok and badness(fx["issues"]) <= badness(r.get("issues") or []) \
-                        and prj.get("review_autofix", True)
+                    accept = ok and badness(fx["issues"]) <= badness(r.get("issues") or []) and autofix
                     r["autofix"] = {"before": r["ru"], "reason": rv["reason"], "accepted": accept,
                                     "review2": {"serious": fx["rv2"]["serious"], "reason": fx["rv2"]["reason"]}}
-                    if not accept and not prj.get("review_autofix", True):
+                    if not accept and not autofix:
                         r["autofix"]["candidate"] = fx["ru"]
                     if accept:
                         accepted = True
@@ -541,9 +542,11 @@ def polish(work, prj, progress=_quiet, chat=None):
     в d["polish"] (листы «шлифовка» и «нарушения» таблицы вычитки), у сегмента — r["polish"] (колонка H)."""
     import conventions as C
     import polish as PL
-    if prj.get("pair") == "ru-en":
-        # соглашения шлифовки — о русском тексте (ё, кавычки «», латиница/кириллица) — к английскому не применимы
-        log("шлифовка: перевод на английский — русские языковые соглашения не применяются, шаг пропущен"); return
+    import langs as L
+    if L.pair_of(prj) != ("hu", "ru"):
+        # соглашения шлифовки — о русском переводе венгерского текста (ё, кавычки «», венгерский в переводе): к другим
+        # парам не применимы (проверены только на hu-ru)
+        log(f"шлифовка: пара {'-'.join(L.pair_of(prj))} — языковые соглашения hu-ru не применяются, шаг пропущен"); return
     if chat is None:
         from llm import chat
     files = doc_files(work)
@@ -609,6 +612,16 @@ FIT_PROMPT_SHORT = ("Надпись в тесной ячейке техниче�
                     "словами. Числа, коды и латиница — без изменений. Выведи только результат.\nНадпись: {ru}")
 
 
+FIT_PROMPT_GENERIC = ("Below is a {tgt} translation of a fragment of technical documentation that does not fit its place in "
+                      "a PDF (a table cell or a list line). Shorten it to {n} characters or less, keeping the meaning.\n"
+                      "- Terms, codes, designations, numbers and Latin names stay unchanged, every one of them.\n"
+                      "- You may drop repetitions and function words, use a shorter wording or common abbreviations.\n"
+                      "- Add nothing. Output only the shortened text.\n\nOriginal ({src}): {hu}\nTranslation: {ru}")
+FIT_PROMPT_SHORT_GENERIC = ("A label in a narrow table cell of a technical document does not fit. Shorten it to {n} characters "
+                            "or less by abbreviating the same words with a period, not replacing them with other words. "
+                            "Numbers, codes and Latin names stay unchanged. Output only the result.\nLabel: {ru}")
+
+
 def _abbr_of(short, ru, hu):
     """Короткая надпись — те же слова или их сокращения с точкой (или исходное латинское сокращение)."""
     if short.strip() == hu.strip():
@@ -628,9 +641,12 @@ def fit(work, prj=None, limit=0.7):
     не может раздвинуть ячейку или строку списка). Портал сокращает, код проверяет: коды и числа те же, текст
     короче. Сокращённое — только в PDF (r["ru_pdf"]); в DOCX строка растёт, там полный перевод."""
     import tempfile
+    import langs as L
     from llm import chat
     from translate import CODE
     from assemble import build_pdf
+    sl, tl = L.pair_of(prj)
+    hu_ru = (sl, tl) == ("hu", "ru")
     for f in doc_files(work):
         d = json.loads(f.read_text(encoding="utf-8"))
         if not d["file"].lower().endswith(".pdf"):
@@ -651,8 +667,12 @@ def fit(work, prj=None, limit=0.7):
             r.pop("ru_pdf", None); r.pop("ru_pdf_of", None)
             if n >= len(ru):
                 continue
-            prompt = (FIT_PROMPT_SHORT.format(n=n, ru=ru) if label
-                      else FIT_PROMPT.format(n=n, hu=cl(s["text"]), ru=ru))
+            if hu_ru:
+                prompt = (FIT_PROMPT_SHORT.format(n=n, ru=ru) if label
+                          else FIT_PROMPT.format(n=n, hu=cl(s["text"]), ru=ru))
+            else:
+                prompt = (FIT_PROMPT_SHORT_GENERIC.format(n=n, ru=ru) if label else
+                          FIT_PROMPT_GENERIC.format(n=n, hu=cl(s["text"]), ru=ru, src=L.NAME_EN[sl], tgt=L.NAME_EN[tl]))
             out = chat([{"role": "user", "content": prompt}], max_tokens=2000, tag=f"fit{it['id']}")
             short = (out.get("text") or "").strip().strip("«»\"")
             codes = lambda t: sorted(CODE.findall(t))
@@ -672,7 +692,9 @@ def assemble(work, progress=_quiet):
         d = json.loads(f.read_text(encoding="utf-8"))
         info = assemble_all(f, d, Path(work) / "out", progress=lambda x: progress("сборка", i + x, len(files)))
         log(f"сборка: {f.stem} — {str(info)[:80]}")
-    rebuild_portfolios(work, Path(work) / "out")
+    import langs as L
+    pairs = {json.loads(f.read_text(encoding="utf-8")).get("pair") for f in files}
+    rebuild_portfolios(work, Path(work) / "out", L.suffix(next(iter(pairs)) if len(pairs) == 1 else None))
     progress("сборка", len(files), len(files))
 
 
@@ -767,7 +789,7 @@ def propagate(work, prj, pairs, sim=0.8, workers=4, progress=_quiet):
         if not ru2:
             continue
         stem0, sid0, seg = places[0]
-        ru2 = fix_units(fix_caps(seg["text"], ru2))
+        ru2 = tr.post(seg["text"], ru2)
         iss2 = tr.full_check(seg["text"], ru2)
         if badness(iss2) <= badness(docs[stem0]["res"][sid0].get("issues") or []):
             acc += 1
