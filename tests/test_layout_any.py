@@ -231,3 +231,20 @@ def test_text_layer_figure_with_text_inside_comes_from_translated_pdf(tmp_path):
     blocks, _ = DL.load(str(src), segs, text=True)
     imgs = [r["img"] for b in blocks if b["k"] == "p" for r in b.get("runs") or [] if "img" in r]
     assert sorted("clip" in i for i in imgs) == [False, True]
+
+
+def test_textless_copy_keeps_pictures_drops_text():
+    """Копия листа без текста сегментов: картинка цела, текст в рамках снят, вне рамок — остался."""
+    import io
+    import numpy as np
+    from PIL import Image
+    import docx_layout as DL
+    buf = io.BytesIO()
+    Image.fromarray(((np.indices((100, 100)) // 20).sum(0) % 2 * 255).astype(np.uint8)).convert("RGB").save(buf, "PNG")
+    d = fitz.open()
+    pg = d.new_page()
+    pg.insert_image(fitz.Rect(72, 300, 272, 500), stream=buf.getvalue())
+    pg.insert_text((80, 400), "akkor nincs szükség", fontsize=12)
+    pg.insert_text((80, 100), "Fejléc marad", fontsize=12)
+    c = DL._textless(d, 0, [(78, 388, 300, 404)])
+    assert c[0].get_text().strip() == "Fejléc marad" and len(c[0].get_images()) == 1

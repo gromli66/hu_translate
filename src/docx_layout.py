@@ -1160,6 +1160,19 @@ def _graphic_page(page, segs, figs):
     return area >= 0.5 and inside >= 0.3 or len(rects) >= 5 and area >= 0.05 and len(segs) <= 20
 
 
+def _textless(doc, pno, boxes):
+    """Копия листа pno, где снят текст в рамках boxes (сегменты), — картинки и графика целы: рисунок текстового слоя
+    вырезается без текста, перевод которого идёт абзацами (22.10)."""
+    import fitz
+    c = fitz.open()
+    c.insert_pdf(doc, from_page=pno, to_page=pno)
+    for b in boxes:
+        c[0].add_redact_annot(fitz.Rect(b), fill=False)
+    c[0].apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE, graphics=fitz.PDF_REDACT_LINE_ART_NONE,
+                          text=fitz.PDF_REDACT_TEXT_REMOVE)
+    return c
+
+
 def _ocr_layer(page):
     """Текст листа — невидимый слой распознавания поверх скана (газета 1813 г.: весь текст в режиме 3), а не настоящий
     текст поверх фона-картинки во весь лист (брошюра из InDesign: фон и фото — картинками, текст — видимый). Лист-плакат
@@ -1202,9 +1215,13 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
     out = {}
     for pno, page in enumerate(doc):
         segs = by_page.get(pno, [])
-        figs = [(r, {"png": page.get_pixmap(dpi=150, clip=r).tobytes("png"), "x0": r.x0, "x1": r.x1, "top": r.y0,
-                     "bottom": r.y1}) for r in _figures(page, masks.get(pno, segs) if mask else segs, draw[pno],
-                                                         scans[pno])]
+        rects = _figures(page, masks.get(pno, segs) if mask else segs, draw[pno], scans[pno])
+        # текстовый слой: рисунок — без текста сегментов, задевающих его краем (их перевод идёт абзацем; в картинке
+        # оставался оригинал: брошюра HERCA, «akkor nincs szükség…» поверх плашки)
+        hit = [s["loc"]["bbox"] for s in segs if any(fitz.Rect(s["loc"]["bbox"]).intersects(r) for r in rects)]             if mask is not None else []
+        bare = _textless(doc, pno, hit) if hit else None
+        figs = [(r, {"png": (bare[0] if bare else page).get_pixmap(dpi=150, clip=r).tobytes("png"), "x0": r.x0,
+                     "x1": r.x1, "top": r.y0, "bottom": r.y1}) for r in rects]
         hs, vs = per[pno]
         # скан — лист, распознанный OCR (своего текстового слоя нет); лист с крупным рисунком (> ½ листа) и текстом слоя —
         # не скан: текст — абзацами (ред-тим 20.10)
