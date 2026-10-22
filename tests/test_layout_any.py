@@ -72,13 +72,19 @@ def test_upright_copy_of_rotated_pages(tmp_path):
     d = fitz.open()
     pg = d.new_page(width=612, height=792)
     pg.insert_text((100, 100), "Mérés eredménye", fontsize=11, rotate=270)
+    pg.insert_text((100, 720), "Helyszín", fontsize=11, rotate=270)     # у дальнего края: show_pdf_page его срезала
     pg.set_rotation(90)
     d.save(str(src))
     up = S.upright(src, tmp_path / "up")
     assert up != src
-    w = fitz.open(str(up))[0].get_text("words")
+    page = fitz.open(str(up))[0]
+    w = page.get_text("words")
     x0, y0, x1, y1 = w[0][:4]
     assert x1 - x0 > y1 - y0                                    # слово лежит строкой, а не столбиком
+    # все слова — там же, где их видно на повёрнутом листе
+    seen = sorted((t[4], round((fitz.Rect(t[:4]) * pg.rotation_matrix).x0)) for t in fitz.open(str(src))[0].get_text("words"))
+    assert page.rect == fitz.Rect(0, 0, 792, 612)
+    assert sorted((t[4], round(t[0])) for t in w) == seen
     plain = tmp_path / "plain.pdf"
     fitz.open().new_page().insert_text((50, 50), "a")
     d2 = fitz.open(); d2.new_page().insert_text((50, 50), "szöveg"); d2.save(str(plain))

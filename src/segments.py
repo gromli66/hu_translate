@@ -624,10 +624,24 @@ def upright(path, out_dir):
             return path
         out = Path(out_dir) / path.name
         out.parent.mkdir(parents=True, exist_ok=True)
+        # поворот — матрицей в начале содержимого листа (как его рисует просмотрщик), а не show_pdf_page: та срезала
+        # повёрнутый лист по его видимым размерам — у HAKSER пропадал левый край таблиц («Helyszín», «Miskolc»,
+        # подпись таблицы; 53 слова листа 34 → 46, 22.10)
         new = fitz.open()
-        for i, pg in enumerate(src):
-            np_ = new.new_page(width=pg.rect.width, height=pg.rect.height)
-            np_.show_pdf_page(np_.rect, src, i, rotate=-pg.rotation)
+        new.insert_pdf(src)
+        for pg in new:
+            r = pg.rotation
+            if r not in (90, 180, 270) or not pg.get_contents():
+                continue
+            mb = pg.mediabox
+            w, h, x0, y0 = mb.width, mb.height, mb.x0, mb.y0
+            m = {90: (0, -1, 1, 0, -y0, w + x0), 270: (0, 1, -1, 0, h + y0, -x0),
+                 180: (-1, 0, 0, -1, w + x0, h + y0)}[r]
+            pg.clean_contents()
+            x = pg.get_contents()[0]
+            new.update_stream(x, ("q %g %g %g %g %g %g cm\n" % m).encode() + new.xref_stream(x) + b"\nQ")
+            pg.set_rotation(0)
+            pg.set_mediabox(fitz.Rect(0, 0, h, w) if r in (90, 270) else fitz.Rect(0, 0, w, h))
         new.set_metadata(src.metadata or {})
         new.save(str(out), garbage=3, deflate=True)
         new.close()
