@@ -308,7 +308,10 @@ def check_case(case):
     med = sorted(o_sizes)[len(o_sizes) // 2] if o_sizes else 10
     oimg = _images(o)
     expect = Counter(flip(w).lower() for w in owords)
-    orig_lat = Counter(w for w in owords if re.search(r"[a-z]", _plain_word(w)))
+    # остаток — только слова, которые поддельный перевод переводит (коды вроде «NAVD», «DATABASE» заглавными до 6 букв
+    # он оставляет — это не непереведённый текст)
+    orig_lat = Counter(w.lower() for w in re.findall(r"[^\W\d_]{4,}", otext)
+                       if is_word(w) and re.search(r"[a-z]", _plain_word(w.lower())))
     rows = {}
     for f, run in info["runs"].items():
         pdf = case / f"x{f}.pdf"
@@ -318,14 +321,26 @@ def check_case(case):
         b = fitz.open(pdf)
         btext = "\n".join(p.get_text() for p in b)
         bw = Counter(words_of(btext))
-        lost = sum(1 for w in expect if w not in bw) / max(len(expect), 1) if float(f) >= 1.0 else None
+        # лист, перенесённый снимком с переведённого PDF (плакат, скан, таблица-график), несёт текст картинкой — его
+        # слова стенд не видит; такие листы оригинала (почти все слова «пропали», а в сборке есть картинка не меньше
+        # трети листа на каждый) — не в счёт потерь, отдельным числом «снимком»
+        big = sum(1 for pg in b for im in pg.get_image_info()
+                  if (im["bbox"][2] - im["bbox"][0]) * (im["bbox"][3] - im["bbox"][1]) > 0.33 * pg.rect.get_area())
+        per = [Counter(flip(w).lower() for w in words_of(pg.get_text())) for pg in o]
+        gone = [i for i, c in enumerate(per) if c and sum(1 for w in c if w not in bw) >= 0.9 * len(c)]
+        snap = set(gone[:big])
+        exp2 = Counter()
+        for i, c in enumerate(per):
+            if i not in snap:
+                exp2.update(c)
+        lost = sum(1 for w in exp2 if w not in bw) / max(len(exp2), 1) if float(f) >= 1.0 else None
         resid = sum(1 for w in orig_lat if w in bw and flip(w).lower() != w) / max(len(orig_lat), 1)
         sizes = [s for p in b for s, _, _ in _spans(p)]
         tiny = sum(1 for s in sizes if s < 0.6 * med) / max(len(sizes), 1)
         empty = [i + 1 for i, p in enumerate(b) if len(p.get_text().strip()) < 20 and not p.get_image_info()]
         ov = {i + 1: n for i, p in enumerate(b) if (n := _overlaps(p))}
         rows[f] = {"pages": len(b), "lost": lost, "resid": resid, "tiny": tiny, "imgs": _images(b), "empty": empty,
-                   "overlaps": ov}
+                   "overlaps": ov, "snap": len(snap)}
     return {"label": info["label"], "mode": info.get("mode"), "orig_pages": len(o), "orig_imgs": oimg, "runs": rows}
 
 
@@ -348,7 +363,8 @@ def flags(r):
         if fv >= 1 and p < 0.75 * o - 1:
             out.append((f, f"листов {p} — меньше оригинала {o} (пропало?)"))
         if x["lost"] is not None and x["lost"] > 0.03:
-            out.append((f, f"потеряно слов {x['lost']:.0%}"))
+            out.append((f, f"потеряно слов {x['lost']:.0%}"
+                        + (f" (кроме {x['snap']} л. снимком)" if x.get("snap") else "")))
         if x["resid"] > 0.03:
             out.append((f, f"не переведено слов {x['resid']:.0%}"))
         if x["tiny"] > 0.02:

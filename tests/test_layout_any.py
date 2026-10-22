@@ -83,3 +83,17 @@ def test_upright_copy_of_rotated_pages(tmp_path):
     fitz.open().new_page().insert_text((50, 50), "a")
     d2 = fitz.open(); d2.new_page().insert_text((50, 50), "szöveg"); d2.save(str(plain))
     assert S.upright(plain, tmp_path / "up") == plain           # без поворотов — исходный файл
+
+
+def test_ocr_layer_only_invisible_text_over_scan():
+    """Скан с невидимым слоем распознавания — не плакат; живой текст поверх фона-картинки (брошюра) — может быть."""
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (60, 80), "lightblue").save(buf, "PNG")
+    doc = fitz.open()
+    for mode in (3, 0):
+        pg = doc.new_page()
+        pg.insert_image(pg.rect, stream=buf.getvalue())
+        pg.insert_text((72, 100), "Szöveg a háttér felett", render_mode=mode)
+    assert DL._ocr_layer(doc[0]) and not DL._ocr_layer(doc[1])

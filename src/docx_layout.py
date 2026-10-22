@@ -1160,6 +1160,14 @@ def _graphic_page(page, segs, figs):
     return area >= 0.5 and inside >= 0.3 or len(rects) >= 5 and area >= 0.05 and len(segs) <= 20
 
 
+def _ocr_layer(page):
+    """Текст листа — невидимый слой распознавания поверх скана (газета 1813 г.: весь текст в режиме 3), а не настоящий
+    текст поверх фона-картинки во весь лист (брошюра из InDesign: фон и фото — картинками, текст — видимый). Лист-плакат
+    (_graphic_page) — не для первого: снимок брал скан без перевода (22.10); второй — плакат (HERCA 16 листов → 32)."""
+    kinds = [k for k, _ in page.get_bboxlog() if "text" in k]
+    return bool(kinds) and kinds.count("ignore-text") >= 0.5 * len(kinds)
+
+
 def _chart_table(t, draw):
     """Таблица-график: в её рамке — от трёх залитых фигур, не совпадающих с ячейками (полосы диаграммы Ганта, ромбы
     вех, столбики): сетка таблицы — только поле графика, и таблицей собиралась пустая сетка без полос (22.10)."""
@@ -1205,7 +1213,7 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
         charts = sum(fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1]).get_area() for t in _tables(hs, vs)
                      if _chart_table(t, draw[pno])) if mask is not None else 0
         if mask is not None and segs and (scans[pno] and any(s["loc"].get("ocr") for s in segs)
-                                          or _graphic_page(page, segs, figs)
+                                          or not (scans[pno] and _ocr_layer(page)) and _graphic_page(page, segs, figs)
                                           or charts >= 0.3 * page.rect.get_area()):
             # скан посреди текстового слоя (лист регистрации, титул с подписями 32RDGT) — листом с переведённого PDF,
             # как отдельный скан формы (16.10): по сегментам сетка, подписи и штампы бланка рассыпались, 8 листов → 11
