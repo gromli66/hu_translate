@@ -2351,6 +2351,13 @@ def job_memory(segs, res):
     return Memory([(s["text"], (res.get(str(s["id"])) or {}).get("ru")) for s in segs if "shot" not in s["loc"]])
 
 
+def word_export(meta):
+    """PDF — экспорт из Word (дерево разметки по соглашениям Word): «Microsoft Word», «Microsoft® Office Word 2007» и
+    надстройка Acrobat «PDFMaker … for Word» (отчёт OAH 2003 и №35, №37 партии 2 шли текстовым слоем, 22.10)."""
+    return bool(re.search(r"Microsoft\W{0,3}(?:Office\s+)?Word|PDFMaker.{0,30}Word",
+                          (meta.get("producer") or "") + " " + (meta.get("creator") or ""), re.I))
+
+
 def coverage(pdf, segs):
     """Доля уникальных текстов страниц PDF, которые есть в тексте дерева разметки (0 — разметки нет). Оглавление
     собирается полем, номер пункта — автонумерацией, их не считаем. Неполная разметка теряла бы текст в DOCX:
@@ -2367,8 +2374,7 @@ def coverage(pdf, segs):
     meta = doc.metadata or {}
     # и Word 2007 — «Microsoft® Office Word 2007»: прежнее «Microsoft.{0,4}Word» его не узнавало, и руководства OAH
     # шли переводом поверх PDF (живая проверка, 16.10)
-    if not re.search(r"Microsoft\W{0,3}(?:Office\s+)?Word", (meta.get("producer") or "") + " " + (meta.get("creator") or ""),
-                     re.I):
+    if not word_export(meta):
         return 0.0
     blocks, _ = docx_struct.load(str(pdf))
     blob = "".join(KEY(text_of(b["runs"])) for b in _paras(blocks))
