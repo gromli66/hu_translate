@@ -205,3 +205,29 @@ def test_review_xlsx_survives_control_chars(tmp_path):
     A.review_xlsx(out, segs, res, "t")
     row = [c.value for c in load_workbook(out).active[2]]
     assert row[2] == "Elkerülhető vizsgálat" and row[3] == "Можно избежать"
+
+
+def test_text_layer_figure_with_text_inside_comes_from_translated_pdf(tmp_path):
+    """Текстовый слой: рисунок, внутри которого текст листа (цитата поверх фото), — вырезкой с переведённого PDF
+    (clip), а не картинкой оригинала; рисунок без текста — как был."""
+    import io
+    from PIL import Image
+    import docx_layout as DL
+    import segments as S
+    import numpy as np
+    buf = io.BytesIO()                              # пёстрая картинка (фото): сплошную заливку _figures берёт за линии
+    Image.fromarray(((np.indices((200, 300)) // 20).sum(0) % 2 * 255)
+                    .astype(np.uint8)).convert("RGB").save(buf, "PNG")
+    d = fitz.open()
+    pg = d.new_page()
+    pg.insert_image(fitz.Rect(72, 300, 372, 500), stream=buf.getvalue())
+    pg.insert_text((90, 420), "Ha már rendelkezésre áll a diagnózis", fontsize=12, color=(1, 1, 1))
+    pg.insert_image(fitz.Rect(72, 560, 372, 760), stream=buf.getvalue())
+    for k in range(6):
+        pg.insert_text((72, 80 + 20 * k), f"A klinikai vizsgálatok eredménye {k}. bekezdés szövege.", fontsize=11)
+    src = tmp_path / "f.pdf"
+    d.save(str(src))
+    segs, _ = S.pdf_segments(str(src), ocr=False, shots=False)
+    blocks, _ = DL.load(str(src), segs, text=True)
+    imgs = [r["img"] for b in blocks if b["k"] == "p" for r in b.get("runs") or [] if "img" in r]
+    assert sorted("clip" in i for i in imgs) == [False, True]
