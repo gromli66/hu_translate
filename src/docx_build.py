@@ -2376,7 +2376,17 @@ def blocks_layout(pdf, segs, mode):
         import docx_layout
         blocks, info = docx_layout.load(str(pdf), segs, text=mode == "text")
         if mode == "text":
-            return blocks, dict(docx_struct.layout(str(pdf), blocks, content=info.get("content_boxes")), sizes=True)
+            L = dict(docx_struct.layout(str(pdf), blocks, content=info.get("content_boxes")), sizes=True)
+            # логотип своей шапки первого листа (L["first"]) — уже в колонтитуле; рисунком тела он шёл второй копией
+            # (E42 корпуса: логотип OAH дважды, 22.10)
+            first = L.get("first") or {}
+            him = (first.get("head_imgs") or []) + [r["img"] for r in ((first.get("head_grid") or {}).get("paras")
+                                                                       or {}).get("rows", []) if r.get("img")]
+            half = lambda r, i, a, z: min(r[z], i[z]) - max(r[a], i[a]) > 0.5 * (i[z] - i[a])
+            dup = lambda r: any(half(r, i, "x0", "x1") and half(r, i, "top", "bottom") for i in him)
+            blocks = [b for b in blocks if not (him and b["k"] == "p" and (b.get("geom") or {}).get("page") == 1
+                                                and b.get("runs") and all("img" in r and dup(r["img"]) for r in b["runs"]))]
+            return blocks, L
         return blocks, docx_layout.layout(str(pdf), blocks, segs, info)
     blocks, _ = docx_struct.load(str(pdf))
     blocks = docx_struct.compose_figures(blocks, str(pdf))   # не в load: load зовёт и coverage при извлечении

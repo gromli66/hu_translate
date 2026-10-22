@@ -152,3 +152,19 @@ def test_toc_first_on_page_after_short_page_starts_new_page(tmp_path):
     doc = Document(str(out))
     head = next(q for q in doc.paragraphs if q.style.name.startswith("TOC Title"))
     assert head.paragraph_format.page_break_before
+
+
+def test_header_logo_is_not_a_screenshot():
+    """E42: небольшая картинка у верха листа (логотип шапки) — не скриншот для перевода надписей; та же в теле — да."""
+    import io
+    from PIL import Image
+    import shots as SH
+    buf = io.BytesIO()
+    Image.new("RGB", (240, 150), "navy").save(buf, "PNG")
+    doc = fitz.open()
+    pg = doc.new_page(width=842, height=595)
+    pg.insert_image(fitz.Rect(61, 54, 169, 120), stream=buf.getvalue())
+    pg2 = doc.new_page(width=842, height=595)
+    pg2.insert_image(fitz.Rect(61, 300, 169, 366), stream=buf.getvalue())
+    got = SH.find_shots(doc)
+    assert [n for places in got.values() for n, _ in places] == [1]

@@ -57,6 +57,10 @@ def find_shots(doc):
             r = fitz.Rect(ii["bbox"]) * rot
             if not x or r.get_area() < MIN_AREA or r.get_area() >= FULL * area:
                 continue
+            # логотип в зоне шапки (небольшая картинка у верха листа, уже трети его ширины) — не скриншот: название
+            # организации на нём «переводилось» вперемешку алфавитов («Юрszágos Atomenergia Управление», E42, 22.10)
+            if r.y1 <= 0.22 * page.rect.height and r.width < 0.3 * page.rect.width and r.get_area() < 0.03 * area:
+                continue
             uses.setdefault(x, set()).add(page.number)
             places.setdefault(x, []).append((page.number, r))
     n = max(len(doc), 1)
