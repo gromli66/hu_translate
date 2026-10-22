@@ -97,3 +97,20 @@ def test_ocr_layer_only_invisible_text_over_scan():
         pg.insert_image(pg.rect, stream=buf.getvalue())
         pg.insert_text((72, 100), "Szöveg a háttér felett", render_mode=mode)
     assert DL._ocr_layer(doc[0]) and not DL._ocr_layer(doc[1])
+
+
+def test_nested_table_in_cell_keeps_its_text(tmp_path):
+    """Таблица в ячейке таблицы (листовка Word) — вложенной таблицей, а не пропуском вместе с текстом."""
+    inner = {"k": "table", "rows": [[{"blocks": [p("Belső szöveg")], "th": False}],
+                                    [{"blocks": [p("Második sor")], "th": False}]]}
+    outer = {"k": "table", "rows": [[{"blocks": [p("Külső"), inner, p("Utána")], "th": False},
+                                     {"blocks": [p("Jobb")], "th": False}]]}
+    mem = B.Memory([("Belső szöveg", "Внутренний текст"), ("Második sor", "Вторая строка"), ("Külső", "Внешний"),
+                    ("Utána", "После"), ("Jobb", "Справа")])
+    out = tmp_path / "n.docx"
+    B.Builder(mem, lambda img: png(), PROFILE).build([outer], str(out), LAYOUT)
+    doc = Document(str(out))
+    cell = doc.tables[0].cell(0, 0)
+    assert [c.text for r in cell.tables[0].rows for c in r.cells] == ["Внутренний текст", "Вторая строка"]
+    texts = [q.text for q in cell.paragraphs if q.text]
+    assert texts == ["Внешний", "После"] and doc.tables[0].cell(0, 1).text == "Справа"

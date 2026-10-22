@@ -1299,7 +1299,7 @@ class Builder:
             m.append(_el(f"w:{side}", w__w=max(0, round((v - cut) * 20)), w__type="dxa"))
         _tblpr_put(t, m)
 
-    def table(self, b):
+    def table(self, b, tgt=None):
         from docx.shared import Pt
         self._room = {}                                 # узкий столбец → (ширина, поля ячейки) (_fit_words)
         rows = [r for r in b["rows"] if r]
@@ -1308,7 +1308,7 @@ class Builder:
         # ячейки по сетке линий (docx_layout, «span»): столбцов — по сетке; ни в одной строке может не быть всех
         ncol = max(sum(c["span"] for c in r) for r in rows) if all("span" in c for r in rows for c in r) \
             else max(len(r) for r in rows)
-        t = self.doc.add_table(rows=len(rows), cols=ncol)
+        t = (tgt or self.doc).add_table(rows=len(rows), cols=ncol)
         fr = b.get("frame") or {}
         # линии — у каждой ячейки свои, как в оригинале (docx_struct.cell_edges), если сетка там неполная
         edges = [c.get("edges") for r in rows for c in r]
@@ -1503,6 +1503,14 @@ class Builder:
                 for x in cell["blocks"]:
                     if x["k"] == "list":
                         self.list_(x, 0, dc); continue
+                    if x["k"] == "table":
+                        # таблица в ячейке (листовка из Word свёрстана таблицей в таблице) — вложенной таблицей; раньше
+                        # пропускалась вместе с текстом (№09 партии 2: 94 % слов, 22.10)
+                        keep = self._room, self._tab_base, getattr(self, "_cell_base", None)
+                        self.table(x, tgt=dc)
+                        self._room, self._tab_base, self._cell_base = keep
+                        used = True
+                        continue
                     if x["k"] != "p" or not x["runs"]:
                         continue
                     if not used:
@@ -1556,7 +1564,8 @@ class Builder:
                     for p in tc.iter(W + "p"):
                         p.get_or_add_pPr().get_or_add_keepNext()
         self._tab_base = None
-        self.doc.add_paragraph(style="Table Text")        # Word: после таблицы — абзац
+        if tgt is None:                                   # в ячейке абзац после таблицы ставит python-docx
+            self.doc.add_paragraph(style="Table Text")    # Word: после таблицы — абзац
 
     def _cell_borders(self, dc, edges, color):
         tcpr = dc._tc.get_or_add_tcPr()
