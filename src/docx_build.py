@@ -505,6 +505,61 @@ class Memory:
         return r
 
 
+def list_ind(P, lv, kind=None):
+    """Отступы пункта уровня lv (маркер, текст) в pt по профилю — запас, когда места списка на листе нет (item_ind):
+    своего вида списка, если замерен («a.)» у ÜFK — от поля, «–» — с отступом); уровни глубже замеренных — с тем же
+    шагом."""
+    own = ((P.get("lists_kind") or {}).get(kind) or {}).get(str(lv))
+    if own:
+        return own["marker"], own["text"]
+    lists = P.get("lists") or {}
+    if not lists:
+        return 18 * (2 * lv + 1), 36 * (lv + 1)
+    known = sorted(int(k) for k in lists)
+    top = known[-1]
+    if lv <= top and str(lv) in lists:
+        v = lists[str(lv)]
+        return v["marker"], v["text"]
+    v = lists[str(top)]
+    stepx = (v["text"] - lists[str(known[0])]["text"]) / top if top else 36
+    return v["marker"] + stepx * (lv - top), v["text"] + stepx * (lv - top)
+
+
+def _marker_room(kind, lv, mark, text):
+    """Место под метку и зазор после неё: метка шире висячего отступа — текст уезжает к следующей табуляции."""
+    if kind in ("LowerRoman", "UpperRoman") and lv == 0:
+        text = max(text, mark + 24)                         # «iii.», «iv.» шире висячего отступа — текст уезжал (ÜFK)
+    elif kind not in NUMFMT and kind != "Label":
+        # маркер шире висячего отступа (у оригинала «- » — дефис и пробел, 7 pt): тире «–» вставало вплотную к
+        # тексту (НГТУ, 19.10) — место под знак и зазор
+        text = max(text, mark + 9)
+    return mark, text
+
+
+def lvl_ind(P, lv, kind):
+    """Отступы уровня списка (маркер, текст), pt, по профилю — как в нумерации: под метку и зазор после неё."""
+    return _marker_room(kind, lv, *list_ind(P, lv, kind))
+
+
+def item_ind(b, level, P, base):
+    """Отступы пунктов списка b (маркер, текст) в pt — один источник (договор правил, шаг 3): место списка на листе
+    оригинала (b["geo"]: docx_struct.list_geo, docx_layout — разметка, текстовый слой, скан) от base — поля набора, в
+    ячейке — края текста столбца (Builder.table); нет места — профиль (lvl_ind). Прежде место бралось, только если
+    расходилось с профилем больше чем на 3 pt, и только в абзац — в нумерации оставался профиль, а в ячейках — всегда
+    профиль, и тот замерен по полю листа (ТЭ357)."""
+    lv = min(level, 3)
+    geo = b.get("geo")
+    if geo and base is not None:
+        m, t = geo["marker"] - base, geo["text"] - base
+        # маркер может выступать за поле набора (скан 3SZ19: поле — по началу текста, тире на 4,75 pt левее) — у поля;
+        # иначе пункт брал отступы профиля, и текст уезжал на 64 pt (19.10); пункт с меткой в тексте («1.3/1. …») бывает
+        # и без висячего отступа: t == m. И текст — у поля, если он левее поля: у скана 3PR42 тире на 9,6 pt и текст на
+        # 0,8 pt левее поля — место отбрасывалось, и пункт брал профиль (текст на 155 pt от поля, 20.10)
+        if m >= -15 and t >= m:
+            return _marker_room(b["kind"], lv, max(m, 0.0), max(t, 0.0))
+    return lvl_ind(P, lv, b["kind"])
+
+
 class Builder:
     """tr(text) → перевод или None (оставить как есть); image(img) → PNG-байты картинки (переведённый
     скриншот или оригинал) или None."""
@@ -645,40 +700,14 @@ class Builder:
             numpr = _el("w:numPr"); numpr.append(_el("w:ilvl", w__val=lv - 1)); numpr.append(_el("w:numId", w__val=900))
             ppr.insert(0, numpr)
 
-    def _list_ind(self, lv, kind=None):
-        """Ф7: отступы пункта уровня lv (маркер, текст) в pt — по профилю, своего вида списка, если замерен («a.)» у
-        ÜFK — от поля, «–» — с отступом); уровни глубже замеренных — с тем же шагом."""
-        own = ((self.P.get("lists_kind") or {}).get(kind) or {}).get(str(lv))
-        if own:
-            return own["marker"], own["text"]
-        lists = self.P.get("lists") or {}
-        if not lists:
-            return 18 * (2 * lv + 1), 36 * (lv + 1)
-        known = sorted(int(k) for k in lists)
-        top = known[-1]
-        if lv <= top and str(lv) in lists:
-            v = lists[str(lv)]
-            return v["marker"], v["text"]
-        v = lists[str(top)]
-        stepx = (v["text"] - lists[str(known[0])]["text"]) / top if top else 36
-        return v["marker"] + stepx * (lv - top), v["text"] + stepx * (lv - top)
-
-    def _lvl_ind(self, lv, kind):
-        """Отступы уровня списка (маркер, текст), pt, — как в нумерации: под метку и зазор после неё."""
-        mark, text = self._list_ind(lv, kind)
-        if kind in ("LowerRoman", "UpperRoman") and lv == 0:
-            text = max(text, mark + 24)                     # «iii.», «iv.» шире висячего отступа — текст уезжал (ÜFK)
-        elif kind not in NUMFMT and kind != "Label":
-            # маркер шире висячего отступа (у оригинала «- » — дефис и пробел, 7 pt): тире «–» вставало вплотную к
-            # тексту (НГТУ, 19.10) — место под знак и зазор
-            text = max(text, mark + 9)
-        return mark, text
-
-    def _list_num(self, kind, start=1, level=0, suffix=".", own=False):
+    def _list_num(self, kind, start=1, level=0, suffix=".", own=False, ind=None):
         """Новый экземпляр списка вида kind: нумерация — с номера первого пункта оригинала (start, на уровне level;
-        список после рисунка продолжает «7.»), вид метки — как в оригинале («a.» / «a.)»), маркеры уровней • o ▪."""
+        список после рисунка продолжает «7.»), вид метки — как в оригинале («a.» / «a.)»), маркеры уровней • o ▪.
+        ind — отступы пункта своего уровня (item_ind): в нумерации то же значение, что в абзаце (свой abstractNum на
+        значение); прочие уровни — по профилю."""
         num = self.doc.part.numbering_part.element
-        key = (kind, suffix or ".", own)
+        lv0 = min(level, 3)
+        key = (kind, suffix or ".", own) + ((lv0, round(ind[0], 1), round(ind[1], 1)) if ind else ())
         if key not in self._abstract:
             aid = 901 + len(self._abstract)
             an = _el("w:abstractNum", w__abstractNumId=aid)
@@ -700,7 +729,7 @@ class Builder:
                                             BULLETS["Disc"])
                     l.append(_el("w:numFmt", w__val="bullet")); l.append(_el("w:lvlText", w__val=ch))
                 l.append(_el("w:lvlJc", w__val="left"))
-                mark, text = self._lvl_ind(lv, kind)
+                mark, text = ind if ind and lv == lv0 else lvl_ind(self.P, lv, kind)
                 ppr = _el("w:pPr"); ppr.append(_el("w:ind", w__left=round(text * 20), w__hanging=round((text - mark) * 20)))
                 l.append(ppr)
                 if fontn:
@@ -1188,19 +1217,12 @@ class Builder:
 
     def list_(self, b, level=0, tgt=None):
         from docx.shared import Pt
-        nid = self._list_num(b["kind"], b.get("start", 1), level, b.get("suffix") or ".", bool(b.get("own")))
         tgt = tgt if tgt is not None else self.doc
-        # свой список стоит иначе, чем вид списка по документу (больше 3 pt), — отступы абзацу, по оригиналу
-        own = None
-        geo = b.get("geo")
-        if geo and tgt is self.doc and getattr(self, "left", None) is not None:
-            m, t = geo["marker"] - self.left, geo["text"] - self.left
-            am, at = self._list_ind(level, b["kind"])
-            # тире может выступать за поле набора (скан 3SZ19: поле — по началу текста, тире на 4,75 pt левее) — у поля;
-            # иначе пункт брал отступы профиля, и текст уезжал на 64 pt (19.10)
-            # пункт с меткой в тексте («1.3/1. …») бывает и без висячего отступа: t == m
-            if (abs(m - am) > 3 or abs(t - at) > 3) and m >= -15 and t >= max(m, 0.0):
-                own = (max(m, 0.0), max(t, 0.0))
+        # отступы пункта — один источник (item_ind): место на листе оригинала, иначе профиль; одно значение — и в
+        # нумерации, и в абзаце (стиль пункта с нулевой красной строкой, build, перебивал висячий отступ нумерации —
+        # маркер вставал у поля вплотную к тексту, НГТУ 19.10; потому и прямо в абзаце)
+        m, t = item_ind(b, level, self.P, self.left if tgt is self.doc else getattr(self, "_cell_base", None))
+        nid = self._list_num(b["kind"], b.get("start", 1), level, b.get("suffix") or ".", bool(b.get("own")), (m, t))
         for item in b["items"]:
             first = True
             for x in item:
@@ -1227,13 +1249,10 @@ class Builder:
                     numpr = _el("w:numPr"); numpr.append(_el("w:ilvl", w__val=min(level, 3)))
                     numpr.append(_el("w:numId", w__val=nid))
                     par._p.get_or_add_pPr().insert(0, numpr)
-                    # отступы — и самому абзацу: стиль пункта (отступ первой строки 0 при красной строке тела,
-                    # build) перебивает висячий отступ нумерации — маркер вставал у поля вплотную к тексту (НГТУ, 19.10)
-                    m, t = own or self._lvl_ind(min(level, 3), b["kind"])
                     par.paragraph_format.left_indent = Pt(t)
                     par.paragraph_format.first_line_indent = Pt(m - t)
                 else:
-                    par.paragraph_format.left_indent = Pt(own[1] if own else self._lvl_ind(min(level, 3), b["kind"])[1])
+                    par.paragraph_format.left_indent = Pt(t)
                 self._put_runs(par, runs)
                 for n in x.get("notes") or []:
                     self._footnote(par, n)
@@ -1325,6 +1344,7 @@ class Builder:
         xs = fr.get("xs") or []
         widths = None
         bounds = xs if len(xs) == ncol + 1 else []           # границы столбцов — для объединённых ячеек
+        framed, pad = bool(bounds), (self.P.get("table") or {}).get("pad_left") or 0
         if len(xs) == ncol + 1:
             widths = [xs[i + 1] - xs[i] for i in range(ncol)]
         else:
@@ -1435,6 +1455,12 @@ class Builder:
                 self._tab_base = min((float(x["geom"]["x0"]) for x in cell["blocks"]
                                       if (x.get("geom") or {}).get("x0") is not None),
                                      default=(cell.get("geom") or {}).get("x0"))
+                # край текста столбца на листе оригинала — от него место пунктов списка в ячейке (item_ind): по линии
+                # столбца и полю ячейки оригинала, без линий — по левому краю текста столбца; начало текста самой ячейки
+                # не годится — у ячейки из одного списка маркер вставал к краю ячейки (JPDS: вложенный список — у края,
+                # как внешний)
+                self._cell_base = bounds[starts[ci]] + (pad if framed else 0) if len(bounds) == ncol + 1 \
+                    else self._tab_base
                 if own_edges:
                     self._cell_borders(dc, cell["edges"], fr.get("line") or "000000")
                 if cell.get("vcont"):                       # продолжение ячейки сверху (docx_struct.sub_rows)

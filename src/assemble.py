@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """Сборка перевода обратно в формат источника + двуязычная таблица для вычитки.
 
-- DOCX: текст каждой группы прогонов (одинаковое начертание) пишется в первый прогон группы,
-  остальные прогоны группы опустошаются; метки <fN> раскладывают перевод по группам.
+- DOCX: текст каждой группы прогонов (одинаковое начертание) пишется в первый прогон группы (если у первого
+  прогона иные шрифт, кегль, цвет или выделение, чем у основного текста группы, — в первый прогон основного
+  оформления), остальные прогоны группы опустошаются; метки <fN> раскладывают перевод по группам.
   Если метки сломаны — весь перевод в первую группу (начертание первой группы).
 - PDF: исходный текст переведённых абзацев убирается (текстовый слой — redaction текста;
   OCR-страница — белая заливка + удаление нарисованных букв), перевод вписывается в рамку
@@ -12,7 +13,7 @@
 import re, html, zipfile
 from pathlib import Path
 
-from segments import W, _own_runs
+from segments import W, _own_runs, run_text
 
 TAG = re.compile(r"</?f\d+>")
 
@@ -47,6 +48,43 @@ def _set_run_text(r, text):
                 t.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
 
 
+_LOOK = (("rFonts", ("ascii", "hAnsi")), ("sz", ("val",)), ("color", ("val",)), ("highlight", ("val",)),
+         ("shd", ("fill",)))
+
+
+def _look(r):
+    """Видимое прямое оформление прогона, которого нет в run_sig (по нему группы не делятся): шрифт, кегль, цвет,
+    выделение, заливка; «auto»/«none» — то же, что без него. Стиль знака не в счёт: у 468 заголовков 3PR04 KU название —
+    стиль «Гиперссылка», перекрытый прямым оформлением, — печатается так же, как номер."""
+    rpr = r.find(W + "rPr")
+    out = []
+    for name, attrs in _LOOK:
+        el = rpr.find(W + name) if rpr is not None else None
+        v = tuple(el.get(W + a) for a in attrs) if el is not None else ()
+        out.append(() if all(x in (None, "auto", "none") for x in v) else v)
+    return tuple(out)
+
+
+def _target(runs, g):
+    """Прогон группы, в который ложится её перевод: первый, если его оформление — основное в группе (больше знаков);
+    иначе — первый прогон основного оформления. Прежде всегда первый: выделенное первое слово красило весь абзац,
+    табуляция другим шрифтом печатала строку мельче (ТЗ тренажёра RU→EN, 20.10). Только прогоны того же родителя, что
+    первый: текст не переезжает в поле формы (подсказка SDT формы ОАХ), гиперссылку или поле."""
+    from collections import Counter
+    own = [ri for ri in g if runs[ri].getparent() is runs[g[0]].getparent()]
+    by = Counter()
+    for ri in own:
+        t = run_text(runs[ri])
+        if t.strip():
+            by[_look(runs[ri])] += len(t)
+    if not by:
+        return g[0]
+    main = by.most_common(1)[0][0]
+    if _look(runs[g[0]]) == main:
+        return g[0]
+    return next(ri for ri in own if _look(runs[ri]) == main and run_text(runs[ri]).strip())
+
+
 def build_docx(src, out, segs, res):
     from lxml import etree
     by_part = {}
@@ -70,9 +108,9 @@ def build_docx(src, out, segs, res):
                     if len(groups) > 1 and not any(texts[1:]) and texts[0]:
                         broken += 1
                     for g, t in zip(groups, texts):
-                        _set_run_text(runs[g[0]], t)
-                        for ri in g[1:]:
-                            _set_run_text(runs[ri], "")
+                        tgt = _target(runs, g)
+                        for ri in g:
+                            _set_run_text(runs[ri], t if ri == tgt else "")
                 data = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
             zout.writestr(item, data)
     return {"broken_tags": broken}
