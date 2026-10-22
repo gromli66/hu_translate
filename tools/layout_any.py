@@ -31,7 +31,8 @@ from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "src"))
+# код сборки — этой рабочей копии или другой (HU_SRC: снимок master для сравнения «master ↔ ветка»)
+sys.path.insert(0, os.environ.get("HU_SRC") or str(ROOT / "src"))
 LO_PRINT = Path(os.environ.get("HU_LO_PRINT", "C:/project/hu_translate/work/check_2026-10-17/scripts/lo_print.sh"))
 BASH = os.environ.get("HU_BASH", "C:/Program Files/Git/bin/bash.exe")
 
