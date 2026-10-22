@@ -1288,7 +1288,14 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
         for i, (r, img) in enumerate(figs):
             if i in used or any(r.intersects(g["rect"]) for g in regs):
                 continue
-            regs.append({"rect": r, "ids": {s["id"] for s in segs if r.contains(fitz.Point(*_center(s)))},
+            ids = {s["id"] for s in segs if r.contains(fitz.Point(*_center(s)))}
+            if ids and mask is not None and "png" in img:
+                # текст листа внутри рисунка (цитата поверх фото брошюры, подписи схемы) — сегменты рисунка, абзацами они
+                # не идут: рисунок — с переведённого PDF, как снимок листа; из оригинала в DOCX оставался текст
+                # оригинала картинкой, а перевод пропадал (брошюра HERCA, проверка порталом 22.10)
+                img = {"clip": [r.x0, r.y0, r.x1, r.y1], "page_number": pno + 1, "x0": r.x0, "x1": r.x1, "top": r.y0,
+                       "bottom": r.y1}
+            regs.append({"rect": r, "ids": ids,
                          "block": {"k": "p", "runs": [{"img": img}], "figure": True, "seg": True,
                                    "geom": {"page": pno + 1, "top": r.y0, "bottom": r.y1, "x0": r.x0, "x1": r.x1,
                                             "first_x0": r.x0, "size": size}}})
