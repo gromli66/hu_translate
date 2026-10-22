@@ -88,6 +88,9 @@ def _symbol_run(r, t):
 # ложился в первый прогон, а результат поля пустел — LibreOffice/Word пересчитывали поле, и выходило «Page 2402»
 # (ТЗ тренажёра RU→EN, 20.10)
 PAGE_FIELD = re.compile(r"^\s*(PAGE|NUMPAGES|SECTIONPAGES)\b")
+# поля свойств и дат, которые LibreOffice/Word пересчитывают: результат без букв («1.0.7», «20.10.2026») — тоже не текст
+# («Версия 1.0.7»: перевод «Version 1.0.7» + пересчитанное поле = «Version 1.0.71.0.7», ТЗ НГУ, 22.10)
+DATA_FIELD = re.compile(r"^\s*(DOCPROPERTY|REVNUM|NUMWORDS|NUMCHARS|FILESIZE|DATE|TIME|SAVEDATE|PRINTDATE|CREATEDATE)\b")
 
 
 def _field_result_runs(runs):
@@ -111,7 +114,8 @@ def _field_result_runs(runs):
         it = r.find(W + "instrText")
         if it is not None and stack:
             stack[-1][0] += it.text or ""
-        elif stack and stack[-1][1] and PAGE_FIELD.match(stack[-1][0]):
+        elif stack and stack[-1][1] and (PAGE_FIELD.match(stack[-1][0]) or DATA_FIELD.match(stack[-1][0])
+                                         and not re.search(r"[^\W\d_]", run_text(r))):
             out.add(i)
     return out
 
@@ -169,7 +173,8 @@ def docx_segments(path):
                 else:
                     text = src
                 segs.append({"id": len(segs), "text": text, "src": src, "page": None,
-                             "loc": {"part": part, "p": pi, "groups": [g["runs"] for g in groups], "lead": lead}})
+                             "loc": {"part": part, "p": pi, "groups": [g["runs"] for g in groups], "lead": lead,
+                                     **({"field": True} if page_no else {})}})
     return segs
 
 

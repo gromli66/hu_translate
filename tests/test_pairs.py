@@ -106,6 +106,21 @@ def test_review_generic_prompts():
     assert "Original (RU):" in user and "Translation (HU):" in user and "corrected Hungarian translation" in user
 
 
+def test_docproperty_number_is_not_text(tmp_path):
+    import zipfile
+    W = S.W[1:-1]
+    body = ('<w:p><w:r><w:t xml:space="preserve">Версия </w:t></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r>'
+            '<w:r><w:instrText> DOCPROPERTY Version </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r>'
+            '<w:r><w:t>1.0.7</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>'
+            '<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> DOCPROPERTY Title </w:instrText></w:r>'
+            '<w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>Техническое задание</w:t></w:r>'
+            '<w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>')
+    f = tmp_path / "f.docx"
+    with zipfile.ZipFile(f, "w") as z:
+        z.writestr("word/document.xml", f'<w:document xmlns:w="{W}"><w:body>{body}</w:body></w:document>')
+    assert [s["text"] for s in S.docx_segments(f)] == ["Версия ", "Техническое задание"]   # текст свойства — переводится
+
+
 def test_ocr_language(monkeypatch):
     monkeypatch.setattr(S, "SRC_LANG", "hu")
     assert S.ocr_prompt() == S.OCR_PROMPT

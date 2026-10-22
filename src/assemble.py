@@ -105,6 +105,10 @@ def build_docx(src, out, segs, res):
                     groups = s["loc"]["groups"]
                     texts = _split_groups(ru, len(groups))
                     texts[0] = s["loc"].get("lead", "") + texts[0]
+                    # абзац с полем (номер страницы, версия): конечный пробел перед полем — как в оригинале, модель его
+                    # срезает («Версия 1.0.7» → «Version1.0.7», 22.10)
+                    if s["loc"].get("field") and s.get("src", "")[-1:].isspace() and not texts[-1][-1:].isspace():
+                        texts[-1] += " "
                     if len(groups) > 1 and not any(texts[1:]) and texts[0]:
                         broken += 1
                     for g, t in zip(groups, texts):
@@ -112,8 +116,30 @@ def build_docx(src, out, segs, res):
                         for ri in g:
                             _set_run_text(runs[ri], t if ri == tgt else "")
                 data = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
+            elif item.filename in ("docProps/core.xml", "docProps/custom.xml", "docProps/app.xml"):
+                data = _props(data, segs, res)
             zout.writestr(item, data)
     return {"broken_tags": broken}
+
+
+def _props(data, segs, res):
+    """Свойства документа (название, тема, свои поля): значение, совпадающее с переведённым текстом документа, —
+    переводом. LibreOffice при печати обновляет поля TITLE/DOCPROPERTY, и в переводе снова появлялось русское
+    «Техническое задание» (ТЗ НГУ, ru-en, 22.10); прочие значения — как есть."""
+    from lxml import etree
+    norm = lambda t: re.sub(r"\s+", " ", TAG.sub("", t or "")).strip()
+    tr = {}
+    for s in segs:
+        r = res.get(str(s["id"]))
+        if r and r.get("ru") and not r.get("copied"):
+            tr.setdefault(norm(s["text"]), norm(r["ru"]))
+    root = etree.fromstring(data)
+    hit = 0
+    for el in root.iter():
+        if isinstance(el.tag, str) and el.text and len(el) == 0 and norm(el.text) in tr:
+            el.text = tr[norm(el.text)]
+            hit += 1
+    return etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True) if hit else data
 
 
 def _free(rect, busy, own):
@@ -546,7 +572,8 @@ def _h_note(r):
 
 def _h_note_main(r):
     if (r.get("review") or {}).get("serious"):
-        return r["review"].get("reason", "")
+        cand = (r.get("autofix") or {}).get("candidate")         # автоисправления выключены (не hu-ru): предложение
+        return r["review"].get("reason", "") + (" | предложено: " + TAG.sub("", cand)[:400] if cand else "")
     if (r.get("autofix") or {}).get("accepted"):
         return ("Автоисправление (проверить): " + (r["autofix"].get("reason") or "")[:200] + " | было: " +
                 TAG.sub("", r["autofix"].get("before") or "")[:300])
