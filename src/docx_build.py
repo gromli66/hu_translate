@@ -454,6 +454,26 @@ LABEL_T = re.compile(r"^(\s*(?:<f\d+>)?)\s*" + _LBL.replace("LL", "[A-Za-z]") + 
 LABEL_RU_T = re.compile(r"^(\s*(?:<f\d+>)?)\s*" + _LBL.replace("LL", "[A-Za-zА-Яа-яЁё]") + r"\s+(?=\S)")
 
 
+# управляющие знаки из текста PDF (SOH, FF, NUL) XML не допускает: python-docx падал на записи прогона, и документ
+# не собирался совсем (№48 партии 2, 22.10) — все прогоны пишутся без них (одна точка: CT_R.add_t)
+_XML_BAD = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]")
+
+
+def _patch_xml_text():
+    from docx.oxml.text.run import CT_R
+    if getattr(CT_R.add_t, "_xml_safe", False):
+        return
+    orig = CT_R.add_t
+
+    def add_t(self, text):
+        return orig(self, _XML_BAD.sub("", text))
+    add_t._xml_safe = True
+    CT_R.add_t = add_t
+
+
+_patch_xml_text()
+
+
 class Memory:
     """Переводы для сборки: готовые (проверенные) сегменты по тексту без пробелов; «подпись ⇥ значение» — по частям;
     заголовок — и с номером («1 Előzmények» в памяти PDF). Чего нет — в missing (переводится порталом и
@@ -1751,9 +1771,12 @@ class Builder:
         w, h = size or (L["W"], L["H"])
         sec.page_width, sec.page_height = Pt(w), Pt(h)
         sec.orientation = WD_ORIENT.LANDSCAPE if w > h else WD_ORIENT.PORTRAIT
-        sec.left_margin, sec.right_margin = Pt(left), Pt(right)
-        sec.top_margin, sec.bottom_margin = Pt(top), Pt(bottom)
-        sec.header_distance, sec.footer_distance = Pt(L["header"]), Pt(L["footer"])
+        # поля и отступы колонтитулов — не меньше нуля и не больше листа (подвал ниже листа у №40 партии 2 давал
+        # отрицательное нижнее поле, сборка падала, 22.10)
+        cl = lambda v, hi: min(max(float(v or 0), 0.0), hi)
+        sec.left_margin, sec.right_margin = Pt(cl(left, w / 3)), Pt(cl(right, w / 3))
+        sec.top_margin, sec.bottom_margin = Pt(cl(top, h / 3)), Pt(cl(bottom, h / 3))
+        sec.header_distance, sec.footer_distance = Pt(cl(L["header"], h / 3)), Pt(cl(L["footer"], h / 3))
 
     def _num_start(self, sec, value):
         """Нумерация листов раздела — с числа оригинала (pgNumType; место в sectPr — по схеме, иначе Word ругается)."""
@@ -1939,7 +1962,7 @@ class Builder:
             return
         if not L.get("head_imgs") and not L.get("head_lines"):
             return                                  # шапки нет — и таблицы-пустышки нет
-        width = L["W"] - L["left"] - L["right"]
+        width = max(L["W"] - L["left"] - L["right"], 120)
         t = hdr.add_table(rows=1, cols=3, width=Pt(width))
         hdr.paragraphs[0]._p.addprevious(t._tbl)             # таблица — первой: пустой абзац под ней несёт линию
         self._no_borders(t)
@@ -1948,6 +1971,11 @@ class Builder:
         rights = [i for i in L["head_imgs"] if (i["x0"] + i["x1"]) / 2 >= mid_x]
         wl = max([i["x1"] - i["x0"] for i in lefts] + [60]) + 6
         wr = max([i["x1"] - i["x0"] for i in rights] + [60]) + 6
+        # логотипы шире полосы набора (баннер во всю ширину листа, №6 и №27 партии 2) — столбцы логотипов пропорционально
+        # уже, середине не меньше 40 pt: отрицательная ширина роняла сборку (22.10)
+        if wl + wr > width - 40:
+            k = (width - 40) / (wl + wr)
+            wl, wr = wl * k, wr * k
         for c, w in zip(t.columns, (wl, width - wl - wr, wr)):
             c.width = Pt(w)                                  # и сетка таблицы: LibreOffice берёт ширину из неё
             for cell in c.cells:

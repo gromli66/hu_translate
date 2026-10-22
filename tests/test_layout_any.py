@@ -49,3 +49,16 @@ def test_word_export_recognizes_pdfmaker():
     assert B.word_export({"creator": "Acrobat PDFMaker 5.0 for Word", "producer": "Acrobat Distiller 5.0"})
     assert B.word_export({"producer": "Microsoft® Office Word 2007"})
     assert not B.word_export({"creator": "PDF24 Creator", "producer": "GPL Ghostscript"})
+
+
+def test_builder_survives_control_chars_wide_logos_and_bad_margins(tmp_path):
+    """Сборка не падает: управляющие знаки в тексте (NUL, FF), логотипы шапки шире полосы набора, подвал ниже листа
+    (отрицательное поле) — №6, №27, №40, №48 партии 2 (22.10)."""
+    blocks = [p("Első" + chr(12) + " sor" + chr(1), 2, 100)]
+    mem = B.Memory([("Első sor", "Первая строка")])
+    logo = {"xref": 1, "x0": 0, "x1": 595, "top": 10, "bottom": 60}
+    L = dict(LAYOUT, first_is_body=True, head_imgs=[logo, dict(logo, x0=300, x1=595)], bottom=-200, footer=-5)
+    out = tmp_path / "x.docx"
+    B.Builder(mem, lambda img: png(), PROFILE).build(blocks, str(out), L)
+    sec = Document(str(out)).sections[-1]
+    assert sec.bottom_margin >= 0 and chr(12) not in "".join(par.text for par in Document(str(out)).paragraphs)
