@@ -230,7 +230,10 @@ def build_case(label, src, jf, out, factors):
                 jf2.unlink(missing_ok=True)
                 (case / f"x{f:.1f}_вычитка.xlsx").unlink(missing_ok=True)
             else:
-                r, _ = A.build_struct_docx(src, dst, segs or [], res, None, mode=mode)
+                # печать для подгонки альбомных разделов (docx_fit) — если код сборки её принимает (HU_SRC — старый код)
+                import inspect
+                kw = {"printer": lambda a, b: (lo_print(a), Path(a).with_suffix(".pdf").replace(b))}                     if "printer" in inspect.signature(A.build_struct_docx).parameters else {}
+                r, _ = A.build_struct_docx(src, dst, segs or [], res, None, mode=mode, **kw)
             pdf = lo_print(dst)
             info["runs"][f"{f:.1f}"] = {"ok": pdf is not None, "sec": round(time.time() - t0), "build": str(r)[:300]}
         except Exception as e:                                          # noqa: BLE001 — случай падает, стенд идёт

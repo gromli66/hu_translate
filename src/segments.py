@@ -781,10 +781,19 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
                 from layout import join_lines
                 pars = R.apply(pars, labels[pno][0], labels[pno][1], join_lines)
         else:
-            pars = group(frags_from_text(page, vs), hs, vs)
+            frags = frags_from_text(page, vs)
+            # две колонки сплошного текста (E46): просвет — невидимой линейкой (строки через него не склеиваются, место
+            # строки и перевода — до него), абзацы — колонка за колонкой
+            from layout import gutter, column_order
+            g = gutter(group(frags, hs, vs), page.rect.width)
+            if g is not None:
+                vs = list(vs) + [(0, page.rect.height, g)]
+            pars = group(frags, hs, vs)
             if labels.get(pno) and labels[pno][1]:
                 from layout import join_lines
                 pars = R.apply(pars, labels[pno][0], labels[pno][1], join_lines)
+            if g is not None:
+                pars = column_order(pars, g)
         avail_rects(pars, hs, vs, page.rect)
         aligns(pars, vs)
         for p in pars:

@@ -116,10 +116,45 @@ def _cut_spans(spans, vs, rot):
             continue
         for g in groups:
             if g:
-                r = fitz.Rect(g[0]["bbox"])
-                for c in g[1:]:
+                # рамка куска — по знакам без пробелов: пробел у линии столбца делал зазор нулевым, линия выпадала из
+                # проверки склейки (_vrule_in), и куски склеивались обратно («47,05281 19,11048 Kunszentmiklós» —
+                # три столбца таблицы HAKSER в одной ячейке, 22.10)
+                ink = [c for c in g if c["c"].strip()] or g
+                r = fitz.Rect(ink[0]["bbox"])
+                for c in ink[1:]:
                     r |= fitz.Rect(c["bbox"])
                 out.append(dict(s, text="".join(c["c"] for c in g), bbox=tuple(r)))
+    return out
+
+
+NUMBERISH = re.compile(r"^(?:[\dIVXivx]+[.)]?)+$|^\S+:$")
+
+
+def _split_columns(frags, words):
+    """Кусок строки, склеенный через просвет столбца таблицы без линий («Dátum ⇥ Határozat száma»: 27 pt при пороге
+    склейки GAP 30 pt) — надвое. Просвет — столбцовый, если он не меньше полутора кеглей и хотя бы вчетверо больше
+    всех прочих просветов куска (выключка по ширине растягивает их все поровну); в куске от трёх слов. Номер пункта,
+    номер листа и подпись с двоеточием по краям просвета — не столбец (E43 корпуса, 22.10).
+    words — [(рамка как видна, слово)] листа."""
+    out = []
+    for f in frags:
+        x0, y0, x1, y1 = f["bbox"]
+        mid = (y0 + y1) / 2
+        ws = sorted(((r, t) for r, t in words if r.y0 <= mid <= r.y1 and x0 - 1 <= (r.x0 + r.x1) / 2 <= x1 + 1),
+                    key=lambda w: w[0].x0)
+        size = max((c[1] for c in f["chars"]), default=10)
+        if len(ws) < 3 or " ".join(t for _, t in ws) != " ".join(f["t"].split()):
+            out.append(f)
+            continue
+        gaps = [ws[i + 1][0].x0 - ws[i][0].x1 for i in range(len(ws) - 1)]
+        j = max(range(len(gaps)), key=gaps.__getitem__)
+        rest = max(g for i, g in enumerate(gaps) if i != j)
+        left, right = " ".join(t for _, t in ws[:j + 1]), " ".join(t for _, t in ws[j + 1:])
+        if gaps[j] < 1.5 * size or gaps[j] < 4 * max(rest, 1) or NUMBERISH.match(left) or NUMBERISH.match(right):
+            out.append(f)
+            continue
+        out.append(dict(f, t=left, bbox=list(_union([list(r) for r, _ in ws[:j + 1]])), chars=list(f["chars"])))
+        out.append(dict(f, t=right, bbox=list(_union([list(r) for r, _ in ws[j + 1:]])), chars=list(f["chars"])))
     return out
 
 
@@ -188,7 +223,7 @@ def frags_from_text(page, vs=()):
                     and 3 < f["bbox"][0] - m["bbox"][2] <= 2 * GAP:
                 f["item"] = True                        # маркер и текст пункта — разные «строки» PyMuPDF
             merged.append(f)
-    out = merged
+    out = _split_columns(merged, [(fitz.Rect(w[:4]) * rot, w[4]) for w in page.get_text("words")])
     for f in out:
         n = sum(c[0] for c in f["chars"]) or 1
         f["size"] = max(f["chars"], key=lambda c: c[0])[1]
@@ -348,6 +383,55 @@ def group(frags, hs, vs=(), form=False):
             fam[f.get("family", "serif")] = fam.get(f.get("family", "serif"), 0) + len(f["t"])
         p["family"] = max(fam, key=fam.get) if fam else "serif"
     return pars
+
+
+def gutter(pars, page_w):
+    """Две колонки сплошного текста (Danfoss л. 9, E46 корпуса) → x межколоночного просвета, иначе None. Просвет —
+    сквозной вертикальный, в средней половине листа, не уже 5 pt по рамкам кусков строк (они с хвостовыми пробелами:
+    по словам просвет шире); его задевают только абзацы во всю ширину (заголовок, колонтитул), не больше 10 % кусков.
+    Таблица без линий (абзацы слева и справа начинаются на одной высоте) — не колонки (22.10)."""
+    frs = [f["bbox"] for p in pars for f in p["frags"]]
+    if len(pars) < 6 or not frs:
+        return None
+    lo, hi = int(0.25 * page_w), int(0.75 * page_w)
+    cover = [sum(1 for b in frs if b[0] - 1 <= x <= b[2] + 1) for x in range(lo, hi)]
+    least = min(cover)
+    if least > max(2, 0.1 * len(frs)):            # заголовок-другой во всю ширину — и на коротком листе
+        return None
+    runs, start = [], None                          # отрезки x с наименьшим покрытием
+    for i, c in enumerate(cover + [least + 1]):
+        if c == least and start is None:
+            start = i
+        elif c != least and start is not None:
+            runs.append((start, i)); start = None
+    a, z = max(runs, key=lambda r: r[1] - r[0])
+    if z - a < 5:
+        return None
+    g = lo + (a + z) / 2
+    left = [p for p in pars if p["bbox"][2] < g]
+    right = [p for p in pars if p["bbox"][0] > g]
+    if len(left) < 3 or len(right) < 3:
+        return None
+    # колонка текста — не уже четверти листа: узкий столбец слева (сокращения ⇥ расшифровки, u_T3) — таблица
+    if g - min(p["bbox"][0] for p in left) < 0.25 * page_w or max(p["bbox"][2] for p in right) - g < 0.25 * page_w:
+        return None
+    rows = sum(1 for p in left if any(abs(p["bbox"][1] - q["bbox"][1]) < 2 for q in right))
+    return None if rows >= 0.5 * min(len(left), len(right)) else g
+
+
+def column_order(pars, g):
+    """Абзацы двух колонок (просвет g, gutter) — колонка за колонкой, а не поперёк листа по высоте; абзацы во всю
+    ширину делят лист на полосы, колонки читаются в каждой полосе («2.1 …» левой колонки и «2.3 …» правой шли
+    подряд, текст колонок вперемешку, E46)."""
+    side = lambda p: 0 if p["bbox"][2] < g else 1 if p["bbox"][0] > g else 2
+    out, zone = [], []
+    for p in sorted(pars, key=lambda p: (p["bbox"][1], p["bbox"][0])):
+        if side(p) == 2:
+            out += sorted(zone, key=lambda p: (side(p), p["bbox"][1])) + [p]
+            zone = []
+        else:
+            zone.append(p)
+    return out + sorted(zone, key=lambda p: (side(p), p["bbox"][1]))
 
 
 def join_lines(lines):
