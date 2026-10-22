@@ -573,3 +573,15 @@ def test_cell_rules_short_of_row_lines_still_make_table(tmp_path):
     assert [cell(r[-1]) for r in tab[0]["rows"][1:]] == ["A.1. 360 óra", "B.1. 288 óra"]
     assert [cell(c) for c in tab[0]["rows"][0]] == ["Eltérés", "Szükséges beavatkozás", "Végrehajtási határ"]
     assert any(b["k"] == "p" and "Beavatkozások:" in "".join(q.get("t", "") for q in b["runs"]) for b in blocks)
+
+
+def test_field_boxes_under_row_line_are_not_table_columns():
+    """Рамки полей ввода в ячейке бланка начинаются в 3 pt под линейкой строки — не столбцы таблицы: доходят до своей
+    короткой нижней кромки, а не до линейки строки (30RDGT: 3 столбца → 7, 15 листов → 29, 22.10)."""
+    hs = [(81, 42, 574), (117, 42, 574), (300, 42, 574), (769, 42, 574),
+          (120, 92.5, 206), (136, 92.5, 206), (120, 209, 298), (136, 209, 298)]   # две рамки полей под линейкой 117
+    vs = [(42, 81, 769), (90, 81, 769), (469, 81, 769), (574, 81, 769),
+          (92.5, 120, 136), (206, 120, 136), (209, 120, 136), (298, 120, 136)]
+    tabs = DL._tables(hs, vs)
+    big = max(tabs, key=lambda t: t[0][-1] - t[0][0])
+    assert [round(x) for x in big[0]] == [42, 90, 469, 574]
