@@ -512,9 +512,14 @@ def review(work, prj, workers=6, compact=True, progress=_quiet):
                 r = d["res"][sid]
                 r["review"] = {"serious": rv["serious"], "reason": rv["reason"]}
                 if fx:
-                    accept = ok and badness(fx["issues"]) <= badness(r.get("issues") or [])
+                    # "review_autofix": false (проект RU→EN) — исправления только предлагаются (candidate): для RU→EN
+                    # портал «исправлял» буквы приложений и станционный жаргон (ТЗ тренажёра, 20.10: 13 из 27 вредные)
+                    accept = ok and badness(fx["issues"]) <= badness(r.get("issues") or []) \
+                        and prj.get("review_autofix", True)
                     r["autofix"] = {"before": r["ru"], "reason": rv["reason"], "accepted": accept,
                                     "review2": {"serious": fx["rv2"]["serious"], "reason": fx["rv2"]["reason"]}}
+                    if not accept and not prj.get("review_autofix", True):
+                        r["autofix"]["candidate"] = fx["ru"]
                     if accept:
                         accepted = True
                         seg = next(x for x in segs if str(x["id"]) == sid)

@@ -226,8 +226,11 @@ def check_en(src, en):
         issues.append("метки форматирования")
     if src.count("\t") != en.count("\t") or src.count("\n") != en.count("\n"):
         issues.append("[TAB]/[BR]")
-    nums = lambda t: {n.replace(",", ".") for n in re.findall(r"\d+(?:[.,]\d+)?", TAG.sub(" ", t))}
-    s_n, e_n = nums(src), nums(en)
+    # разряды: «18 636 856,37» (пробел, неразрывный) = «18,636,856.37» (запятая — только в английском: в русском
+    # «0,125» — дробь); договор: каждая сумма уходила на повтор
+    group = lambda t, seps: re.sub(rf"(?<=\d)[{seps}](?=\d{{3}}(?!\d))", "", TAG.sub(" ", t))
+    nums = lambda t: {n.replace(",", ".") for n in re.findall(r"\d+(?:[.,]\d+)?", t)}
+    s_n, e_n = nums(group(src, "   ")), nums(group(en, "   ,"))
     miss = sorted(s_n - e_n)
     if miss:
         issues.append("нет кодов/чисел: " + ", ".join(miss[:6]))

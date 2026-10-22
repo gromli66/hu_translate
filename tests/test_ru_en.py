@@ -50,6 +50,12 @@ def test_check_en_decimal_point_and_units_are_not_issues():
                       "After the malfunction is inserted, the pump trips. 0.4 kV, 600 MW") == []
 
 
+def test_check_en_thousands_separators():
+    # договор: «18 636 856,37» = «18,636,856.37»; русская «0,125» — дробь, не разряды
+    assert T.check_en("Цена 18 636 856,37 рублей, доля 0,125", "Price 18,636,856.37 rubles, share 0.125") == []
+    assert T.check_en("Цена 18 636 856,37 рублей", "Price 18,636,865.37 rubles")[0].startswith("нет кодов/чисел")
+
+
 def test_check_en_flags_cyrillic_lost_latin_and_numbers():
     iss = T.check_en("Тренажер Thai Binh 2 должен работать 15 минут", "Тренажер Thai shall operate for minutes")
     assert "латиница потеряна: Binh" in iss and "нет кодов/чисел: 15, 2" in iss
