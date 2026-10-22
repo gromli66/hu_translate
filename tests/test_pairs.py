@@ -47,7 +47,7 @@ def test_glossary_flips_for_reverse_pair(gloss):
     assert [(e.hu, e.ru) for e in ents] == [("насос", "szivattyú"), ("предохранительный клапан", "biztonsági szelep")]
     assert rules == "" and ents[1].note == "строгий"
     assert [e.hu for e in G.find("Предохранительного клапана насоса нет", ents)] == ["предохранительный клапан", "насос"]
-    assert G.load(gloss, ("hu", "en"))[1][0].hu == "szivattyú"   # шапка hu-ru для hu-en — не разворачивается
+    assert G.load(gloss, ("hu", "en"))[1] == []                   # таблица hu-ru для пары hu-en — не берётся
 
 
 def test_translator_ru_hu_prompt_check_and_post(gloss):

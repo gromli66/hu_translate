@@ -88,7 +88,7 @@ def load(path=None, pair=None):
     want = L.parse_pair(pair) if isinstance(pair, str) or pair is None else tuple(pair)
     text = Path(path).read_text(encoding="utf-8")
     rules = text.split("## Правила применения", 1)[1].split("\n## ", 1)[0].strip() if "## Правила применения" in text else ""
-    entries, section, flip, flipped = [], "", False, False
+    entries, section, flip, flipped, skip = [], "", False, False, False
     for ln in text.splitlines():
         if ln.startswith("## "):
             section = ln[3:].strip()
@@ -100,8 +100,10 @@ def load(path=None, pair=None):
         if head:                                    # шапка таблицы: направление её колонок
             flip = pair is not None and head == (want[1], want[0])
             flipped |= flip
+            # таблица другой пары (hu-ru у проекта hu-en) — не берётся: русские термины в английском промпте
+            skip = pair is not None and set(head) != set(want)
             continue
-        if len(cells) < 2:
+        if len(cells) < 2 or skip:
             continue
         hu, ru, note = cells[0], cells[1], (cells[2] if len(cells) > 2 else "")
         if flip:
