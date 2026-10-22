@@ -17,7 +17,7 @@
   потери   — слова оригинала (от 4 букв, не коды), которых нет в сборке в «переведённом» виде (×1,0 и ×1,4);
   остаток  — слова оригинала, оставшиеся непереведёнными (путь сборки мимо перевода: колонтитул, надпись, поле);
   мелкий   — доля текста кеглем меньше 60 % медианного кегля оригинала;
-  картинки — растровых картинок в сборке меньше, чем в оригинале;
+  картинки — площадь картинок тела (без логотипов колонтитула) меньше 60 % оригинала;
   пустые   — листы сборки без текста и без картинок;
   наложения — строки сборки, перекрытые другой строкой больше чем на четверть."""
 import json
@@ -212,6 +212,19 @@ def build_case(label, src, jf, out, factors):
                     r["fit"] = docx_fit.fit(src, dst, lambda a, b: (lo_print(a), Path(a).with_suffix(".pdf").replace(b)))
                 except Exception as e:                                  # noqa: BLE001 — подгонка не валит стенд
                     r["fit"] = f"{type(e).__name__}: {e}"[:200]
+            elif d is not None:
+                # с рабочим файлом задачи — сборка тем же путём, что конвейер (assemble_all): скан-форма идёт
+                # переводом поверх и pdf2docx, распознанный — по сегментам, размеченный — по дереву
+                jf2 = case / f"x{f:.1f}.json"
+                d2 = dict(d, res=res, file=str(src))
+                jf2.write_text(json.dumps(d2, ensure_ascii=False), encoding="utf-8")
+                r = A.assemble_all(jf2, d2, out_dir=case)
+                got = case / f"x{f:.1f}_RU.docx"
+                if got.exists():
+                    got.replace(dst)
+                (case / f"x{f:.1f}_RU.pdf").unlink(missing_ok=True)
+                jf2.unlink(missing_ok=True)
+                (case / f"x{f:.1f}_вычитка.xlsx").unlink(missing_ok=True)
             else:
                 r, _ = A.build_struct_docx(src, dst, segs or [], res, None, mode=mode)
             pdf = lo_print(dst)
@@ -266,13 +279,19 @@ def _overlaps(page):
 
 
 def _images(doc):
-    n = 0
+    """Площадь картинок тела, pt²: без повторов на каждом листе (логотип колонтитула — на ≥30 % листов) и без мелочи.
+    Площадью, а не числом: скан из полос (14 картинок) и тот же лист снимком (1 картинка) — одно и то же."""
+    seen = Counter()
+    per = []
     for pg in doc:
-        for im in pg.get_image_info():
-            r = im["bbox"]
-            if (r[2] - r[0]) * (r[3] - r[1]) > 400:
-                n += 1
-    return n
+        ims = [im for im in pg.get_image_info(xrefs=True)
+               if (im["bbox"][2] - im["bbox"][0]) * (im["bbox"][3] - im["bbox"][1]) > 400]
+        per.append(ims)
+        for x in {im["xref"] for im in ims if im["xref"]}:
+            seen[x] += 1
+    decor = {x for x, n in seen.items() if n >= max(2, 0.3 * len(doc))}
+    return round(sum((im["bbox"][2] - im["bbox"][0]) * (im["bbox"][3] - im["bbox"][1])
+                     for ims in per for im in ims if im["xref"] not in decor))
 
 
 def check_case(case):
@@ -330,8 +349,8 @@ def flags(r):
             out.append((f, f"не переведено слов {x['resid']:.0%}"))
         if x["tiny"] > 0.02:
             out.append((f, f"мелкий текст {x['tiny']:.0%}"))
-        if x["imgs"] < r["orig_imgs"]:
-            out.append((f, f"картинок {x['imgs']} из {r['orig_imgs']}"))
+        if r["orig_imgs"] > 2000 and x["imgs"] < 0.6 * r["orig_imgs"]:
+            out.append((f, f"площадь картинок {x['imgs'] / r['orig_imgs']:.0%} от оригинала"))
         if x["empty"]:
             out.append((f, f"пустые листы {x['empty'][:8]}"))
         if x["overlaps"]:
