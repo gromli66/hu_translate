@@ -2133,6 +2133,12 @@ def mark_breaks(blocks, tops, bots):
     for i, b in enumerate(blocks):
         g = b.get("geom") or {}
         pn = g.get("page")
+        if b["k"] == "toc":
+            # оглавление первым на листе, а прошлый лист кончился заметно выше обычного низа, — с нового листа
+            # («TARTALOMJEGYZÉK» OAH AKF1.32: лист 5 занят на четверть, а оглавление шло следом; E41 корпуса, 22.10)
+            if pn and pn - 1 in bots and low - bots[pn - 1] > 72                     and not any((x.get("geom") or {}).get("page") == pn for x in blocks[:i]):
+                b["break"] = True
+            continue
         # и абзац («FŐIGAZGATÓI ELŐSZÓ» OAH — абзац, не заголовок), и таблица («УТВЕРЖДАЮ» листа изменений ИН-1065);
         # картинка — нет: её сдвигает нехватка места
         if not ((b["k"] in ("h", "table") or b["k"] == "p" and not img_only(b))

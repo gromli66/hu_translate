@@ -1710,12 +1710,14 @@ class Builder:
                     pf.line_spacing = Pt(info["pitch"])     # шаг строк — как в оглавлении оригинала
                 s.font.bold = bold
 
-    def toc(self, b=None):
+    def toc(self, b=None, brk=False):
         info = (b or {}).get("info") or {}
         figs = info.get("figures", self._toc_n > 0)
         title = (info.get("title") or {}).get("t")
         text = (self.tr(title) if title else None) or ("Список рисунков" if figs else "Содержание")
-        self.doc.add_paragraph(text, style="TOF Title UTS" if figs else "TOC Title UTS")
+        head = self.doc.add_paragraph(text, style="TOF Title UTS" if figs else "TOC Title UTS")
+        if brk:                                     # разрыв листа оригинала (docx_struct.mark_breaks)
+            head.paragraph_format.page_break_before = True
         par = self.doc.add_paragraph()
         if figs:
             _field(par, 'TOC \\h \\z \\c "Рисунок"', "[Список рисунков: в Word — правой кнопкой → «Обновить поле»]")
@@ -1768,7 +1770,7 @@ class Builder:
                 par.paragraph_format.line_spacing = Pt(1)
             self.table(b)
         elif k == "toc":
-            self.toc(b)
+            self.toc(b, brk=bool(b.get("break")) and not fresh)
 
     # ---------------------------------------------------------------- лист, колонтитулы, титул
     def _page(self, sec, L, left, right, top, bottom, size=None):

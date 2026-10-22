@@ -135,3 +135,20 @@ def test_paragraph_styled_like_chapter_heading_starts_new_page():
         b["break"] = b["k"] == "h"                    # заголовки 1-го уровня — с нового листа (как стилем у Word)
     D.mark_breaks(blocks, tops, bots)
     assert [bool(b.get("break")) for b in blocks[4:]] == [True, False, False]
+
+
+def test_toc_first_on_page_after_short_page_starts_new_page(tmp_path):
+    """E41: оглавление первым на листе после листа, занятого на четверть, — с нового листа (и в DOCX)."""
+    import docx_struct as D
+    body = p("Előszó szövege.", 5, 100)
+    body["geom"]["bottom"] = 250
+    toc = {"k": "toc", "info": {"page": 6, "levels": 2}, "geom": {"page": 6}}
+    blocks = [body, toc]
+    D.mark_breaks(blocks, {5: 100}, {1: 760, 2: 760, 3: 760, 4: 760, 5: 250})
+    assert toc.get("break")
+    out = tmp_path / "t.docx"
+    B.Builder(B.Memory([("Előszó szövege.", "Текст предисловия.")]), lambda img: png(), PROFILE).build(
+        blocks, str(out), LAYOUT)
+    doc = Document(str(out))
+    head = next(q for q in doc.paragraphs if q.style.name.startswith("TOC Title"))
+    assert head.paragraph_format.page_break_before
