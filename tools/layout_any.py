@@ -140,11 +140,22 @@ def _fake_memory(factor):
 
 
 def lo_print(docx):
-    """DOCX → PDF рядом (LibreOffice в контейнере hut)."""
+    """DOCX → PDF рядом (LibreOffice в контейнере hut). Печать идёт под уникальным именем: lo_print.sh кладёт файл в
+    /tmp контейнера по имени, и два процесса стенда с одинаковыми «x1.0.docx» подменяли друг другу PDF."""
+    import uuid
+    docx = Path(docx)
+    pdf = docx.with_suffix(".pdf")
+    pdf.unlink(missing_ok=True)
+    tmp = docx.with_name(f"lo_{uuid.uuid4().hex[:12]}.docx")
+    tmp.write_bytes(docx.read_bytes())
     env = dict(os.environ, MSYS_NO_PATHCONV="1")
-    subprocess.run([BASH, str(LO_PRINT).replace("\\", "/"), str(docx).replace("\\", "/")], env=env,
-                   capture_output=True, timeout=1800)
-    pdf = Path(docx).with_suffix(".pdf")
+    try:
+        subprocess.run([BASH, str(LO_PRINT).replace("\\", "/"), str(tmp).replace("\\", "/")], env=env,
+                       capture_output=True, timeout=1800)
+        if tmp.with_suffix(".pdf").exists():
+            tmp.with_suffix(".pdf").replace(pdf)
+    finally:
+        tmp.unlink(missing_ok=True)
     return pdf if pdf.exists() else None
 
 
