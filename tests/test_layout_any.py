@@ -62,3 +62,24 @@ def test_builder_survives_control_chars_wide_logos_and_bad_margins(tmp_path):
     B.Builder(mem, lambda img: png(), PROFILE).build(blocks, str(out), L)
     sec = Document(str(out)).sections[-1]
     assert sec.bottom_margin >= 0 and chr(12) not in "".join(par.text for par in Document(str(out)).paragraphs)
+
+
+def test_upright_copy_of_rotated_pages(tmp_path):
+    """Лист с /Rotate 90 без разметки — копия, где слова идут строкой слева направо в координатах видимого листа (HAKSER:
+    таблицы альбомных листов собирались узкими столбцами, E48)."""
+    import segments as S
+    src = tmp_path / "rot.pdf"
+    d = fitz.open()
+    pg = d.new_page(width=612, height=792)
+    pg.insert_text((100, 100), "Mérés eredménye", fontsize=11, rotate=270)
+    pg.set_rotation(90)
+    d.save(str(src))
+    up = S.upright(src, tmp_path / "up")
+    assert up != src
+    w = fitz.open(str(up))[0].get_text("words")
+    x0, y0, x1, y1 = w[0][:4]
+    assert x1 - x0 > y1 - y0                                    # слово лежит строкой, а не столбиком
+    plain = tmp_path / "plain.pdf"
+    fitz.open().new_page().insert_text((50, 50), "a")
+    d2 = fitz.open(); d2.new_page().insert_text((50, 50), "szöveg"); d2.save(str(plain))
+    assert S.upright(plain, tmp_path / "up") == plain           # без поворотов — исходный файл

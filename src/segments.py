@@ -611,6 +611,29 @@ def page_rules(page, dpi=300):
     return hs + ih, vs + iv
 
 
+def upright(path, out_dir):
+    """PDF с повёрнутыми листами (/Rotate 90/270 — альбомные таблицы, «положенные набок») без разметки — копия, где
+    каждый лист нарисован прямо: текст, линии и рисунки — в координатах листа, как он виден. Иначе слова повёрнутого
+    листа шли столбиком (координаты до поворота), таблицы собирались узкими столбцами, диаграммы обрезались
+    (HAKSER: 74 листа → 128, E48 корпуса, 22.10). Размеченный PDF (дерево Word) не трогается — путь по разметке.
+    → путь к копии или исходный путь, если поворотов нет."""
+    import fitz
+    path = Path(path)
+    with fitz.open(str(path)) as src:
+        if not any(pg.rotation for pg in src) or src.xref_get_key(src.pdf_catalog(), "StructTreeRoot")[0] != "null":
+            return path
+        out = Path(out_dir) / path.name
+        out.parent.mkdir(parents=True, exist_ok=True)
+        new = fitz.open()
+        for i, pg in enumerate(src):
+            np_ = new.new_page(width=pg.rect.width, height=pg.rect.height)
+            np_.show_pdf_page(np_.rect, src, i, rotate=-pg.rotation)
+        new.set_metadata(src.metadata or {})
+        new.save(str(out), garbage=3, deflate=True)
+        new.close()
+    return out
+
+
 def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, ratio=0.85, progress=None, shots=True,
                  roles=False):
     """ocr: 'auto' — страница идёт через OCR, если в текстовом слое < ratio слов Tesseract и заметной доли

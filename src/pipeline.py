@@ -182,6 +182,11 @@ def extract(inputs, work, progress=_quiet):
         if jf.exists():
             log(f"извлечение: {f.name} — уже есть"); continue
         t0 = time.time()
+        if f.suffix.lower() == ".pdf":
+            up = S.upright(f, work / "upright")             # повёрнутые листы — прямо (дальше весь путь — по копии)
+            if up != f:
+                log(f"извлечение: {f.name} — листы с поворотом выпрямлены")
+                f = up
         if f.suffix.lower() == ".docx":
             segs, info = S.docx_segments(f), {}
         else:

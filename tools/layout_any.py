@@ -190,6 +190,7 @@ def build_case(label, src, jf, out, factors):
                 else:
                     mode = "text"
         else:
+            src = S.upright(src, case / "upright")             # как конвейер: повёрнутые листы — прямо
             segs, sinfo = S.pdf_segments(src, ocr=False, shots=False)
             try:
                 cov = B.coverage(str(src), segs)
