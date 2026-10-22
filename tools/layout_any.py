@@ -205,7 +205,9 @@ def build_case(label, src, jf, out, factors):
         try:
             mem = _fake_memory(f)
             B.job_memory = lambda segs_, res_, _m=mem: _m          # всё, что сборка спросит, — поддельным переводом
-            res = {str(s["id"]): {"ru": fake(s["text"], f)} for s in (segs or [])}
+            # запись перевода — как у конвейера (таблица вычитки читает issues, tries)
+            res = {str(s["id"]): {"ru": fake(s["text"], f), "issues": [], "tries": 1, "gloss_miss": []}
+                   for s in (segs or [])}
             if mode == "docx":
                 r = A.build_docx(src, dst, segs, res)
                 import docx_fit

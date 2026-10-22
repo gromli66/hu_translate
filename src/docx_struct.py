@@ -2215,6 +2215,14 @@ def cell_edges(rows, thin):
                 a["edges"]["right"] = b["edges"]["left"] = a["edges"]["right"] or b["edges"]["left"]
 
 
+def _page_sizes(path):
+    """Размеры листов оригинала (ширина, высота) с учётом поворота (/Rotate): альбомные листы — альбомными разделами
+    (docx_build.Builder._page)."""
+    import fitz
+    with fitz.open(str(path)) as d:
+        return [(round(pg.rect.width, 1), round(pg.rect.height, 1)) for pg in d]
+
+
 def layout(path, blocks, content=None):
     """Раскладка листа по оригиналу: поля тела и титула, шапка (картинки по краям, строки по центру) и штамп
     внизу (сетка по рамкам ячеек, строки по словам). Колонтитулы — артефакты PDF, в дереве структуры их нет.
@@ -2340,7 +2348,8 @@ def layout(path, blocks, content=None):
                    [max(6.0, min(36.0, body_top - 4 - 18))])
     sig = lambda chars: re.sub(r"\s+", " ", re.sub(r"\d+\.?", "", "".join(c["text"] for c in chars))).strip()
     body_sig = sig(foot_chars)
-    out = {"W": W, "H": H, "left": left, "right": max(right, 20), "top": body_top - 4,
+    out = {"page_sizes": _page_sizes(path),
+           "W": W, "H": H, "left": left, "right": max(right, 20), "top": body_top - 4,
            "bottom": H - foot_top + 12, "header": head_top, "footer": max(H - foot_bottom - 6, 18),
            "head_imgs": head_imgs, "head_lines": head_lines, "head_grid": head,
            "stamp": foot["rows"], "stamp_widths": foot["widths"], "stamp_aligns": foot["aligns"],

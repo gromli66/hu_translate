@@ -1742,9 +1742,15 @@ class Builder:
             self.toc(b)
 
     # ---------------------------------------------------------------- лист, колонтитулы, титул
-    def _page(self, sec, L, left, right, top, bottom):
+    def _page(self, sec, L, left, right, top, bottom, size=None):
+        """Поля и размер листа раздела; size — (ширина, высота) своего листа оригинала: альбомный лист — альбомным
+        разделом (w:orient), а не книжным с картинкой во всю ширину (плакат, диаграмма Ганта, альбомные листы таблиц:
+        стенд вёрстки без языка, 22.10)."""
+        from docx.enum.section import WD_ORIENT
         from docx.shared import Pt
-        sec.page_width, sec.page_height = Pt(L["W"]), Pt(L["H"])
+        w, h = size or (L["W"], L["H"])
+        sec.page_width, sec.page_height = Pt(w), Pt(h)
+        sec.orientation = WD_ORIENT.LANDSCAPE if w > h else WD_ORIENT.PORTRAIT
         sec.left_margin, sec.right_margin = Pt(left), Pt(right)
         sec.top_margin, sec.bottom_margin = Pt(top), Pt(bottom)
         sec.header_distance, sec.footer_distance = Pt(L["header"]), Pt(L["footer"])
@@ -2098,9 +2104,20 @@ class Builder:
             self._num_start(first, ns["value"])
             restart = True
         title_foot = []
+        sizes = L.get("page_sizes") or []
+        land = lambda pg: bool(pg and pg <= len(sizes) and sizes[pg - 1][0] > sizes[pg - 1][1])
+        cur_land = land(1)
+        if cur_land:
+            self._page(first, L, L["left"], L["right"], L["top"], L["bottom"], sizes[0])
         for b in blocks:
             g = b.get("geom") or {}
             page = g.get("page")
+            # лист другой ориентации, чем раздел (альбомные листы посреди книжного документа) — свой раздел
+            if not in_title and page and sizes and land(page) != cur_land:
+                cur_land = land(page)
+                sec = self.doc.add_section(WD_SECTION.NEW_PAGE)
+                self.fresh = True
+                self._page(sec, L, L["left"], L["right"], L["top"], L["bottom"], sizes[page - 1])
             if in_title and page is not None and page >= 2:
                 in_title = False
                 sec = self.doc.add_section(WD_SECTION.NEW_PAGE)
