@@ -56,6 +56,11 @@ def load_project(path):
     return prj
 
 
+def src_lang(prj):
+    """Язык источника по паре проекта ("pair": "hu-ru" по умолчанию, "ru-en" — ветка ru-en): hu, ru."""
+    return ((prj or {}).get("pair") or "hu-ru").split("-")[0]
+
+
 def make_translator(prj, think=True):
     return Translator(think=think, extra=prj.get("terms"), glossary=prj["glossary"], domain=prj.get("domain"),
                       tm=prj.get("tm"))
@@ -147,7 +152,8 @@ def rebuild_portfolios(work, out):
         log(f"сборка: {target.name} — портфолио, переведённых вложений {done} из {len(m['map'])}")
 
 
-def extract(inputs, work, progress=_quiet):
+def extract(inputs, work, progress=_quiet, lang="hu"):
+    """lang — язык источника (src_lang): надписи на картинках читаются его словарём и переводятся только на нём."""
     work = Path(work); (work / "json").mkdir(parents=True, exist_ok=True)
     S.OCR_DIR = work / "ocr"
     queue = []
@@ -183,9 +189,14 @@ def extract(inputs, work, progress=_quiet):
             log(f"извлечение: {f.name} — уже есть"); continue
         t0 = time.time()
         if f.suffix.lower() == ".docx":
-            segs, info = S.docx_segments(f), {}
+            # надписи на картинках тела (растр word/media) — сегментами сразу после абзаца с картинкой (shots)
+            import shots as SH
+            segs, info = SH.add_docx_shots(S.docx_segments(f), f, S.OCR_DIR / f.stem / "shots", lang)
+            if info:
+                log(f"извлечение: {f.name} — надписей на картинках {info['shot_labels']}" +
+                    "".join(f"; {Path(k).name} не переводится: {v}" for k, v in info.get("shot_skipped", {}).items()))
         else:
-            segs, info = S.pdf_segments(f, progress=lambda x: progress("извлечение", i + x, len(files)))
+            segs, info = S.pdf_segments(f, progress=lambda x: progress("извлечение", i + x, len(files)), lang=lang)
         dplan = struct = None
         ocr = info.get("ocr_pages") or []
         if f.suffix.lower() == ".pdf" and ocr:
@@ -217,7 +228,7 @@ def extract(inputs, work, progress=_quiet):
             if os.environ.get("HU_ROLES", "1") != "0":
                 # роли строк и колонтитулы распознанных листов — метками портала (roles.py; замер на сканах 18.10:
                 # правила не находят ни заголовков, ни пунктов, гибрид — 0,84 и 0,89); распознавание — из кэша
-                segs, info = S.pdf_segments(f, roles=True)
+                segs, info = S.pdf_segments(f, roles=True, lang=lang)
                 struct["roles"] = sum(1 for s in segs if s["loc"].get("roles")) > 0
                 log(f"извлечение: {f.name} — роли строк порталом: {'да' if struct['roles'] else 'нет (сбой портала)'}")
         if f.suffix.lower() == ".pdf" and (not info.get("ocr_pages") or few_ocr) and not struct:
@@ -232,7 +243,7 @@ def extract(inputs, work, progress=_quiet):
             if os.environ.get("HU_ROLES", "1") != "0":
                 # границы абзацев и роли строк (заголовок, пункт) — метками портала (roles.py, замер 18.10: F1 абзацев
                 # 0,86 → 0,97, заголовков 0,36 → 0,86, пунктов 0,57 → 0,90); распознавание листов — из кэша
-                segs, info = S.pdf_segments(f, roles=True)
+                segs, info = S.pdf_segments(f, roles=True, lang=lang)
                 struct["roles"] = sum(1 for s in segs if s["loc"].get("roles")) > 0
                 log(f"извлечение: {f.name} — роли строк порталом: {'да' if struct['roles'] else 'нет (сбой портала)'}")
         jf.write_text(json.dumps({"file": str(f.resolve()), "segs": segs, "res": {}, "info": info, "docx": dplan,

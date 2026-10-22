@@ -119,7 +119,7 @@ def main(job_dir, mode="translate"):
         return
     prj["tm"] = str(jd / "tm.json")           # утверждённая память проекта + неподтверждённая память владельца
     pr = Progress(jd / "progress.json", W_REVIEW if spec["review"] else W_FAST)
-    P.extract([jd / "in"], work, pr)
+    P.extract([jd / "in"], work, pr, lang=P.src_lang(prj))
     P.translate(work, prj, progress=pr)
     P.struct_fill(work, prj, progress=pr)        # размеченный PDF: абзацы DOCX по разметке без пары в сегментах
     if spec["review"]:
