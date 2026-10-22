@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """Сборка перевода обратно в формат источника + двуязычная таблица для вычитки.
 
-- DOCX: текст каждой группы прогонов (одинаковое начертание) пишется в первый прогон группы,
-  остальные прогоны группы опустошаются; метки <fN> раскладывают перевод по группам.
+- DOCX: текст каждой группы прогонов (одинаковое начертание) пишется в первый прогон группы (если у первого
+  прогона иные шрифт, кегль, цвет или выделение, чем у основного текста группы, — в первый прогон основного
+  оформления), остальные прогоны группы опустошаются; метки <fN> раскладывают перевод по группам.
   Если метки сломаны — весь перевод в первую группу (начертание первой группы).
 - PDF: исходный текст переведённых абзацев убирается (текстовый слой — redaction текста;
   OCR-страница — белая заливка + удаление нарисованных букв), перевод вписывается в рамку
@@ -12,7 +13,7 @@
 import re, html, zipfile
 from pathlib import Path
 
-from segments import W, _own_runs
+from segments import W, _own_runs, run_text
 
 TAG = re.compile(r"</?f\d+>")
 
@@ -47,6 +48,43 @@ def _set_run_text(r, text):
                 t.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
 
 
+_LOOK = (("rFonts", ("ascii", "hAnsi")), ("sz", ("val",)), ("color", ("val",)), ("highlight", ("val",)),
+         ("shd", ("fill",)))
+
+
+def _look(r):
+    """Видимое прямое оформление прогона, которого нет в run_sig (по нему группы не делятся): шрифт, кегль, цвет,
+    выделение, заливка; «auto»/«none» — то же, что без него. Стиль знака не в счёт: у 468 заголовков 3PR04 KU название —
+    стиль «Гиперссылка», перекрытый прямым оформлением, — печатается так же, как номер."""
+    rpr = r.find(W + "rPr")
+    out = []
+    for name, attrs in _LOOK:
+        el = rpr.find(W + name) if rpr is not None else None
+        v = tuple(el.get(W + a) for a in attrs) if el is not None else ()
+        out.append(() if all(x in (None, "auto", "none") for x in v) else v)
+    return tuple(out)
+
+
+def _target(runs, g):
+    """Прогон группы, в который ложится её перевод: первый, если его оформление — основное в группе (больше знаков);
+    иначе — первый прогон основного оформления. Прежде всегда первый: выделенное первое слово красило весь абзац,
+    табуляция другим шрифтом печатала строку мельче (ТЗ тренажёра RU→EN, 20.10). Только прогоны того же родителя, что
+    первый: текст не переезжает в поле формы (подсказка SDT формы ОАХ), гиперссылку или поле."""
+    from collections import Counter
+    own = [ri for ri in g if runs[ri].getparent() is runs[g[0]].getparent()]
+    by = Counter()
+    for ri in own:
+        t = run_text(runs[ri])
+        if t.strip():
+            by[_look(runs[ri])] += len(t)
+    if not by:
+        return g[0]
+    main = by.most_common(1)[0][0]
+    if _look(runs[g[0]]) == main:
+        return g[0]
+    return next(ri for ri in own if _look(runs[ri]) == main and run_text(runs[ri]).strip())
+
+
 def build_docx(src, out, segs, res):
     from lxml import etree
     by_part = {}
@@ -67,15 +105,41 @@ def build_docx(src, out, segs, res):
                     groups = s["loc"]["groups"]
                     texts = _split_groups(ru, len(groups))
                     texts[0] = s["loc"].get("lead", "") + texts[0]
+                    # абзац с полем (номер страницы, версия): конечный пробел перед полем — как в оригинале, модель его
+                    # срезает («Версия 1.0.7» → «Version1.0.7», 22.10)
+                    if s["loc"].get("field") and s.get("src", "")[-1:].isspace() and not texts[-1][-1:].isspace():
+                        texts[-1] += " "
                     if len(groups) > 1 and not any(texts[1:]) and texts[0]:
                         broken += 1
                     for g, t in zip(groups, texts):
-                        _set_run_text(runs[g[0]], t)
-                        for ri in g[1:]:
-                            _set_run_text(runs[ri], "")
+                        tgt = _target(runs, g)
+                        for ri in g:
+                            _set_run_text(runs[ri], t if ri == tgt else "")
                 data = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
+            elif item.filename in ("docProps/core.xml", "docProps/custom.xml", "docProps/app.xml"):
+                data = _props(data, segs, res)
             zout.writestr(item, data)
     return {"broken_tags": broken}
+
+
+def _props(data, segs, res):
+    """Свойства документа (название, тема, свои поля): значение, совпадающее с переведённым текстом документа, —
+    переводом. LibreOffice при печати обновляет поля TITLE/DOCPROPERTY, и в переводе снова появлялось русское
+    «Техническое задание» (ТЗ НГУ, ru-en, 22.10); прочие значения — как есть."""
+    from lxml import etree
+    norm = lambda t: re.sub(r"\s+", " ", TAG.sub("", t or "")).strip()
+    tr = {}
+    for s in segs:
+        r = res.get(str(s["id"]))
+        if r and r.get("ru") and not r.get("copied"):
+            tr.setdefault(norm(s["text"]), norm(r["ru"]))
+    root = etree.fromstring(data)
+    hit = 0
+    for el in root.iter():
+        if isinstance(el.tag, str) and el.text and len(el) == 0 and norm(el.text) in tr:
+            el.text = tr[norm(el.text)]
+            hit += 1
+    return etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True) if hit else data
 
 
 def _free(rect, busy, own):
@@ -395,7 +459,7 @@ def _p2d_child(pdf, out):
         print(" ".join(f"ERR {type(e).__name__}: {e}"[:200].split()), flush=True)
 
 
-def build_struct_docx(src, out, segs, res, rules=None, progress=None, mode="struct", overlay=None):
+def build_struct_docx(src, out, segs, res, rules=None, progress=None, mode="struct", overlay=None, lang_check=True):
     """DOCX размеченного PDF (экспорт Word со StructTreeRoot, pipeline.extract → d["struct"]): блоки — по дереву
     разметки (docx_struct), оформление — профилем оригинала (docx_profile), сборка — docx_build.Builder; перевод — из
     сегментов задачи (после проверки, шлифовки и правок редактора), скриншоты — переведённые (shots.render).
@@ -484,7 +548,8 @@ def build_struct_docx(src, out, segs, res, rules=None, progress=None, mode="stru
     dx, lang = Document(str(out)), []
     for el in dx.element.body.iter(B.W + "p"):
         p = Paragraph(el, dx)
-        if p.style.name not in ("Code UTS", "Code Center UTS"):              # код — дословно, соглашения не к нему
+        # код — дословно, соглашения не к нему; соглашения — о русском переводе венгерского (lang_check: только hu-ru)
+        if lang_check and p.style.name not in ("Code UTS", "Code Center UTS"):
             lang += [(r, why, p.text[:90]) for r, why in C.check_text(p.text, rules or {})]
     rows = [("", v["rule"], f"оформление: {v['where']} — {v['was']} (нужно: {v['need']})", "") for v in viol] \
         + [("", r, f"в DOCX: {why}", t) for r, why, t in lang]
@@ -507,7 +572,8 @@ def _h_note(r):
 
 def _h_note_main(r):
     if (r.get("review") or {}).get("serious"):
-        return r["review"].get("reason", "")
+        cand = (r.get("autofix") or {}).get("candidate")         # автоисправления выключены (не hu-ru): предложение
+        return r["review"].get("reason", "") + (" | предложено: " + TAG.sub("", cand)[:400] if cand else "")
     if (r.get("autofix") or {}).get("accepted"):
         return ("Автоисправление (проверить): " + (r["autofix"].get("reason") or "")[:200] + " | было: " +
                 TAG.sub("", r["autofix"].get("before") or "")[:300])
@@ -519,13 +585,15 @@ def _h_note_main(r):
     return ""
 
 
-def review_xlsx(out, segs, res, title, polish=None, extra_rows=()):
+def review_xlsx(out, segs, res, title, polish=None, extra_rows=(), pair=None):
     """Лист «вычитка»; после шлифовки (polish — d["polish"]: журнал и оставшиеся нарушения) или проверки DOCX по
     разметке (extra_rows — нарушения оформления и соглашений в готовом DOCX) — ещё листы «шлифовка» и «нарушения»."""
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill
     wb = Workbook(); ws = wb.active; ws.title = "вычитка"
-    ws.append(["№", "стр.", "Венгерский (источник)", "Русский (портал)", "Замечания проверки", "Предупреждения (варианты расходились; термины не найдены)",
+    import langs as L
+    sl, tl = L.parse_pair(pair)
+    ws.append(["№", "стр.", f"{L.NAME_RU[sl].capitalize()} (источник)", f"{L.NAME_RU[tl].capitalize()} (портал)", "Замечания проверки", "Предупреждения (варианты расходились; термины не найдены)",
                "Исправление (редактор)", "Смысловая проверка (портал)"])
     for c in ws[1]:
         c.font = Font(bold=True)
@@ -613,36 +681,39 @@ def assemble_all(jf, d, out_dir=None, progress=None):
     out_dir — куда класть файлы (по умолчанию рядом с JSON). progress(доля 0..1) — ход по страницам PDF и DOCX."""
     tick = progress or (lambda x: None)
     src = source_path(d)
+    import langs as L
+    sfx = L.suffix(d.get("pair"))                       # _RU (hu-ru), _EN, _HU — по паре проекта
     outd, stem = Path(out_dir or Path(jf).parent), Path(jf).stem
     outd.mkdir(parents=True, exist_ok=True)
     rows = []
     if src.suffix.lower() == ".docx":
-        info = build_docx(src, outd / f"{stem}_RU.docx", d["segs"], d["res"])
+        info = build_docx(src, outd / f"{stem}{sfx}.docx", d["segs"], d["res"])
         # раздел перевода — не больше листов, чем в оригинале (docx_fit: «раздел = лист» 3PR04 расползался 514 → 651);
         # без LibreOffice — как есть
         import docx_fit
         import subprocess
         try:
-            info["fit"] = docx_fit.fit(src, outd / f"{stem}_RU.docx", lo_convert)
+            info["fit"] = docx_fit.fit(src, outd / f"{stem}{sfx}.docx", lo_convert)
         except (OSError, RuntimeError, subprocess.SubprocessError) as e:
             info["fit"] = {"skipped": f"{type(e).__name__}: {e}"[:200]}
     else:
         if d.get("struct"):
             # размеченный PDF: DOCX по дереву разметки и профилю оформления оригинала
-            info = build_pdf(src, outd / f"{stem}_RU.pdf", d["segs"], d["res"], progress=lambda x: tick(0.4 * x))
+            info = build_pdf(src, outd / f"{stem}{sfx}.pdf", d["segs"], d["res"], progress=lambda x: tick(0.4 * x))
             try:
-                info["docx"], rows = build_struct_docx(src, outd / f"{stem}_RU.docx", d["segs"], d["res"],
+                info["docx"], rows = build_struct_docx(src, outd / f"{stem}{sfx}.docx", d["segs"], d["res"],
                                                        (d.get("polish") or {}).get("rules"),
                                                        progress=lambda x: tick(0.4 + 0.6 * x),
                                                        mode=d["struct"].get("mode") or "struct",
-                                                       overlay=outd / f"{stem}_RU.pdf")
+                                                       overlay=outd / f"{stem}{sfx}.pdf",
+                                                       lang_check=L.parse_pair(d.get("pair")) == ("hu", "ru"))
                 import subprocess
                 try:                                    # PDF — из этого DOCX; без LibreOffice — в вёрстке оригинала
-                    info["pdf"] = pdf_from_docx(outd / f"{stem}_RU.docx", outd / f"{stem}_RU.pdf")
+                    info["pdf"] = pdf_from_docx(outd / f"{stem}{sfx}.docx", outd / f"{stem}{sfx}.pdf")
                 except (OSError, RuntimeError, subprocess.SubprocessError) as e:
                     info["pdf"] = {"from": "вёрстка оригинала", "reason": f"{type(e).__name__}: {e}"[:200]}
             except Exception as e:                      # noqa: BLE001 — DOCX прежним путём, причина — в отчёт сборки
-                info["docx"] = docx_from_pdf(outd / f"{stem}_RU.pdf", outd / f"{stem}_RU.docx",
+                info["docx"] = docx_from_pdf(outd / f"{stem}{sfx}.pdf", outd / f"{stem}{sfx}.docx",
                                              progress=lambda x: tick(0.4 + 0.6 * x))
                 info["docx"]["fallback"] = f"{type(e).__name__}: {e}"[:200]
         elif d.get("docx"):
@@ -650,36 +721,38 @@ def assemble_all(jf, d, out_dir=None, progress=None):
             import docx_src
             shots_pdf = outd / f"{stem}_shots.tmp.pdf"
             try:
-                info = build_pdf(src, outd / f"{stem}_RU.pdf", d["segs"], d["res"], progress=lambda x: tick(0.4 * x),
+                info = build_pdf(src, outd / f"{stem}{sfx}.pdf", d["segs"], d["res"], progress=lambda x: tick(0.4 * x),
                                  shots_out=shots_pdf)
                 try:
-                    info["docx"] = docx_src.build(shots_pdf, outd / f"{stem}_RU.docx", d["segs"], d["res"], d["docx"])
+                    info["docx"] = docx_src.build(shots_pdf, outd / f"{stem}{sfx}.docx", d["segs"], d["res"], d["docx"])
                 except Exception as e:                  # noqa: BLE001 — DOCX прежним путём, причина — в отчёт сборки
-                    info["docx"] = docx_from_pdf(outd / f"{stem}_RU.pdf", outd / f"{stem}_RU.docx",
+                    info["docx"] = docx_from_pdf(outd / f"{stem}{sfx}.pdf", outd / f"{stem}{sfx}.docx",
                                                  progress=lambda x: tick(0.4 + 0.6 * x))
                     info["docx"]["fallback"] = f"{type(e).__name__}: {e}"[:200]
             finally:
                 shots_pdf.unlink(missing_ok=True)
         else:
-            info = build_pdf(src, outd / f"{stem}_RU.pdf", d["segs"], d["res"], progress=lambda x: tick(0.4 * x))
+            info = build_pdf(src, outd / f"{stem}{sfx}.pdf", d["segs"], d["res"], progress=lambda x: tick(0.4 * x))
             try:
                 import docx_layout as DL
                 if not DL.suits(src, (d.get("info") or {}).get("ocr_pages")):
                     raise ValueError("не распознанный PDF или скан")
                 # распознанный PDF (текст листа — контурами): DOCX по сегментам листа (docx_layout) — один кегль, стили,
                 # пункты, колонтитулы; PDF — из него. Раньше DOCX был из переведённого PDF: строки резались, налезали
-                info["docx"], rows = build_struct_docx(src, outd / f"{stem}_RU.docx", d["segs"], d["res"],
+                info["docx"], rows = build_struct_docx(src, outd / f"{stem}{sfx}.docx", d["segs"], d["res"],
                                                        (d.get("polish") or {}).get("rules"),
-                                                       progress=lambda x: tick(0.4 + 0.6 * x), mode="layout")
+                                                       progress=lambda x: tick(0.4 + 0.6 * x), mode="layout",
+                                                       lang_check=L.parse_pair(d.get("pair")) == ("hu", "ru"))
                 import subprocess
                 try:
-                    info["pdf"] = pdf_from_docx(outd / f"{stem}_RU.docx", outd / f"{stem}_RU.pdf")
+                    info["pdf"] = pdf_from_docx(outd / f"{stem}{sfx}.docx", outd / f"{stem}{sfx}.pdf")
                 except (OSError, RuntimeError, subprocess.SubprocessError) as e:
                     info["pdf"] = {"from": "вёрстка оригинала", "reason": f"{type(e).__name__}: {e}"[:200]}
             except Exception as e:                      # noqa: BLE001 — DOCX прежним путём, причина — в отчёт сборки
-                info["docx"] = docx_from_pdf(outd / f"{stem}_RU.pdf", outd / f"{stem}_RU.docx",
+                info["docx"] = docx_from_pdf(outd / f"{stem}{sfx}.pdf", outd / f"{stem}{sfx}.docx",
                                              progress=lambda x: tick(0.4 + 0.6 * x))
                 if not isinstance(e, ValueError):
                     info["docx"]["fallback"] = f"{type(e).__name__}: {e}"[:200]
-    review_xlsx(outd / f"{stem}_вычитка.xlsx", d["segs"], d["res"], stem, polish=d.get("polish"), extra_rows=rows)
+    review_xlsx(outd / f"{stem}_вычитка.xlsx", d["segs"], d["res"], stem, polish=d.get("polish"), extra_rows=rows,
+                pair=d.get("pair"))
     return info

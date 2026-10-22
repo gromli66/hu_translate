@@ -16,6 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 OCR_DIR = ROOT / "work" / "ocr"                  # переопределяется конвейером: <рабочая папка>/ocr
+SRC_LANG = "hu"                                  # язык источника (pipeline.extract, пара проекта): Tesseract, OCR портала
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 HU_WORD = re.compile(r"[a-záéíóöőúüű]{2,}")
 
@@ -23,7 +24,8 @@ HU_WORD = re.compile(r"[a-záéíóöőúüű]{2,}")
 def needs_translation(text):
     """Есть ли что переводить: строчное слово или аббревиатура из букв (не чистые коды/числа)."""
     t = re.sub(r"<\/?f\d+>", "", text)
-    return bool(HU_WORD.search(t)) or bool(re.search(r"\b[A-ZÁÉÍÓÖŐÚÜŰ]{2,}\b", t))
+    return bool(HU_WORD.search(t)) or bool(re.search(r"\b[A-ZÁÉÍÓÖŐÚÜŰ]{2,}\b", t)) \
+        or bool(re.search(r"[А-Яа-яЁё]", t))          # русский источник (проект "pair": "ru-en"): и «№ п/п»
 
 
 # ---------------------------------------------------------------- DOCX
@@ -82,6 +84,42 @@ def _symbol_run(r, t):
     return False
 
 
+# поле номера страницы: его результат («24» в «Стр.24») — не текст. Прежде он шёл в сегмент, перевод «Page 24»
+# ложился в первый прогон, а результат поля пустел — LibreOffice/Word пересчитывали поле, и выходило «Page 2402»
+# (ТЗ тренажёра RU→EN, 20.10)
+PAGE_FIELD = re.compile(r"^\s*(PAGE|NUMPAGES|SECTIONPAGES)\b")
+# поля свойств и дат, которые LibreOffice/Word пересчитывают: результат без букв («1.0.7», «20.10.2026») — тоже не текст
+# («Версия 1.0.7»: перевод «Version 1.0.7» + пересчитанное поле = «Version 1.0.71.0.7», ТЗ НГУ, 22.10)
+DATA_FIELD = re.compile(r"^\s*(DOCPROPERTY|REVNUM|NUMWORDS|NUMCHARS|FILESIZE|DATE|TIME|SAVEDATE|PRINTDATE|CREATEDATE)\b")
+
+
+def _field_result_runs(runs):
+    """Номера прогонов — результатов полей номера страницы (сложное поле fldChar begin…separate…end или fldSimple)."""
+    out, stack = set(), []                 # stack: [инструкция, идёт результат] на каждое открытое поле
+    for i, r in enumerate(runs):
+        par = r.getparent()
+        if par is not None and par.tag == W + "fldSimple" and PAGE_FIELD.match(par.get(W + "instr") or ""):
+            out.add(i)
+            continue
+        fc = r.find(W + "fldChar")
+        if fc is not None:
+            kind = fc.get(W + "fldCharType")
+            if kind == "begin":
+                stack.append(["", False])
+            elif kind == "separate" and stack:
+                stack[-1][1] = True
+            elif kind == "end" and stack:
+                stack.pop()
+            continue
+        it = r.find(W + "instrText")
+        if it is not None and stack:
+            stack[-1][0] += it.text or ""
+        elif stack and stack[-1][1] and (PAGE_FIELD.match(stack[-1][0]) or DATA_FIELD.match(stack[-1][0])
+                                         and not re.search(r"[^\W\d_]", run_text(r))):
+            out.add(i)
+    return out
+
+
 def docx_parts(path):
     """Имена XML-частей с текстом: тело, колонтитулы, сноски."""
     with zipfile.ZipFile(path) as z:
@@ -103,8 +141,9 @@ def docx_segments(path):
                     continue
                 # группы подряд идущих прогонов с одинаковым начертанием
                 groups = []
+                page_no = _field_result_runs(runs)
                 for ri, (r, t) in enumerate(zip(runs, texts)):
-                    if not t:
+                    if not t or ri in page_no:     # номер страницы (поле) — не текст, прогон не трогается
                         continue
                     # значки шрифтов Wingdings/Symbol (флажки «□») — не текст: модель их выбрасывает,
                     # прогон остаётся на месте нетронутым
@@ -134,7 +173,8 @@ def docx_segments(path):
                 else:
                     text = src
                 segs.append({"id": len(segs), "text": text, "src": src, "page": None,
-                             "loc": {"part": part, "p": pi, "groups": [g["runs"] for g in groups], "lead": lead}})
+                             "loc": {"part": part, "p": pi, "groups": [g["runs"] for g in groups], "lead": lead,
+                                     **({"field": True} if page_no else {})}})
     return segs
 
 
@@ -142,6 +182,16 @@ def docx_segments(path):
 OCR_PROMPT = ("Перепиши весь текст страницы дословно, на языке оригинала (венгерский), сохраняя порядок, "
               "нумерацию пунктов, переносы абзацев и все коды/обозначения посимвольно (буквы с диакритикой: "
               "á é í ó ö ő ú ü ű) и знаки ≤ ≥ < > ± ÷ Δ ° %. Ничего не переводи, не пропускай и не добавляй. Выведи только текст.")
+
+
+def ocr_prompt():
+    """Промпт OCR порталом по языку источника: венгерский — прежний (проверен), прочие — тот же без венгерских букв."""
+    if SRC_LANG == "hu":
+        return OCR_PROMPT
+    import langs as L
+    return ("Перепиши весь текст страницы дословно, на языке оригинала (" + L.NAME_RU[SRC_LANG] + "), сохраняя порядок, "
+            "нумерацию пунктов, переносы абзацев и все коды/обозначения посимвольно и знаки ≤ ≥ < > ± ÷ Δ ° %. "
+            "Ничего не переводи, не пропускай и не добавляй. Выведи только текст.")
 # знак градуса — в сравнении слов: без него «°C.» портала становилось «c» и совпадало с «c», которым Tesseract прочёл
 # «<» («t < 98 °C.» → «t < 98 c 98 9C.», 3SZ19, 19.10)
 _NORM = re.compile(r"[^\w%Δ÷±≤≥<>°]+")
@@ -508,7 +558,8 @@ def ocr_frags(words, vs=()):
 
 
 def _tess_words(png_path, dpi):
-    r = subprocess.run(["tesseract", str(png_path), "stdout", "-l", "hun", "--psm", "4", "tsv"],
+    import langs as L
+    r = subprocess.run(["tesseract", str(png_path), "stdout", "-l", L.TESS.get(SRC_LANG, "hun"), "--psm", "4", "tsv"],
                        capture_output=True, text=True, encoding="utf-8")
     words = []
     for ln in r.stdout.splitlines()[1:]:
@@ -679,7 +730,7 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
     def portal(pno):
         from llm import chat, img_b64
         png = fitz.open(path)[pno].get_pixmap(dpi=dpi_portal, colorspace=fitz.csGRAY).tobytes("png")
-        return chat([{"role": "user", "content": OCR_PROMPT}], images=[img_b64(png)], max_tokens=8000, tag=f"ocr{pno}")
+        return chat([{"role": "user", "content": ocr_prompt()}], images=[img_b64(png)], max_tokens=8000, tag=f"ocr{pno}")
 
     from layout import hidden_text, _covered
     plan = {}
@@ -747,7 +798,7 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
                     segs[-1]["loc"]["role"] = p["role"]
     n_shots = 0
     text_pages = {p for p in rng if not plan[p]}
-    if shots and text_pages:
+    if shots and text_pages and SRC_LANG == "hu":          # надписи скриншотов — словарь и правила венгерского (shots.py)
         import shots as SH
         extra = SH.shot_segments(doc, work / "shots", len(segs), pages=text_pages)
         n_shots = len(extra)
