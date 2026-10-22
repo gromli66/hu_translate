@@ -1205,7 +1205,7 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
         charts = sum(fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1]).get_area() for t in _tables(hs, vs)
                      if _chart_table(t, draw[pno])) if mask is not None else 0
         if mask is not None and segs and (scans[pno] and any(s["loc"].get("ocr") for s in segs)
-                                          or _graphic_page(page, segs, figs)
+                                          or not scans[pno] and _graphic_page(page, segs, figs)
                                           or charts >= 0.3 * page.rect.get_area()):
             # скан посреди текстового слоя (лист регистрации, титул с подписями 32RDGT) — листом с переведённого PDF,
             # как отдельный скан формы (16.10): по сегментам сетка, подписи и штампы бланка рассыпались, 8 листов → 11

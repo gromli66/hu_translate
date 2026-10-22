@@ -308,7 +308,10 @@ def check_case(case):
     med = sorted(o_sizes)[len(o_sizes) // 2] if o_sizes else 10
     oimg = _images(o)
     expect = Counter(flip(w).lower() for w in owords)
-    orig_lat = Counter(w for w in owords if re.search(r"[a-z]", _plain_word(w)))
+    # остаток — только слова, которые поддельный перевод переводит (коды вроде «NAVD», «DATABASE» заглавными до 6 букв
+    # он оставляет — это не непереведённый текст)
+    orig_lat = Counter(w.lower() for w in re.findall(r"[^\W\d_]{4,}", otext)
+                       if is_word(w) and re.search(r"[a-z]", _plain_word(w.lower())))
     rows = {}
     for f, run in info["runs"].items():
         pdf = case / f"x{f}.pdf"
