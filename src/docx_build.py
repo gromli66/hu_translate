@@ -1588,6 +1588,7 @@ class Builder:
         pad = 2 * ((self.P.get("table") or {}).get("pad_left") or 5.4) + 5
         ncol = len(widths)
         need = [0.0] * ncol
+        texts = [[] for _ in range(ncol)]               # переводы ячеек столбца — сколько строк прибавит донору
         self._room = {}
         for row in rows:
             # строка с объединёнными ячейками по сетке линий (docx_layout: span) — её ячейки в один столбец тоже: шапка
@@ -1607,11 +1608,30 @@ class Builder:
                     bold = any(r.get("b") for r in x["runs"] if r.get("t", "").strip())
                     w = max((_text_w(wd, size, True) for wd in ru.split()), default=0) * (1.1 if bold else 1.0)
                     need[ci] = max(need[ci], w + pad)
+                    texts[ci].append((ru, 1.1 if bold else 1.0))
+
+        def lines(k, width):
+            """Строк у ячеек столбца k при ширине width (перенос по словам)."""
+            n = 0
+            for t, kb in texts[k]:
+                cur, rows = 0.0, 1
+                for wd in t.split():
+                    ww = _text_w(wd + " ", size, True) * kb
+                    if cur and cur + ww > width - pad + 5:
+                        rows, cur = rows + 1, 0.0
+                    cur += ww
+                n += rows
+            return n
         for c in range(ncol):
             short = need[c] - widths[c]
             if short <= 0:
                 continue
-            d = max((k for k in range(ncol) if k != c), key=lambda k: widths[k] - need[k], default=None)
+            # донор — столбец, у ячеек которого прибавится меньше всего строк; при равенстве — с наибольшим запасом.
+            # По одному запасу «0,0042 (5)» и «Bq/m2» столбцов замеров HAKSER уходили в две строки, строки таблицы —
+            # вдвое выше, альбомный лист переливался на следующий (23.10)
+            spare = [k for k in range(ncol) if k != c and widths[k] - need[k] > 0]
+            extra = lambda k: lines(k, widths[k] - min(short, widths[k] - need[k])) - lines(k, widths[k])
+            d = min(spare, key=lambda k: (extra(k), -(widths[k] - need[k])), default=None)
             give = min(short, widths[d] - need[d]) if d is not None else 0
             if give > 0:
                 widths[c] += give
