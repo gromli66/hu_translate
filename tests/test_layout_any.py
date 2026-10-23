@@ -337,3 +337,15 @@ def test_foot_top_text_layer_ignores_trailing_space():
     space = {"text": " ", "top": 443.0, "bottom": 455.0, "x0": 598.0, "x1": 601.0}
     assert D._foot_top([space], [], 595.0, 470.0) == 595.0
     assert D._foot_top([space], [], 595.0, None) < 450
+
+
+def test_fit_words_picks_donor_with_fewest_new_lines():
+    """Ширину длинному слову отдаёт столбец, у которого меньше прибавится строк, а не самый просторный по слову:
+    «0,0042 (5)» остаётся в строку, отдаёт столбец с одиночными словами."""
+    cell = lambda t: {"blocks": [p(t)], "th": False}
+    rows = [[cell("гамма-спектрометрия"), cell("0,0042 (5)"), cell("Да")], [cell("x"), cell("< 0,46"), cell("Нет")]]
+    mem = B.Memory([(t, t) for t in ("гамма-спектрометрия", "0,0042 (5)", "Да", "x", "< 0,46", "Нет")])
+    bld = B.Builder(mem, lambda img: png(), PROFILE)
+    widths = [60.0, 70.0, 64.0]
+    bld._fit_words(rows, widths, 10)
+    assert widths[1] == 70.0 and widths[2] < 64.0 and abs(sum(widths) - 194.0) < 0.01
