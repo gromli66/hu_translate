@@ -482,14 +482,14 @@ def build_struct_docx(src, out, segs, res, rules=None, progress=None, mode="stru
             ov.close()                      # PDF из DOCX ляжет на его место (Windows держит открытый файл)
     fit = None
     want = getattr(bld, "fit_want", None) or {}
-    if 1 in want.values():
+    if want:
         # альбомный лист оригинала — своим разделом; раздел, перелившийся на второй лист, — мельче кеглем (docx_fit;
         # HAKSER: таблицы во весь альбомный лист уходили 2–3 строками на следующий). printer(docx, pdf) — печать
         # LibreOffice; без неё — как есть
         import subprocess
         import docx_fit
         try:
-            fit = docx_fit.fit(None, out, printer or lo_convert, want=want)
+            fit = docx_fit.fit(None, out, printer or lo_convert, want=want, any_span=True)
         except (OSError, RuntimeError, subprocess.SubprocessError) as e:
             fit = {"skipped": f"{type(e).__name__}: {e}"[:200]}
     tick(0.8)

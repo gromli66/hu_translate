@@ -184,25 +184,32 @@ def _shrink(src, dst, ks):
                         for el in sec:
                             for p in el.iter(_q("p")):
                                 _shrink_p(p, ks[i], sizes, default)
+                            # и заданная высота строк таблиц (по оригиналу, «не меньше»): иначе кегль мельчал, а строки
+                            # оставались прежними, и таблица альбомного листа не ужималась (HAKSER: 3 из 14, 23.10)
+                            for h in el.iter(_q("trHeight")):
+                                v = h.get(_q("val")) or ""
+                                if v.isdigit():
+                                    h.set(_q("val"), str(round(int(v) * ks[i])))
                 data = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
             zout.writestr(item, data)
 
 
-def fit(orig, ru, printer, work=None, want=None):
+def fit(orig, ru, printer, work=None, want=None, any_span=False):
     """Подогнать ru (DOCX перевода «на месте», меняется на месте) под листы orig. printer(docx, pdf) — печать
     LibreOffice. want — листы разделов оригинала, если они известны без печати ({раздел: листов}: DOCX из PDF, где
-    альбомный лист — своим разделом); тогда orig не нужен. → {"sections", "over" — разделов длиннее оригинала,
-    "fixed", "left"}."""
+    альбомный лист — своим разделом); тогда orig не нужен. any_span — ужимать и раздел в несколько листов оригинала,
+    вышедший длиннее (у want из PDF листы раздела известны точно: таблица через два альбомных листа — один раздел).
+    → {"sections", "over" — разделов длиннее оригинала, "fixed", "left"}."""
     tmp = Path(work or tempfile.mkdtemp(prefix="docx_fit_"))
     tmp.mkdir(parents=True, exist_ok=True)
     try:
-        return _fit(orig, ru, printer, tmp, want)
+        return _fit(orig, ru, printer, tmp, want, any_span)
     finally:
         if work is None:
             shutil.rmtree(tmp, ignore_errors=True)
 
 
-def _fit(orig, ru, printer, tmp, want=None):
+def _fit(orig, ru, printer, tmp, want=None, any_span=False):
     n = None
     if want is None:
         n = _marked(orig, tmp / "orig_m.docx")
@@ -217,7 +224,7 @@ def _fit(orig, ru, printer, tmp, want=None):
         got = _layout(tmp / f"ru_m{step}.pdf")
         # только раздел, что в оригинале был одним листом («раздел = лист»): текст, текущий через листы, при переводе
         # и должен стать длиннее — у документа одним разделом мельчал кегль всего документа (ред-тим 20.10)
-        over = {i: v for i, v in got.items() if want.get(i) == 1 and v[1] > 1}
+        over = {i: v for i, v in got.items() if (want.get(i) == 1 or any_span and want.get(i)) and v[1] > want[i]}
         if step == 0:
             info["over"] = len(over)
         if not over or step == 2:
