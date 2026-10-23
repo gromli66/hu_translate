@@ -328,3 +328,12 @@ def test_each_landscape_page_own_section_with_fit_want(tmp_path):
     secs = Document(str(out)).sections
     assert [s.page_width > s.page_height for s in secs] == [False, True, True, True, False]
     assert bld.fit_want == {1: 1, 2: 2, 3: 1}
+
+
+def test_foot_top_text_layer_ignores_trailing_space():
+    """Текстовый слой: пробел в конце строки таблицы выше низа тела — не подвал (таблица решений OAH: нижнее поле
+    165 pt); у размеченного PDF (cbot None) — как было."""
+    import docx_struct as D
+    space = {"text": " ", "top": 443.0, "bottom": 455.0, "x0": 598.0, "x1": 601.0}
+    assert D._foot_top([space], [], 595.0, 470.0) == 595.0
+    assert D._foot_top([space], [], 595.0, None) < 450
