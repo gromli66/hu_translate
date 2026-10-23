@@ -2641,7 +2641,11 @@ def _foot_top(arts, rects, H, cbot=None):
             border = [float(r["top"]) for r in rects if float(r["bottom"]) - float(r["top"]) < 3
                       and max(cbot, H * 0.6) < float(r["top"]) <= top]
             return round(min(border) if border else top) - 1
-    rows = sorted({round(float(c["top"])) for c in arts if float(c["top"]) > H * 0.7}, reverse=True)
+    # текстовый слой без знаков ниже тела — и здесь пробел не краска: пробел в конце строки таблицы (443 pt при низе
+    # тела 470) становился «подвалом», нижнее поле — 165 pt вместо ~100, на листе 4–5 строк таблицы вместо 6
+    # (таблица решений OAH: 154 листа → 211, 23.10)
+    rows = sorted({round(float(c["top"])) for c in arts if float(c["top"]) > H * 0.7
+                   and (cbot is None or c["text"].strip())}, reverse=True)
     rr = [r for r in rects if float(r["top"]) > H * 0.7]
     if not rows:                                # подвал из одних линий (рамка без текста)
         ys = sorted({round(float(r["top"])) for r in rr}, reverse=True)
