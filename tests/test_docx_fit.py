@@ -94,3 +94,36 @@ def test_fit_leaves_sections_flowing_over_pages(tmp_path):
     assert info["over"] == 1 and info["fixed"] == 1                         # только раздел 1 (лист в оригинале)
     p0, p1 = [p for p in _body(ru).iter(W + "p") if "".join(p.itertext()).strip()][:2]
     assert p0.find(f".//{W}sz") is None and p1.find(f".//{W}sz") is not None
+
+
+def test_fit_any_span_shrinks_known_multi_page_section(tmp_path):
+    """Листы разделов известны (want, DOCX из PDF): раздел в два листа оригинала, вышедший на три, ужимается при
+    any_span; без него — как раньше, только разделы в один лист."""
+    ru = tmp_path / "r.docx"
+    _doc(ru, ["А длинный", "Б"])
+
+    def printer(docx, pdf):
+        pdfd = fitz.open()
+        for i, sec in enumerate(F._sections(_body(docx))):
+            szs = [int(e.get(W + "val")) for e in sec[0].iter(W + "sz") if e.get(W + "val") != "2"]
+            for k in range((3 if not (szs and min(szs) < 22) else 2) if i == 0 else 1):
+                pg = pdfd.new_page()
+                pg.insert_text((72, 120), (F.MARK.format(i) + " ") if k == 0 else "folytatás", fontsize=10)
+                pg.insert_text((72, 700), "szöveg", fontsize=10)
+        pdfd.save(str(pdf))
+    assert F.fit(None, ru, printer, tmp_path / "w1", want={0: 2, 1: 1})["over"] == 0
+    info = F.fit(None, ru, printer, tmp_path / "w2", want={0: 2, 1: 1}, any_span=True)
+    assert info["over"] == 1 and info["fixed"] == 1
+
+
+def test_shrink_scales_table_row_heights(tmp_path):
+    """Ужатый раздел — и заданная высота строк таблиц (иначе строки «не меньше оригинала» не ужимаются)."""
+    src, dst = tmp_path / "a.docx", tmp_path / "s.docx"
+    d = Document()
+    t = d.add_table(rows=1, cols=1)
+    t.rows[0].height = Pt(20)
+    t.cell(0, 0).text = "érték"
+    d.save(str(src))
+    F._shrink(src, dst, {0: 0.8})
+    h = next(_body(dst).iter(W + "trHeight"))
+    assert int(h.get(W + "val")) == 320                                       # 400 twips × 0,8
