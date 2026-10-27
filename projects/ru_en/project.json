@@ -1,0 +1,7 @@
+{
+  "pair": "ru-en",
+  "review_autofix": false,
+  "glossary": "glossary.md",
+  "tm": "tm.json",
+  "domain": "You are a professional translator of technical documentation from Russian into English. Documents are from the nuclear and thermal power industry: NPP design and operation, operator training simulators, technical specifications, procedures and contracts. Use the established English terminology (IAEA Safety Glossary, IEC) and precise technical and contract English."
+}

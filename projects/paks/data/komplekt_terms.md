@@ -239,7 +239,7 @@
 | alvíz / MJO alvíz / alvízszint / alvízszintje | уровень воды за решетками (на всасе насосов) | риск высокий; проверено Claude; контекст: MJO alvízszint = уровень в аванкамере минус перепад на сороудерживающих решетках; «нижний бьеф» неверен |
 | alá csökkent / 50% alá kell csökkenteni / 46,3% alá kell csökkenteni / 70 bar alá kell csökkenteni | снизить ниже |  |
 | aláhűtött kiömlési szakasz / aláhűtött kiömlési szakaszt | стадия истечения недогретого теплоносителя | строгий; риск высокий; alá- + hűtött = недогретый (subcooled), не «переохлаждённый снизу» |
-| alállomás / alállomáson / alállomásról / 400 kV-os alállomásról | подстанция (ОРУ) | проверено Claude; контекст: отключение от подстанции (ОРУ) 400 кВ, подстанция 400/120 кВ |
+| alállomás / alállomáson / alállomásról / 400 kV-os alállomásról | подстанция | проверено Claude; контекст: отключение от подстанции (ОРУ) 400 кВ, подстанция 400/120 кВ; С5: ОРУ — только для открытого распределительного устройства |
 | amennyiben másként nem rendelkezik / másként nem rendelkezik | если не предусмотрено иное | риск высокий |
 | ammónia / ammónia koncentrációjának | аммиак |  |
 | AMV / AMV-be / AMV-ban / AMV-ben | нижнее механическое конечное положение (на упоре) | риск высокий; проверено Claude; AMV = alsó mechanikus véghelyzet (текст); кассеты СУЗ на нижних упорах; FAT: végállás → конечное положение |
@@ -325,7 +325,7 @@
 | azonnali leállítást igénylő rendellenesség | неисправность, требующая немедленного останова |  |
 | azonos vagy szigorúbb előírás / csak azonos, vagy szigorúbb / AZONOS, VAGY SZIGORÚBB előírásokat | идентичные или более строгие требования |  |
 | bajuszos bekezdés / első bajuszos bekezdés / második bajuszos bekezdés | абзац, отмеченный тире | риск высокий; букв. «абзац с усами»; «первый абзац с тире» |
-| baleset / Balesettel | несчастный случай | риск высокий; проверено Claude; рядом с személyi sérülés/mentés — несчастный случай; в ядерном смысле (BESZ, baleseti rendszer) — авария (тяжелая) |
+| baleset / Balesettel | несчастный случай | риск высокий; проверено Claude; рядом с személyi sérülés/mentés — несчастный случай; в ядерном смысле (BESZ, baleseti rendszer) — авария (тяжелая); Р23: в ядерном контексте (nukleáris, sugár-, radiológiai baleset) — авария |
 | baleseti / baleseti rendszerek / baleseti rendszerekre | для тяжелых аварий | риск высокий; проверено Claude; baleseti rendszer — системы для тяжелых аварий; в названиях (baleseti jódszűrő) — «аварийный»; üzemzavar — проектная |
 | baleseti esemény / baleseti eseményekénél | аварийное событие (авария) | риск высокий; проверено Claude; контекст ÜFK II: изменение температуры в кольцевой камере корпуса при авариях; не обязательно запроектная |
 | baleseti jódszűrt szellőzőrendszer / baleseti jódszűrt szellőzés | аварийная вентсистема с йодными фильтрами |  |
@@ -348,7 +348,7 @@
 | beavatkozás nélkül megszűnő | устраняющийся без вмешательства | строгий; риск высокий; nélkül |
 | beavatkozás sor / beavatkozások sorozatának | последовательность действий |  |
 | beavatkozási sor / a beavatkozási sor végrehajtása | последовательность действий |  |
-| beavatkozási szint / beavatkozási szintet | уровень действия | риск высокий; проверено Claude; CONVENTIONS/komplekt: beavatkozás → действие (не «вмешательство»); в паре с figyelmeztetési szint — предупредительный |
+| beavatkozási szint / beavatkozási szintet | уровень действия | риск высокий; проверено Claude; CONVENTIONS/komplekt: beavatkozás → действие (не «вмешательство»); в паре с figyelmeztetési szint — предупредительный; Р1: в документах по радиационной защите (облучение населения, НРБ) — «уровень вмешательства» |
 | beavatkozó berendezés | исполнительное устройство | риск высокий; проверено Claude; контекст: неисправное исполнительное устройство регулятора уровня; ср. végrehajtó szerv → исполнительный орган |
 | beavatkozó végrehajtó szervek / beavatkozó végrehajtó szervekig | исполнительные органы |  |
 | beazonosít / beazonosítása / beazonosítani / Be kell azonosítani | идентифицировать (выявить) |  |
@@ -1440,12 +1440,12 @@
 | főgőzvezetéki izoláló szelep | отсечной клапан паропровода острого пара (БЗОК) | риск высокий; проверено Claude; контекст ÜFK II: исходное событие «непреднамеренное закрытие»; ГПЗ = főgőztolózár, не путать |
 | főkeringtető szivattyú / FKSZ-ek számát | главный циркуляционный насос (ГЦН) | варианты: ГЦН; принято соглашением |
 | főkondenz / üzemi főkondenz útvonalat | основной конденсат |  |
-| főkondenz szivattyú / főkondenz szivattyút | конденсатный насос (КЭН) | риск высокий; варианты: конденсатный насос основного конденсата (КЭН); főkondenz → основной конденсат |
+| főkondenz szivattyú / főkondenz szivattyút | конденсатный электронасос (КЭН) | риск высокий; варианты: конденсатный насос основного конденсата (КЭН); főkondenz → основной конденсат; С7 |
 | főkondenz útvonal / főkondenz útvonalat / üzemi főkondenz útvonalat | линия основного конденсата | варианты: тракт основного конденсата |
 | főkondenzátum | основной конденсат |  |
 | főkondenzátum feladás / főkondenzátum feladásra | подача основного конденсата |  |
 | főkondenzátum rendszer / A főkondenzátum rendszer / főkondenzátum rendszerről | система основного конденсата |  |
-| főkondenzátum szivattyú / KSZ / főkondenz. szivattyú / főókondenzátum szivattyú | конденсатный насос (КЭН) | риск высокий; проверено Claude; знание: турбоустановка ВВЭР-440; KSZ — сокращение, főókondenzátum — опечатка |
+| főkondenzátum szivattyú / KSZ / főkondenz. szivattyú / főókondenzátum szivattyú | конденсатный электронасос (КЭН) | риск высокий; проверено Claude; знание: турбоустановка ВВЭР-440; KSZ — сокращение, főókondenzátum — опечатка; С7 |
 | főkondenzátum vezeték | трубопровод основного конденсата |  |
 | főkonstruktőr | главный конструктор |  |
 | főolajszivattyú / Főolaj szivattyú | главный масляный насос (ГМН) |  |
@@ -4114,7 +4114,7 @@
 | rendben működik / rendben üzemel / rendben működnek | работает нормально |  |
 | rendben üzemel / rendben üzemelnek | работает нормально |  |
 | rendelkezésre áll / áll rendelkezésre / rendelkezésre állása / rendelkezésre állását | быть в наличии (доступным) | риск высокий; варианты: быть в готовности; иметься; отводиться (о времени), имеется (в наличии / готов); о системе — «находиться в готовности», о времени — «отводится» |
-| rendelkezésre állás / rendelkezésre áll / rendelkezésre álló / rendelkezésre állása | готовность (наличие) | риск высокий; варианты: готовность, наличие (готовность); не «наличие» |
+| rendelkezésre állás / rendelkezésre áll / rendelkezésre álló / rendelkezésre állása | готовность (наличие) | риск высокий; варианты: готовность, наличие (готовность); не «наличие»; Р13: о блоке в процентах — коэффициент готовности |
 | rendelkezésre álló idő / rendelkezésre álló időt | располагаемое время |  |
 | rendelkezésre álló mérés / rendelkezésre álló mérések | имеющиеся измерения |  |
 | rendellenes / rendellenesen | аномальный | строгий; риск высокий; rend + ellenes («против порядка»); ugrásszerű → скачкообразный |
@@ -4177,7 +4177,7 @@
 | ROP napló / A ROP naplóban | оперативный журнал ВИУР | риск высокий; проверено Claude; глоссарий заказчика: ROP → ВИУР |
 | rovat / a rovatnak / A táblázat rovatait | графа |  |
 | rozsdamentes acél / rozsdamentes acélok | нержавеющая сталь |  |
-| RRE | система, элемент системы |  |
+| RRE | системы и элементы | Р17: НП-001; руководство OAH 1.28 — SSCs |
 | RRL / RRL* / RRL1-RRL2 | RRL | проверено Claude; расшифровка не установлена; функции УСБ пуска аварийных питательных насосов по уровню ПГ |
 | RTK / RTK-val / RTK által | RTK | риск высокий; проверено Claude; расшифровка не установлена; функция УСБ: ограничение мощности (ÜV302) при отключении ГЦН, расчет тепл. мощности |
 | RTK funkció / Az RVR RTK funkciójának üzemképessége | функция RTK | риск высокий; проверено Claude; расшифровка RTK не установлена; ограничение мощности реактора в составе УСБ |
@@ -5332,7 +5332,7 @@
 | vonatkozó ÜFK pont / Vonatkozó ÚFK pont / vonatkozó ÜFK pontok | соответствующий пункт ПУБЭ |  |
 | 1.VT / 4. VT | СВО | риск высокий; проверено Claude; N. VT / N. sz. VT = СВО-N (víztisztító, номер сохранять); VT в «TS/VT szintű próba» и FAT — ЭВМ VT УСБ |
 | VTO / (VTO) / VTO szolgálatvezetőjével | VTO | риск высокий; проверено Claude; расшифровка не установлена; по контексту — подразделение СВО/дезактивации; латиницей |
-| VVP | ЗПУ (защищенный пункт управления) | риск высокий; = védett vezetési pont |
+| VVP | защищенный пункт управления (VVP) | риск высокий; = védett vezetési pont; С3: ЗПУ в отраслевом списке — зарядно-подзарядное устройство |
 | vákuum / vákumot / vákuumot / vákuum van | вакуум | варианты: вакуум (в конденсаторе) |
 | vákuum alá helyez / vákuum alá kell helyezni | вакуумировать (создать разрежение) |  |
 | vákuum leromlik / romlik / leromlott / tovább romlik | вакуум ухудшается (ухудшился) | риск высокий; leromlik — ухудшение, не срыв; p > 230 mbar — защита |

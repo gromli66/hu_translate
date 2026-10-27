@@ -959,3 +959,170 @@
 | pld. (példány) | экз. |  |
 | s / sec / sec. / secundum | с | «20.0s» в e-TU → «20,0 с» |
 | t/h / t/ó | т/ч |  |
+
+## Дополнения v4: корпус HU и отраслевые словари (22.10.2026)
+
+Только бесспорное: у каждой пары — источник (словарь отраслевых терминов EN↔RU и список сокращений Максима, Глоссарий МАГАТЭ 2018 RU, официальный русский перевод Paks II, официальные пары HU↔EN OAH/CNS-10). Спорное — `work/corpus_hu/DECISIONS_glossary.md`, в v4 не вошло.
+
+| Венгерский | Русский | Комментарий |
+|---|---|---|
+| súlyos baleset / súlyos baleseti helyzet | тяжелая авария | v4: Paks II RU + словарь Максима (IAEA: severe accident); риск высокий: подсказка v3 «baleset → несчастный случай» |
+| alfa-sugárzás | альфа-излучение | v4: словарь Максима (ГОСТ Р МЭК 60050-881); EN — OAH Enciklopédia |
+| béta-sugárzás | бета-излучение | v4: словарь Максима (ГОСТ Р МЭК 60050-881); EN — OAH Enciklopédia |
+| béta-bomlás | бета-распад | v4: словарь Максима (Koelzer); EN — OAH Enciklopédia |
+| radioaktív bomlás | радиоактивный распад | v4: словарь Максима (ГОСТ); EN — OAH Enciklopédia |
+| foglalkozási sugárterhelés | профессиональное облучение | v4: МАГАТЭ 2018 RU + словарь Максима (IAEA); EN — OAH Enciklopédia; подсказка v3 «sugárterhelés → дозовая нагрузка» здесь неточна |
+| belső sugárterhelés | внутреннее облучение | v4: словарь Максима (IAEA); риск высокий: подсказка v3 «belső → внутренняя позиция» |
+| külső sugárterhelés | внешнее облучение | v4: словарь Максима (IAEA) |
+| veszélyhelyzeti sugárterhelés / baleseti sugárterhelés | аварийное облучение | v4: словарь Максима (IAEA: emergency exposure) |
+| dóziskorlát | предел дозы | v4: словарь Максима (IAEA: dose limit) |
+| dózismegszorítás | граничная доза | v4: словарь Максима (IAEA: dose constraint) |
+| effektív dózis | эффективная доза | v4: словарь Максима (IAEA) |
+| egyenérték dózis | эквивалентная доза | v4: словарь Максима (Koelzer, IAEA) |
+| elnyelt dózis | поглощенная доза | v4: словарь Максима (ГОСТ, IAEA) |
+| elnyelt dózisteljesítmény | мощность поглощенной дозы | v4: словарь Максима (ГОСТ) |
+| lekötött effektív dózis | ожидаемая эффективная доза | v4: словарь Максима (committed dose → ожидаемая доза); риск высокий: подсказка v3 «leköt → отсоединить» |
+| lekötött egyenérték dózis | ожидаемая эквивалентная доза | v4: словарь Максима (committed dose → ожидаемая доза); риск высокий: «leköt → отсоединить» |
+| lekötött elnyelt dózis | ожидаемая поглощенная доза | v4: словарь Максима (committed dose → ожидаемая доза); риск высокий: «leköt → отсоединить» |
+| feljegyzési szint | уровень регистрации | v4: словарь Максима (IAEA: recording level) |
+| vizsgálási szint | уровень расследования | v4: словарь Максима (IAEA: investigation level) |
+| lakosság vonatkoztatási csoportja | критическая группа | v4: словарь Максима (IAEA: critical group) |
+| személyi dózisegyenérték | эквивалент индивидуальной дозы Hp(d) | v4: словарь Максима (IAEA: personal dose equivalent) |
+| sztochasztikus sugárhatás / sztochasztikus hatás | стохастический эффект | v4: словарь Максима (ГОСТ) |
+| determinisztikus hatás | детерминированный эффект | v4: словарь Максима (IAEA) |
+| nyitott sugárforrás | открытый источник излучения | v4: словарь Максима (IAEA: unsealed source) |
+| zárt sugárforrás | закрытый источник излучения | v4: словарь Максима (IAEA: sealed source) |
+| sugárforrás | источник излучения | v4: МАГАТЭ 2018 RU; EN — OAH Enciklopédia |
+| radionuklid-felvétel | поступление радионуклидов | v4: словарь Максима (IAEA: intake) |
+| inkorporáció | инкорпорация | v4: словарь Максима (Koelzer) |
+| sugárvédelem / radiológiai védelem | радиационная защита | v4: МАГАТЭ 2018 RU; EN — OAH Enciklopédia |
+| sugárvédelem optimálása | оптимизация защиты | v4: словарь Максима (IAEA) |
+| ALARA-elv | принцип ALARA | v4: словарь Максима (IAEA) |
+| radioaktív szennyezés / sugárfertőzés | радиоактивное загрязнение | v4: словарь Максима (Koelzer); EN — OAH Enciklopédia |
+| gyengített urán / szegényített urán | обедненный уран | v4: МАГАТЭ 2018 RU + словарь Максима |
+| természetes urán | природный уран | v4: МАГАТЭ 2018 RU |
+| nehézvíz / nehéz víz | тяжелая вода | v4: словарь Максима (IAEA) |
+| lassú neutron | медленный нейтрон | v4: словарь Максима (Koelzer) |
+| gyors neutron | быстрый нейтрон | v4: словарь Максима (Koelzer) |
+| hasadóanyag | делящийся материал | v4: МАГАТЭ 2018 RU + словарь Максима (IAEA: fissile material) |
+| maghasadás | деление ядер | v4: словарь Максима (ГОСТ) |
+| magfúzió | синтез ядер | v4: словарь Максима (ГОСТ) |
+| nukleáris láncreakció | цепная ядерная реакция | v4: словарь Максима (Koelzer: chain reaction → цепная реакция) |
+| nukleáris üzemanyag | ядерное топливо | v4: МАГАТЭ 2018 RU |
+| nuklid | нуклид | v4: словарь Максима (IAEA) |
+| radionuklid | радионуклид | v4: словарь Максима (Koelzer) |
+| izotóp | изотоп | v4: словарь Максима (IAEA) |
+| radioaktivitás | радиоактивность | v4: МАГАТЭ 2018 RU |
+| természetes radioaktivitás | естественная радиоактивность | v4: словарь Максима (ГОСТ) |
+| radioaktív anyag | радиоактивное вещество | v4: МАГАТЭ 2018 RU |
+| röntgensugárzás / röntgen-sugárzás | рентгеновское излучение | v4: словарь Максима (Koelzer) |
+| sugárbetegség | лучевая болезнь | v4: словарь Максима (ГОСТ) |
+| jódprofilaxis | йодная профилактика | v4: словарь Максима (IAEA: iodine prophylaxis; в словаре — «иодная») |
+| egésztest-számláló | счетчик излучения всего тела | v4: словарь Максима (ГОСТ: whole body counter) |
+| fűtőelemköteg / fűtőelem-köteg | тепловыделяющая сборка (ТВС) | v4: словарь Максима (IAEA: fuel assembly); «kazetta → кассета (ТВС)» в v3 не трогается |
+| forralóvizes reaktor | кипящий реактор | v4: словарь Максима (Koelzer: BWR); EN — OAH Enciklopédia |
+| nyomottvizes reaktor | водо-водяной реактор (реактор с водой под давлением) | v4: словарь Максима (PWR) + Paks II RU «водо-водяной с водой под давлением» |
+| szilárdítás | отверждение (отходов) | v4: словарь Максима (Koelzer: solidification) |
+| reaktor megszaladás / reaktormegszaladás | разгон реактора | v4: словарь Максима (Koelzer: excursion); EN — OAH Enciklopédia «reactor excursion» |
+| nukleáris biztonságvédelem / nukleáris védettség | физическая ядерная безопасность | v4: словарь Максима (IAEA: (nuclear) security) |
+| Nemzetközi Nukleáris és Radiológiai Eseményskála / Nemzetközi Nukleáris Eseményskála / INES | Международная шкала ядерных и радиологических событий (ИНЕС) | v4: МАГАТЭ 2018 RU |
+| öregedéskezelés | управление старением | v4: МАГАТЭ 2018 RU + словарь Максима (ageing management) |
+| romlási folyamat | процесс деградации | v4: словарь Максима (ageing degradation → деградация вследствие старения); EN — руководство OAH 1.28 «degradation process»; подсказка v3 «romló tendencia → тенденция к ухудшению» здесь не подходит |
+| mélységben tagolt védelem | глубокоэшелонированная защита | v4: МАГАТЭ 2018 RU + словарь Максима; в прогоне n24 вышло «многоуровневая защита» |
+| létesítési engedély / létesítésiengedély-kérelem | лицензия на сооружение | v4: Paks II RU (заглавие брошюры) + v3 «üzemeltetési engedély → лицензия на эксплуатацию»; в прогоне n24 вышло «разрешение на строительство» |
+| létesítési engedélyezés | лицензирование сооружения | v4: Paks II RU (заглавие брошюры) |
+| üzembe helyezési engedély | лицензия на ввод в эксплуатацию | v4: Paks II RU; в одном ряду с v3 «üzemeltetési engedély → лицензия на эксплуатацию» |
+| Előzetes Biztonsági Jelentés / EBJ | предварительный отчет по обоснованию безопасности (ПООБ) | v4: Paks II RU; в паре с v3 «Végleges Biztonsági Jelentés → окончательный ООБ» |
+| olvadékcsapda | ловушка расплава | v4: Paks II RU |
+| zónaolvadék | расплав активной зоны | v4: Paks II RU + словарь Максима (core meltdown) |
+| olvadótöltet | жертвенный материал | v4: Paks II RU |
+| kettősfalú konténment | двойная защитная оболочка | v4: Paks II RU; в прогоне n24 вышло «двухстенная» |
+| belső konténment | внутренняя защитная оболочка | v4: Paks II RU («первичный контейнмент») |
+| külső konténment | наружная защитная оболочка | v4: Paks II RU («вторичный контейнмент») |
+| konténment passzív hőelvonó rendszere | система пассивного отвода тепла из-под защитной оболочки | v4: Paks II RU («система пассивного отвода тепла от контейнмента») |
+| passzív hőelvezető rendszer / passzív hőelvonó rendszer | система пассивного отвода тепла | v4: Paks II RU |
+| passzív autokatalitikus hidrogén-rekombinátor | пассивный автокаталитический рекомбинатор водорода | v4: Paks II RU |
+| maradványhő | остаточное тепловыделение | v4: Paks II RU («остаточное тепло»); форма — как v3 «remanens hő → остаточное тепловыделение» |
+| villamosenergia-ellátás teljes kiesése | полное обесточивание | v4: Paks II RU |
+| tápvízellátás megszűnése | потеря подачи питательной воды | v4: Paks II RU |
+| alaplemez | фундаментная плита | v4: Paks II RU |
+| felvonulási épületek / felvonulási terület | здания (территория) строительно-монтажной базы | v4: Paks II RU; риск высокий: в прогоне n24 «парадные здания» (felvonulás — парад) |
+| primerköri hurok | петля первого контура | v4: Paks II RU |
+| turbinaépület | машинный зал | v4: Paks II RU («машзал») |
+| generálorganizációs terv | план организации строительства | v4: Paks II RU |
+| közmeghallgatás | общественные слушания | v4: Paks II RU |
+| szakhatóság | специализированный компетентный орган | v4: Paks II RU |
+| Atomtörvény | Закон об атомной энергии | v4: Paks II RU; в прогоне n24 то «Атомный закон», то «Закон об атомной энергии» |
+| Korm. rendelet / kormányrendelet | постановление правительства | v4: Paks II RU («Постановление правительства № 118/2011»); в прогоне n24 «Правительственный декрет» |
+| Paks II. / Paks II. Zrt. | Пакш II / АО «Пакш II» | v4: Paks II RU; в прогоне n24 «Пакс II», «пакские блоки» |
+| Nukleárisbaleset-elhárítási Intézkedési Terv | план мероприятий по ликвидации ядерной аварии | v4: Paks II RU |
+| független műszaki szakértői felülvizsgálat | независимая техническая экспертиза | v4: Paks II RU |
+| redundancia elve | принцип резервирования | v4: Paks II RU + v3 «redundancia → резервирование» |
+| párhuzamos alrendszer | канал (системы безопасности) | v4: Paks II RU + v3 «alrendszer (Y, X, W) → канал системы безопасности» |
+| biztonsági övezet | зона безопасности | v4: Paks II RU |
+| Célzott Biztonsági Felülvizsgálat / CBF | целевая переоценка безопасности (стресс-тест) | v4: как v3 «Célzott Biztonsági Felülvizsgálati Jelentés»; EN — доклад CNS-10 «targeted safety reassessment» |
+| SBKU / Súlyosbaleset-Kezelési Útmutató | руководство по управлению тяжелыми авариями (РУТА) | v4: словарь Максима (severe accident management → управление тяжелой аварией); EN — CNS-10 «SAMGs» |
+| TÜH / További Üzemidő-hosszabbítás | повторное продление срока эксплуатации | v4: по v3 «üzemidő-hosszabbítás → продление срока эксплуатации»; EN — CNS-10 «subsequent service life extension» |
+| tervezett üzemidőn túli üzemeltetés | эксплуатация сверх проектного срока службы | v4: EN — руководства OAH 1.28/4.14 «operation beyond design lifetime»; по v3 «üzemidő-hosszabbítás» |
+| ABOS / biztonsági osztályba sorolás | классификация систем и элементов по влиянию на безопасность | v4: EN — руководство 4.14 «safety classification of SSCs»; русская норма (НП-001) |
+| FBOS / földrengés biztonsági osztályba sorolás | категория сейсмостойкости | v4: EN — руководство 4.14 «seismic safety classification»; русская норма (НП-031) |
+| CUF / halmozódó károsodási tényező | накопленная усталостная повреждаемость (CUF) | v4: EN — руководство 4.14 «cumulative usage factor»; русская норма (ПНАЭ Г-7-002) |
+| PTS / nyomás alatti hősokk | термоудар под давлением (PTS) | v4: EN — руководство 4.14 «pressurized thermal shock» |
+| KÜGY / készenléti ügyeletes | дежурный инспектор по ядерной безопасности | v4: EN — руководство OAH 1.25 «nuclear safety officer on duty (NSOD)» |
+| MÜSZ sértés | нарушение технологического регламента | v4: EN — руководство 1.25 «violation of the TS»; по v3 «MÜSZ → технологический регламент эксплуатации» |
+| MÜSZ korlátozás hatálya alá kerülés | работа с ограничением по технологическому регламенту | v4: EN — руководство 1.25 «operation under the effect of the TS»; по v3 |
+| nem tervezett üzemképtelenség | внеплановая неработоспособность | v4: EN — руководство 1.25 «unplanned inoperability»; по v3 «üzemképtelen → неработоспособный» |
+| tervezett üzemképtelenség | плановая неработоспособность | v4: EN — руководство 1.25 «planned inoperability»; по v3 |
+| WANO | ВАО АЭС | v4: CNS-10; русская практика |
+| Nukleáris Biztonsági Egyezmény | Конвенция о ядерной безопасности | v4: CNS-10 «Convention on Nuclear Safety»; официальное русское название (МАГАТЭ) |
+| SMR / kis moduláris reaktor | малый модульный реактор | v4: CNS-10 «small modular reactor» |
+| elkerülhető dózis | предотвращаемая доза | v4: МАГАТЭ 2018 RU + словарь Максима (avertable dose; «averted dose» — предотвращённая) |
+| genetikus sugárzási hatás / genetikai sugárzási hatás | наследственный эффект излучения | v4: словарь Максима + МАГАТЭ (hereditary effect); EN — OAH Enciklopédia «genetic radiation effects» |
+| magenergia | ядерная энергия | v4: словарь Максима (Koelzer: nuclear energy); EN — OAH Enciklopédia |
+| szabadfelszíni gyorsulás / PGA | пиковое ускорение грунта (PGA) | v4: МАГАТЭ 2018 RU (peak ground acceleration); EN — CNS-10 |
+| külső villamos betáplálástól való függetlenség | независимость от внешнего электроснабжения | v4: Paks II RU |
+| hidrogénkezelés | контроль водорода | v4: Paks II RU |
+| vonatkoztatási szint | референтный уровень | v4: МАГАТЭ 2018 RU (reference level); добавлено после проверки v3↔v4 (Р24) |
+
+## Решения 27.10.2026: спорные термины и пакет официальных сокращений
+
+проверено Claude 27.10 по НРБ-99/2009, НП-001 и практике АЭС РФ (рекомендации DECISIONS_glossary.md).
+
+| Венгерский | Русский | Комментарий |
+|---|---|---|
+| sugárzási súlytényező | взвешивающий коэффициент излучения | Р4: НРБ-99/2009 |
+| szöveti súlytényező / testszöveti súlytényező | взвешивающий коэффициент для тканей и органов | Р4: НРБ-99/2009 |
+| egészségkárosodás | ущерб здоровью | Р5: detriment |
+| telephelyengedély / telephely engedély | лицензия на размещение | Р6: ряд «размещение — сооружение — эксплуатация» |
+| környezetvédelmi engedély | экологическое разрешение | Р7: разрешение экологического органа, не ядерная лицензия |
+| inherens biztonság | внутренне присущая безопасность | Р9: inherent safety |
+| IBF / Időszakos Biztonsági Felülvizsgálat | периодическая оценка безопасности (ПОБ) | Р10: periodic safety review |
+| KIBE | анализ старения с ограниченным сроком действия (TLAA) | Р11 [уточнить у заказчика] |
+| szokatlan esemény | нештатное событие | Р12 [уточнить]: unusual event, руководство OAH 1.25 |
+| üzemi élettartam | срок эксплуатации | Р14; «tervezett üzemi élettartam» → «проектный срок эксплуатации» |
+| nukleáris baleset | ядерная авария | пакет П: Paks II RU |
+| sugárbaleset / radiológiai baleset | радиационная авария | пакет П: OAH Enciklopédia (radiation accident); НРБ |
+| felületi szennyezettség | поверхностное радиоактивное загрязнение | пакет П |
+| egyenérték-dózisteljesítmény | мощность эквивалентной дозы | пакет П |
+| könnyűvíz | легкая вода | пакет П |
+| cselekvési szint | уровень действий | пакет П: action level |
+| besugárzás | облучение | пакет П: exposure |
+| EBT / Előzetes Biztonsági Tájékoztató | предварительный информационный отчет о безопасности | пакет П: CNS-10 PSIR |
+| IBJ | отчет о периодической оценке безопасности | пакет П: руководство OAH 1.28 PSRR; см. Р10 |
+| ÁVIT | комплексный план управления аварийными ситуациями и реагирования | пакет П: CNS-10 CEMRP |
+| OBEIT | национальный план мероприятий по ликвидации ядерных аварий | пакет П: CNS-10 HNERP |
+| ONER | национальная система реагирования на ядерные аварии | пакет П: CNS-10 HNERS |
+| OSJER | национальная система радиационного мониторинга и оповещения | пакет П: CNS-10 NRMAS |
+| OKSER | национальная система радиационного контроля окружающей среды | пакет П: CNS-10 NERMS |
+| KÖESZ | регламент радиационного контроля окружающей среды | пакет П: CNS-10 EMR |
+| MSSZ | регламент радиационной защиты на рабочих местах | пакет П: CNS-10 WRPR |
+| SZMSZ | положение об организационной структуре и порядке работы | пакет П: CNS-10 OOR |
+| KNPA | Центральный ядерный финансовый фонд | пакет П: CNS-10 CNFF |
+| RHK Kft. | компания по обращению с радиоактивными отходами (RHK) | пакет П: CNS-10 PURAM |
+| KKB | межведомственный координационный комитет по защите от чрезвычайных ситуаций | пакет П: CNS-10 DMCIC |
+| EM | Министерство энергетики | пакет П: CNS-10 MoE |
+| FKP | программа геологических исследований | пакет П: CNS-10 GRP |
+| SAT | системный подход к подготовке персонала | пакет П: CNS-10 |
+| TPR | тематическая экспертная оценка | пакет П: CNS-10 |
+| bevált technológiák | проверенные технологии | пакет П: CNS-10, гл. 18.2 |
+| üzemeltetési tapasztalatok kezelése | использование опыта эксплуатации | пакет П: CNS-10, гл. 19.7 |

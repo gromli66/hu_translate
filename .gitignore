@@ -5,7 +5,7 @@
 cache/
 work/
 out/
-# проекты: в git только комплект «Пакш» (данные заказчика, репозиторий приватный); новые — на сервере
+# проекты: в git комплект «Пакш» (данные заказчика, репозиторий приватный) и общий RU→EN; новые — на сервере
 projects/*
 !projects/.gitkeep
 __pycache__/
@@ -16,3 +16,6 @@ dist/
 !projects/paks/
 projects/paks/data/tm.json
 !projects/paks/data/
+projects/paks/data/backup_*/
+!projects/ru_en/
+projects/ru_en/*.bak
