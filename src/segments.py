@@ -21,9 +21,16 @@ W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 HU_WORD = re.compile(r"[a-záéíóöőúüű]{2,}")
 
 
+# обозначение документа одним словом («ДСША.161458.1300-A.УТЗ.Д15», «3PR04-ABC.112»): идентификатор, не текст. Модель
+# его «переводила» — DSNS.161458.1300-A.TSH.D15 в колонтитуле каждого листа (Методические указания УТЗ, ru-en, 27.10)
+CODE = re.compile(r"\w+(?:[./-]\w+){2,}")
+
+
 def needs_translation(text):
     """Есть ли что переводить: строчное слово или аббревиатура из букв (не чистые коды/числа)."""
     t = re.sub(r"<\/?f\d+>", "", text)
+    if CODE.fullmatch(t.strip()) and re.search(r"\d{3}", t):
+        return False
     return bool(HU_WORD.search(t)) or bool(re.search(r"\b[A-ZÁÉÍÓÖŐÚÜŰ]{2,}\b", t)) \
         or bool(re.search(r"[А-Яа-яЁё]", t))          # русский источник (проект "pair": "ru-en"): и «№ п/п»
 
@@ -90,7 +97,9 @@ def _symbol_run(r, t):
 PAGE_FIELD = re.compile(r"^\s*(PAGE|NUMPAGES|SECTIONPAGES)\b")
 # поля свойств и дат, которые LibreOffice/Word пересчитывают: результат без букв («1.0.7», «20.10.2026») — тоже не текст
 # («Версия 1.0.7»: перевод «Version 1.0.7» + пересчитанное поле = «Version 1.0.71.0.7», ТЗ НГУ, 22.10)
-DATA_FIELD = re.compile(r"^\s*(DOCPROPERTY|REVNUM|NUMWORDS|NUMCHARS|FILESIZE|DATE|TIME|SAVEDATE|PRINTDATE|CREATEDATE)\b")
+# и ссылка на номер рисунка/пункта (REF, NOTEREF): «(рисунок 1)» → «(Figure 1).Figure 1 –» после пересчёта (27.10)
+DATA_FIELD = re.compile(r"^\s*(DOCPROPERTY|REVNUM|NUMWORDS|NUMCHARS|FILESIZE|DATE|TIME|SAVEDATE|PRINTDATE|CREATEDATE"
+                        r"|REF|NOTEREF)\b")
 
 
 def _field_result_runs(runs):
@@ -142,18 +151,24 @@ def docx_segments(path):
                 # группы подряд идущих прогонов с одинаковым начертанием
                 groups = []
                 page_no = _field_result_runs(runs)
+                # текст после нетронутого прогона (поле, значок) — своей группой: иначе перевод всей группы ложится в
+                # первый прогон, и поле или значок уезжают в конец («(Figure 1).1», стрелки «→» в конце строк, 27.10)
+                cut = False
                 for ri, (r, t) in enumerate(zip(runs, texts)):
                     if not t or ri in page_no:     # номер страницы (поле) — не текст, прогон не трогается
+                        cut = cut or ri in page_no or any(r.find(W + x) is not None for x in STAYS)
                         continue
                     # значки шрифтов Wingdings/Symbol (флажки «□») — не текст: модель их выбрасывает,
                     # прогон остаётся на месте нетронутым
                     if _symbol_run(r, t):
+                        cut = True
                         continue
                     sg = run_sig(r)
-                    if groups and (groups[-1]["sig"] == sg or not t.strip()):
+                    if groups and not cut and (groups[-1]["sig"] == sg or not t.strip()):
                         groups[-1]["runs"].append(ri); groups[-1]["text"] += t
                     else:
                         groups.append({"sig": sg, "runs": [ri], "text": t})
+                    cut = False
                 # ведущий значок в одном прогоне с текстом («  E2\t…», 3925 абзацев 3PR04) —
                 # отрезать от текста для модели, вернуть при сборке
                 lead = ""
@@ -175,7 +190,20 @@ def docx_segments(path):
                 segs.append({"id": len(segs), "text": text, "src": src, "page": None,
                              "loc": {"part": part, "p": pi, "groups": [g["runs"] for g in groups], "lead": lead,
                                      **({"field": True} if page_no else {})}})
+        # подписи автонумерации («Рисунок %8 –», «Приложение %1.», «%1. ábra»): текст номера — в списке Word, не в
+        # абзаце; без перевода у всех рисунков, таблиц, приложений и в оглавлении оставалось «Рисунок 1 –» (27.10)
+        if NUMBERING in z.namelist():
+            root = etree.fromstring(z.read(NUMBERING))
+            for k, lt in enumerate(root.iter(W + "lvlText")):
+                v = lt.get(W + "val") or ""
+                if needs_translation(NUM_SLOT.sub("", v)):
+                    segs.append({"id": len(segs), "text": v, "src": v, "page": None, "loc": {"part": NUMBERING, "lvl": k}})
     return segs
+
+
+NUMBERING = "word/numbering.xml"
+NUM_SLOT = re.compile(r"%\d")
+STAYS = ("sym", "drawing", "pict", "object")       # прогон-значок или картинка в строке: остаётся на месте
 
 
 # ---------------------------------------------------------------- PDF
