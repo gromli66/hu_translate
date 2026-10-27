@@ -92,6 +92,15 @@ CODE = re.compile(r"[\wÀ-ɏ.\-/÷()+±%]*\d[\wÀ-ɏ.\-/÷()+±%]*")
 HU_SUFFIX = re.compile(r"-[a-záéíóöőúüű]+$")
 LATIN_WORD = re.compile(r"(?<![\w])[A-Za-zÁÉÍÓÖŐÚÜŰáéíóöőúüű][a-záéíóöőúüű]{2,}(?![\w])")
 CJK = re.compile(r"[　-鿿가-힯฀-๿]")
+LETTERS = re.compile(r"[A-Za-zÁÉÍÓÖŐÚÜŰáéíóöőúüűА-Яа-яЁё]+")
+
+
+def mixed_script(src, out):
+    """Слова перевода из букв двух алфавитов («СОORУЖЕНИЕ» — латинские O и R внутри русского слова: сбой портала,
+    корпус HU 22.10), кроме записанных так в самом оригинале."""
+    have = set(LETTERS.findall(TAG.sub(" ", src)))
+    return [w for w in LETTERS.findall(TAG.sub(" ", out))
+            if CYR.search(w) and re.search(r"[A-Za-zÁÉÍÓÖŐÚÜŰáéíóöőúüű]", w) and w not in have]
 CYR = re.compile(r"[а-яА-Я]")
 TAG = re.compile(r"</?f\d+>")
 
@@ -239,6 +248,9 @@ def check(src, ru, allowed_latin=frozenset(), gloss_abbr=frozenset(), vocab=froz
         issues.append("венгерский остался: " + ", ".join(left[:6]))
     if CJK.search(ru):
         issues.append("иероглифы")
+    mixed = mixed_script(src, ru)
+    if mixed:
+        issues.append("слово из двух алфавитов: " + ", ".join(mixed[:4]))
     if morph.neg_lost(TAG.sub(" ", src), TAG.sub(" ", ru)):
         issues.append("отрицание потеряно: " + ", ".join(w for w, *_ in morph.neg_words(TAG.sub(" ", src))[:4]))
     issues += action_flip(TAG.sub(" ", src), TAG.sub(" ", ru))
@@ -339,6 +351,9 @@ def check_generic(src, out, s_lang, t_lang):
                       + ", ".join(dict.fromkeys(left[:6])))
     if CJK.search(out):
         issues.append("иероглифы")
+    mixed = mixed_script(src, out) if t_lang == "ru" else []
+    if mixed:
+        issues.append("слово из двух алфавитов: " + ", ".join(mixed[:4]))
     plain_src = TAG.sub("", src)
     if len(plain_src) >= 25:
         k = len(TAG.sub("", out)) / len(plain_src)

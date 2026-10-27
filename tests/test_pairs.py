@@ -127,3 +127,13 @@ def test_ocr_language(monkeypatch):
     monkeypatch.setattr(S, "SRC_LANG", "ru")
     assert "(русский)" in S.ocr_prompt() and "ő" not in S.ocr_prompt()
     assert L.TESS["ru"] == "rus+eng" and L.TESS["hu"] == "hun"
+
+
+def test_mixed_script_word_flagged():
+    """Слово из букв двух алфавитов в переводе («СОORУЖЕНИЕ»: латинские O, R) — замечание; слово, так записанное
+    в оригинале, и обычные коды рядом с русским текстом — нет."""
+    assert any(i.startswith("слово из двух алфавитов: СОORУЖЕНИЕ") for i in
+               T.check("Az erőmű létesítése", "СОORУЖЕНИЕ электростанции"))
+    assert not any("двух алфавитов" in i for i in T.check("A 30TL02 szivattyú", "Насос 30TL02"))
+    assert any("двух алфавитов" in i for i in T.check_generic("Plant construction", "Сооружение электростанции и сOOружения", "en", "ru"))
+    assert not any("двух алфавитов" in i for i in T.check_generic("The pH-meter", "pH-метр", "en", "ru"))
