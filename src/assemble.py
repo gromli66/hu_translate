@@ -13,7 +13,7 @@
 import re, html, zipfile
 from pathlib import Path
 
-from segments import W, _own_runs, run_text
+from segments import W, STAYS, _own_runs, run_text
 
 TAG = re.compile(r"</?f\d+>")
 
@@ -27,6 +27,25 @@ def _split_groups(ru, n):
         d = {int(k): t for k, t in parts}
         return [d[k] for k in range(1, n + 1)]
     return [TAG.sub("", ru)] + [""] * (n - 1)
+
+
+def _pad(texts, groups, runs):
+    """Пробел на краю группы — как в оригинале, если перевод его срезал, а рядом его не даёт ни соседняя группа, ни
+    оставленный на месте прогон (значок, картинка, поле): «] →Select», «кнопку(ее вид…» (Методические указания, 27.10)."""
+    src = ["".join(run_text(runs[ri]) for ri in g) for g in groups]
+
+    def between(k):                         # между группами k-1 и k — оставленный на месте прогон
+        rs = runs[groups[k - 1][-1] + 1:groups[k][0]]
+        return any(r.find(W + x) is not None for r in rs for x in STAYS) or any(run_text(r).strip() for r in rs)
+    for k, t in enumerate(texts):
+        if not t:
+            continue
+        if k and src[k][:1] == " " and t[:1] != " " and (between(k) or not texts[k - 1][-1:].isspace()):
+            t = " " + t
+        if k + 1 < len(texts) and src[k][-1:] == " " and t[-1:] != " " and (between(k + 1) or texts[k + 1][:1] != " "):
+            t += " "
+        texts[k] = t
+    return texts
 
 
 def _set_run_text(r, text):
@@ -101,11 +120,17 @@ def build_docx(src, out, segs, res):
             if item.filename in by_part:
                 root = etree.fromstring(data)
                 ps = list(root.iter(W + "p"))
+                lvls = list(root.iter(W + "lvlText"))
+                done = set()
                 for s, ru in by_part[item.filename]:
+                    if "lvl" in s["loc"]:
+                        _set_lvl_text(lvls[s["loc"]["lvl"]], ru)
+                        continue
                     p = ps[s["loc"]["p"]]
+                    done.add(p)
                     runs = _own_runs(p)
                     groups = s["loc"]["groups"]
-                    texts = _split_groups(ru, len(groups))
+                    texts = _pad(_split_groups(ru, len(groups)), groups, runs)
                     texts[0] = s["loc"].get("lead", "") + texts[0]
                     # абзац с полем (номер страницы, версия): конечный пробел перед полем — как в оригинале, модель его
                     # срезает («Версия 1.0.7» → «Version1.0.7», 22.10)
@@ -117,6 +142,7 @@ def build_docx(src, out, segs, res):
                         tgt = _target(runs, g)
                         for ri in g:
                             _set_run_text(runs[ri], t if ri == tgt else "")
+                _unbind(root, done)
                 data = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
             elif item.filename in ("docProps/core.xml", "docProps/custom.xml", "docProps/app.xml"):
                 data = _props(data, segs, res)
@@ -129,6 +155,25 @@ def build_docx(src, out, segs, res):
         if shot_err:
             info["shot_errors"] = shot_err
     return info
+
+
+def _set_lvl_text(el, ru):
+    """Текст номера списка (w:lvlText, «Рисунок %8 –») — переводом, если в нём те же места номеров (%1…%9)."""
+    src = el.get(W + "val") or ""
+    t = TAG.sub("", ru).strip()
+    if t and sorted(re.findall(r"%\d", t)) == sorted(re.findall(r"%\d", src)):
+        el.set(W + "val", src[:len(src) - len(src.lstrip())] + t + src[len(src.rstrip()):])
+
+
+def _unbind(root, done):
+    """Поле формы (SDT), привязанное к свойству документа (w:dataBinding), в переведённом абзаце — без привязки.
+    LibreOffice и Word при открытии заново ставят в поле значение свойства, а перевод абзаца уже лёг в соседний прогон:
+    «Revision 1.0» + «1.0» = «Revision 1.01.0», «(JSC "ITC JET")» + название организации (шапка каждого листа, 27.10)."""
+    for sdt in list(root.iter(W + "sdt")):
+        db = sdt.find(f"{W}sdtPr/{W}dataBinding")
+        if db is not None and (any(a in done for a in sdt.iterancestors(W + "p"))
+                               or any(q in done for q in sdt.iter(W + "p"))):
+            db.getparent().remove(db)
 
 
 def _props(data, segs, res):
