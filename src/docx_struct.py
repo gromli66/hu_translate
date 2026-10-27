@@ -2133,6 +2133,12 @@ def mark_breaks(blocks, tops, bots):
     for i, b in enumerate(blocks):
         g = b.get("geom") or {}
         pn = g.get("page")
+        if b["k"] == "toc":
+            # оглавление первым на листе, а прошлый лист кончился заметно выше обычного низа, — с нового листа
+            # («TARTALOMJEGYZÉK» OAH AKF1.32: лист 5 занят на четверть, а оглавление шло следом; E41 корпуса, 22.10)
+            if pn and pn - 1 in bots and low - bots[pn - 1] > 72                     and not any((x.get("geom") or {}).get("page") == pn for x in blocks[:i]):
+                b["break"] = True
+            continue
         # и абзац («FŐIGAZGATÓI ELŐSZÓ» OAH — абзац, не заголовок), и таблица («УТВЕРЖДАЮ» листа изменений ИН-1065);
         # картинка — нет: её сдвигает нехватка места
         if not ((b["k"] in ("h", "table") or b["k"] == "p" and not img_only(b))
@@ -2147,6 +2153,21 @@ def mark_breaks(blocks, tops, bots):
                                   or 0) - tops[pn] > gap:
             continue
         if gap > 72:
+            b["break"] = True
+    # абзац, оформленный как заголовки первого уровня, идущие с нового листа (кегль и жирность те же, стоит первым на
+    # листе на их высоте, коротко, без точки в конце): «ELŐSZÓ» OAH AKF1.32 — абзац, не заголовок, прошлый лист полон,
+    # и по просвету разрыв не находился (E41 корпуса, 22.10)
+    look = lambda b: next(((r.get("size"), bool(r.get("b"))) for r in b.get("runs") or [] if (r.get("t") or "").strip()),
+                          None)
+    h1 = [b for b in blocks if b["k"] == "h" and b.get("level") == 1 and b.get("break")
+          and (b.get("geom") or {}).get("top") is not None]
+    if len(h1) < 2:
+        return
+    sig, ys = {look(b) for b in h1}, [b["geom"]["top"] for b in h1]
+    for b in blocks:
+        g = b.get("geom") or {}
+        pn, t = g.get("page"), text_of(b.get("runs") or []).strip() if b["k"] == "p" else ""
+        if t and not b.get("break") and pn in tops and g.get("top") is not None and abs(g["top"] - tops[pn]) < 2                 and len(t.split()) <= 6 and t[-1] not in ".:;," and look(b) in sig and min(abs(g["top"] - y) for y in ys) < 6:
             b["break"] = True
 
 
@@ -2213,6 +2234,14 @@ def cell_edges(rows, thin):
         for a, b in zip(row, row[1:]):                      # общая граница соседей — одна
             if "edges" in a and "edges" in b:
                 a["edges"]["right"] = b["edges"]["left"] = a["edges"]["right"] or b["edges"]["left"]
+
+
+def _page_sizes(path):
+    """Размеры листов оригинала (ширина, высота) с учётом поворота (/Rotate): альбомные листы — альбомными разделами
+    (docx_build.Builder._page)."""
+    import fitz
+    with fitz.open(str(path)) as d:
+        return [(round(pg.rect.width, 1), round(pg.rect.height, 1)) for pg in d]
 
 
 def layout(path, blocks, content=None):
@@ -2340,7 +2369,8 @@ def layout(path, blocks, content=None):
                    [max(6.0, min(36.0, body_top - 4 - 18))])
     sig = lambda chars: re.sub(r"\s+", " ", re.sub(r"\d+\.?", "", "".join(c["text"] for c in chars))).strip()
     body_sig = sig(foot_chars)
-    out = {"W": W, "H": H, "left": left, "right": max(right, 20), "top": body_top - 4,
+    out = {"page_sizes": _page_sizes(path),
+           "W": W, "H": H, "left": left, "right": max(right, 20), "top": body_top - 4,
            "bottom": H - foot_top + 12, "header": head_top, "footer": max(H - foot_bottom - 6, 18),
            "head_imgs": head_imgs, "head_lines": head_lines, "head_grid": head,
            "stamp": foot["rows"], "stamp_widths": foot["widths"], "stamp_aligns": foot["aligns"],
@@ -2611,7 +2641,11 @@ def _foot_top(arts, rects, H, cbot=None):
             border = [float(r["top"]) for r in rects if float(r["bottom"]) - float(r["top"]) < 3
                       and max(cbot, H * 0.6) < float(r["top"]) <= top]
             return round(min(border) if border else top) - 1
-    rows = sorted({round(float(c["top"])) for c in arts if float(c["top"]) > H * 0.7}, reverse=True)
+    # текстовый слой без знаков ниже тела — и здесь пробел не краска: пробел в конце строки таблицы (443 pt при низе
+    # тела 470) становился «подвалом», нижнее поле — 165 pt вместо ~100, на листе 4–5 строк таблицы вместо 6
+    # (таблица решений OAH: 154 листа → 211, 23.10)
+    rows = sorted({round(float(c["top"])) for c in arts if float(c["top"]) > H * 0.7
+                   and (cbot is None or c["text"].strip())}, reverse=True)
     rr = [r for r in rects if float(r["top"]) > H * 0.7]
     if not rows:                                # подвал из одних линий (рамка без текста)
         ys = sorted({round(float(r["top"])) for r in rr}, reverse=True)

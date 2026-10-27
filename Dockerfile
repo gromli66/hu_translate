@@ -2,7 +2,7 @@
 FROM python:3.11-slim
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-hun \
+ && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-hun tesseract-ocr-rus tesseract-ocr-eng \
  && rm -rf /var/lib/apt/lists/*
 
 # PDF перевода печатается из готового DOCX (LibreOffice без окна, оглавление и поля — через UNO системного python3).

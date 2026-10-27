@@ -525,8 +525,13 @@ def _tables(hs, vs):
     # таблицы «Beavatkozások», «Ellenőrzési követelmények» без боковых рамок распадались на куски по одной линейке и
     # уходили рисунком, 20.10) — тоже касание; одиночная вертикаль рамки чертежа (S2t) и засечки графика с зазором
     # снизу (T4) — нет
+    # …и доходит до линейки СТРОКИ — не короче той, под которой начинается: рамка поля ввода в ячейке бланка (код в
+    # рамке, окошко значения — 30RDGT) тоже начинается в 3–4 pt под линейкой строки, но доходит до своей нижней кромки
+    # (100 pt против 530 у строки) — её вертикали становились столбцами таблицы: 3 столбца → 7, 15 листов → 29
+    # (стенд вёрстки без языка, 22.10)
+    width = lambda h: h[2] - h[1]
     gap = [(k, v) for k, h in enumerate(hs) for v in vs if across(h, v) and 2 < v[1] - h[0] <= 4
-           and any(across(h2, v) and abs(v[2] - h2[0]) <= 2 for h2 in hs)]
+           and any(across(h2, v) and abs(v[2] - h2[0]) <= 2 and width(h2) >= 0.8 * width(h) for h2 in hs)]
     per_h, per_x = Counter(k for k, _ in gap), Counter(round(v[0]) for _, v in gap)
     below = {}
     for k, v in gap:
@@ -588,6 +593,15 @@ def _grid_cells(xs, ys, gh, gv):
     return rows
 
 
+def _on_lines(r, segs):
+    """Рамка почти целиком (≥ 80 %) на строках сегментов — это сама строка текста, а не рисунок: светлый цветной текст,
+    не вычтенный из краски листа, или растр с «запечённым» текстом под живой строкой (эффект InDesign). Картинкой
+    такая строка оставалась в DOCX на языке оригинала (брошюра HERCA, 22.10)."""
+    import fitz
+    lines = [fitz.Rect(f) for s in segs for f in (s["loc"].get("frags") or [s["loc"]["bbox"]])]
+    return sum((r & q).get_area() for q in lines if r.intersects(q)) >= 0.8 * r.get_area()
+
+
 def _raster(page, segs, figs, reused, infos):
     """Картинки текстового слоя мельче рисунка-кластера (_figures: от 50×40 pt) — логотип в таблице титула, подписи
     (Eskom: логотип 121×37 pt и подписи пропадали): вставленные растры от 20×15 pt в пределах текста тела листа, не
@@ -603,7 +617,7 @@ def _raster(page, segs, figs, reused, infos):
         r = fitz.Rect(im["bbox"]) & page.rect
         if r.width < 20 or r.height < 15 or r.get_area() > 0.5 * area or r.y1 < ytop or r.y0 > ybot \
                 or (im["xref"] and reused[im["xref"]] > 1) or any(r.intersects(f) for f, _ in figs) \
-                or any(r.intersects(q) for q in rects) or any(r.contains(fitz.Point(*_center(s))) for s in segs):
+                or any(r.intersects(q) for q in rects) or any(r.contains(fitz.Point(*_center(s))) for s in segs)                 or _on_lines(r, segs):
             continue
         rects.append(r)
     # картинки одного ряда (четыре подписи титула Eskom) — одной картинкой по месту: порознь шли столбиком
@@ -1052,7 +1066,9 @@ def _page_rules(doc, text=False):
     draw, per, scans, marks = [], [], [], []
     for page in doc:
         d = page.get_cdrawings()
-        draw.append([{"rect": x["rect"]} for x in d])
+        # «solid» — залитая фигура не белым (полоса графика, ромб вехи, плашка) — для таблиц-графиков (_chart_table)
+        draw.append([{"rect": x["rect"], "solid": "f" in (x.get("type") or "") and x.get("fill") is not None
+                      and min(x["fill"]) < 0.95} for x in d])
         hs, vs = _rules(d)
         marks.append((_form_marks(d), _form_fields(d)))
         del d
@@ -1138,6 +1154,62 @@ def _head_rows(doc, rules, body, keys, H):
                                                          or not any(seen[place(s)] > 1 for s in ids)) for s in ids}
 
 
+def _graphic_page(page, segs, figs):
+    """Лист-плакат: рисунки (краска вне текста и линий, _figures) — больше половины листа и на них ≥ 30 % подписей
+    листа, или рисунок рассыпан на ≥ 5 кусков при малом тексте (обложка, разворот брошюры: картинки под маской,
+    фоновые плашки). Такой лист собирается не абзацами (подписи схемы вперемешку с текстом, картинка — обрывками:
+    плакат «Как работает АЭС» 1 лист → 2, брошюра 12 → 17), а целиком с переведённого PDF (стенд вёрстки без языка,
+    22.10)."""
+    import fitz
+    rects = [r for r, _ in figs]
+    if not rects or not segs:
+        return False
+    area = sum(r.get_area() for r in rects) / page.rect.get_area()
+    inside = sum(1 for s in segs if any(r.contains(fitz.Point(*_center(s))) for r in rects)) / len(segs)
+    return area >= 0.5 and inside >= 0.3 or len(rects) >= 5 and area >= 0.05 and len(segs) <= 20
+
+
+def _textless(doc, pno, boxes):
+    """Копия листа pno, где снят текст в рамках boxes (сегменты), — картинки и графика целы: рисунок текстового слоя
+    вырезается без текста, перевод которого идёт абзацами (22.10)."""
+    import fitz
+    c = fitz.open()
+    c.insert_pdf(doc, from_page=pno, to_page=pno)
+    for b in boxes:
+        c[0].add_redact_annot(fitz.Rect(b), fill=False)
+    c[0].apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE, graphics=fitz.PDF_REDACT_LINE_ART_NONE,
+                          text=fitz.PDF_REDACT_TEXT_REMOVE)
+    return c
+
+
+def _ocr_layer(page):
+    """Текст листа — невидимый слой распознавания поверх скана (газета 1813 г.: весь текст в режиме 3), а не настоящий
+    текст поверх фона-картинки во весь лист (брошюра из InDesign: фон и фото — картинками, текст — видимый). Лист-плакат
+    (_graphic_page) — не для первого: снимок брал скан без перевода (22.10); второй — плакат (HERCA 16 листов → 32)."""
+    kinds = [k for k, _ in page.get_bboxlog() if "text" in k]
+    return bool(kinds) and kinds.count("ignore-text") >= 0.5 * len(kinds)
+
+
+def _chart_table(t, draw):
+    """Таблица-график: в её рамке — от трёх залитых фигур, не совпадающих с ячейками (полосы диаграммы Ганта, ромбы
+    вех, столбики): сетка таблицы — только поле графика, и таблицей собиралась пустая сетка без полос (22.10)."""
+    import fitz
+    xs, ys = t[0], t[1]
+    R = fitz.Rect(xs[0], ys[0], xs[-1], ys[-1])
+    near = lambda v, grid: any(abs(v - g) <= 2 for g in grid)
+    n = 0
+    for d in draw:
+        if not d.get("solid"):
+            continue
+        q = fitz.Rect(d["rect"])
+        if q.width < 2 or q.height < 2 or not R.contains(q) or q.get_area() > 0.5 * R.get_area():
+            continue
+        if near(q.x0, xs) and near(q.x1, xs) and near(q.y0, ys) and near(q.y1, ys):
+            continue                                        # заливка ячейки
+        n += 1
+    return n >= 3
+
+
 def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
     """Таблицы и рисунки листов: {лист: [{"rect", "block", "ids"}]} — сегменты ids идут не абзацами, а в них."""
     import fitz
@@ -1152,13 +1224,26 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
     out = {}
     for pno, page in enumerate(doc):
         segs = by_page.get(pno, [])
-        figs = [(r, {"png": page.get_pixmap(dpi=150, clip=r).tobytes("png"), "x0": r.x0, "x1": r.x1, "top": r.y0,
-                     "bottom": r.y1}) for r in _figures(page, masks.get(pno, segs) if mask else segs, draw[pno],
-                                                         scans[pno])]
+        rects = _figures(page, masks.get(pno, segs) if mask else segs, draw[pno], scans[pno])
+        # «рисунок», почти целиком лежащий на строках сегментов, — сама строка текста (светлый цветной текст, не
+        # вычтенный из краски листа): картинкой она оставалась в DOCX на языке оригинала (брошюра HERCA, 22.10)
+        rects = [r for r in rects if not _on_lines(r, segs)]
+        # текстовый слой: рисунок — без текста сегментов, задевающих его краем (их перевод идёт абзацем; в картинке
+        # оставался оригинал: брошюра HERCA, «akkor nincs szükség…» поверх плашки)
+        hit = [s["loc"]["bbox"] for s in segs if any(fitz.Rect(s["loc"]["bbox"]).intersects(r) for r in rects)]             if mask is not None else []
+        bare = _textless(doc, pno, hit) if hit else None
+        figs = [(r, {"png": (bare[0] if bare else page).get_pixmap(dpi=150, clip=r).tobytes("png"), "x0": r.x0,
+                     "x1": r.x1, "top": r.y0, "bottom": r.y1}) for r in rects]
         hs, vs = per[pno]
         # скан — лист, распознанный OCR (своего текстового слоя нет); лист с крупным рисунком (> ½ листа) и текстом слоя —
         # не скан: текст — абзацами (ред-тим 20.10)
-        if mask is not None and scans[pno] and segs and any(s["loc"].get("ocr") for s in segs):
+        # таблица-график на треть листа и больше (диаграмма Ганта во весь лист) — лист целиком, как плакат: частями
+        # (график рисунком, названия задач абзацами) строки задач расходились с полосами на три листа (22.10)
+        charts = sum(fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1]).get_area() for t in _tables(hs, vs)
+                     if _chart_table(t, draw[pno])) if mask is not None else 0
+        if mask is not None and segs and (scans[pno] and any(s["loc"].get("ocr") for s in segs)
+                                          or not (scans[pno] and _ocr_layer(page)) and _graphic_page(page, segs, figs)
+                                          or charts >= 0.3 * page.rect.get_area()):
             # скан посреди текстового слоя (лист регистрации, титул с подписями 32RDGT) — листом с переведённого PDF,
             # как отдельный скан формы (16.10): по сегментам сетка, подписи и штампы бланка рассыпались, 8 листов → 11
             # (20.10). Колонтитулы листа (повтор шапки других листов) посреди тела — не в снимке: их печатает шапка
@@ -1203,6 +1288,12 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
             r = fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1])
             if any((f & r).get_area() > 0.8 * r.get_area() for f, _ in figs):
                 continue                                    # сетка внутри рисунка (график) — часть рисунка
+            if _chart_table(t, draw[pno]):
+                # таблица-график (диаграмма Ганта) — рисунком с переведённого PDF, подписи — переводом
+                R = (r + (-2, -2, 2, 2)) & page.rect
+                figs.append((R, {"clip": [R.x0, R.y0, R.x1, R.y1], "page_number": pno + 1, "x0": R.x0, "x1": R.x1,
+                                 "top": R.y0, "bottom": R.y1}))
+                continue
             inside = [s for s in segs if r.contains(fitz.Point(*_center(s)))]
             mine = [i for i, (f, _) in enumerate(figs) if r.contains(fitz.Point((f.x0 + f.x1) / 2, (f.y0 + f.y1) / 2))]
             # отметки бланка кривыми (кружок, квадратик) — знаком в своей ячейке, если там нет такого же текста
@@ -1226,7 +1317,14 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
         for i, (r, img) in enumerate(figs):
             if i in used or any(r.intersects(g["rect"]) for g in regs):
                 continue
-            regs.append({"rect": r, "ids": {s["id"] for s in segs if r.contains(fitz.Point(*_center(s)))},
+            ids = {s["id"] for s in segs if r.contains(fitz.Point(*_center(s)))}
+            if ids and mask is not None and "png" in img:
+                # текст листа внутри рисунка (цитата поверх фото брошюры, подписи схемы) — сегменты рисунка, абзацами они
+                # не идут: рисунок — с переведённого PDF, как снимок листа; из оригинала в DOCX оставался текст
+                # оригинала картинкой, а перевод пропадал (брошюра HERCA, проверка порталом 22.10)
+                img = {"clip": [r.x0, r.y0, r.x1, r.y1], "page_number": pno + 1, "x0": r.x0, "x1": r.x1, "top": r.y0,
+                       "bottom": r.y1}
+            regs.append({"rect": r, "ids": ids,
                          "block": {"k": "p", "runs": [{"img": img}], "figure": True, "seg": True,
                                    "geom": {"page": pno + 1, "top": r.y0, "bottom": r.y1, "x0": r.x0, "x1": r.x1,
                                             "first_x0": r.x0, "size": size}}})
@@ -1680,7 +1778,8 @@ def layout(src, blocks, segs, info):
         head["font"], head["size"] = info.get("font"), info.get("size")
     head_bottom = max((s["loc"]["bbox"][3] for s in headz), default=36)
     foot_top = min((s["loc"]["bbox"][1] for s in footz), default=H - 36)
-    return {"W": W, "H": H, "left": left, "right": max(right, 20), "top": max(top - 4, head_bottom + 6),
+    return {"page_sizes": __import__("docx_struct")._page_sizes(src),
+            "W": W, "H": H, "left": left, "right": max(right, 20), "top": max(top - 4, head_bottom + 6),
             "bottom": max(H - bottom - 4, H - foot_top + 6), "header": 24, "footer": 18,
             "head_imgs": [], "head_lines": [], "head_grid": head,
             "stamp": foot["rows"], "stamp_widths": foot["widths"], "stamp_aligns": foot["aligns"],

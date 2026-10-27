@@ -454,6 +454,26 @@ LABEL_T = re.compile(r"^(\s*(?:<f\d+>)?)\s*" + _LBL.replace("LL", "[A-Za-z]") + 
 LABEL_RU_T = re.compile(r"^(\s*(?:<f\d+>)?)\s*" + _LBL.replace("LL", "[A-Za-zА-Яа-яЁё]") + r"\s+(?=\S)")
 
 
+# управляющие знаки из текста PDF (SOH, FF, NUL) XML не допускает: python-docx падал на записи прогона, и документ
+# не собирался совсем (№48 партии 2, 22.10) — все прогоны пишутся без них (одна точка: CT_R.add_t)
+_XML_BAD = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]")
+
+
+def _patch_xml_text():
+    from docx.oxml.text.run import CT_R
+    if getattr(CT_R.add_t, "_xml_safe", False):
+        return
+    orig = CT_R.add_t
+
+    def add_t(self, text):
+        return orig(self, _XML_BAD.sub("", text))
+    add_t._xml_safe = True
+    CT_R.add_t = add_t
+
+
+_patch_xml_text()
+
+
 class Memory:
     """Переводы для сборки: готовые (проверенные) сегменты по тексту без пробелов; «подпись ⇥ значение» — по частям;
     заголовок — и с номером («1 Előzmények» в памяти PDF). Чего нет — в missing (переводится порталом и
@@ -1279,7 +1299,7 @@ class Builder:
             m.append(_el(f"w:{side}", w__w=max(0, round((v - cut) * 20)), w__type="dxa"))
         _tblpr_put(t, m)
 
-    def table(self, b):
+    def table(self, b, tgt=None):
         from docx.shared import Pt
         self._room = {}                                 # узкий столбец → (ширина, поля ячейки) (_fit_words)
         rows = [r for r in b["rows"] if r]
@@ -1288,7 +1308,7 @@ class Builder:
         # ячейки по сетке линий (docx_layout, «span»): столбцов — по сетке; ни в одной строке может не быть всех
         ncol = max(sum(c["span"] for c in r) for r in rows) if all("span" in c for r in rows for c in r) \
             else max(len(r) for r in rows)
-        t = self.doc.add_table(rows=len(rows), cols=ncol)
+        t = (tgt or self.doc).add_table(rows=len(rows), cols=ncol)
         fr = b.get("frame") or {}
         # линии — у каждой ячейки свои, как в оригинале (docx_struct.cell_edges), если сетка там неполная
         edges = [c.get("edges") for r in rows for c in r]
@@ -1483,6 +1503,14 @@ class Builder:
                 for x in cell["blocks"]:
                     if x["k"] == "list":
                         self.list_(x, 0, dc); continue
+                    if x["k"] == "table":
+                        # таблица в ячейке (листовка из Word свёрстана таблицей в таблице) — вложенной таблицей; раньше
+                        # пропускалась вместе с текстом (№09 партии 2: 94 % слов, 22.10)
+                        keep = self._room, self._tab_base, getattr(self, "_cell_base", None)
+                        self.table(x, tgt=dc)
+                        self._room, self._tab_base, self._cell_base = keep
+                        used = True
+                        continue
                     if x["k"] != "p" or not x["runs"]:
                         continue
                     if not used:
@@ -1536,7 +1564,8 @@ class Builder:
                     for p in tc.iter(W + "p"):
                         p.get_or_add_pPr().get_or_add_keepNext()
         self._tab_base = None
-        self.doc.add_paragraph(style="Table Text")        # Word: после таблицы — абзац
+        if tgt is None:                                   # в ячейке абзац после таблицы ставит python-docx
+            self.doc.add_paragraph(style="Table Text")    # Word: после таблицы — абзац
 
     def _cell_borders(self, dc, edges, color):
         tcpr = dc._tc.get_or_add_tcPr()
@@ -1559,6 +1588,7 @@ class Builder:
         pad = 2 * ((self.P.get("table") or {}).get("pad_left") or 5.4) + 5
         ncol = len(widths)
         need = [0.0] * ncol
+        texts = [[] for _ in range(ncol)]               # переводы ячеек столбца — сколько строк прибавит донору
         self._room = {}
         for row in rows:
             # строка с объединёнными ячейками по сетке линий (docx_layout: span) — её ячейки в один столбец тоже: шапка
@@ -1578,11 +1608,30 @@ class Builder:
                     bold = any(r.get("b") for r in x["runs"] if r.get("t", "").strip())
                     w = max((_text_w(wd, size, True) for wd in ru.split()), default=0) * (1.1 if bold else 1.0)
                     need[ci] = max(need[ci], w + pad)
+                    texts[ci].append((ru, 1.1 if bold else 1.0))
+
+        def lines(k, width):
+            """Строк у ячеек столбца k при ширине width (перенос по словам)."""
+            n = 0
+            for t, kb in texts[k]:
+                cur, rows = 0.0, 1
+                for wd in t.split():
+                    ww = _text_w(wd + " ", size, True) * kb
+                    if cur and cur + ww > width - pad + 5:
+                        rows, cur = rows + 1, 0.0
+                    cur += ww
+                n += rows
+            return n
         for c in range(ncol):
             short = need[c] - widths[c]
             if short <= 0:
                 continue
-            d = max((k for k in range(ncol) if k != c), key=lambda k: widths[k] - need[k], default=None)
+            # донор — столбец, у ячеек которого прибавится меньше всего строк; при равенстве — с наибольшим запасом.
+            # По одному запасу «0,0042 (5)» и «Bq/m2» столбцов замеров HAKSER уходили в две строки, строки таблицы —
+            # вдвое выше, альбомный лист переливался на следующий (23.10)
+            spare = [k for k in range(ncol) if k != c and widths[k] - need[k] > 0]
+            extra = lambda k: lines(k, widths[k] - min(short, widths[k] - need[k])) - lines(k, widths[k])
+            d = min(spare, key=lambda k: (extra(k), -(widths[k] - need[k])), default=None)
             give = min(short, widths[d] - need[d]) if d is not None else 0
             if give > 0:
                 widths[c] += give
@@ -1681,12 +1730,14 @@ class Builder:
                     pf.line_spacing = Pt(info["pitch"])     # шаг строк — как в оглавлении оригинала
                 s.font.bold = bold
 
-    def toc(self, b=None):
+    def toc(self, b=None, brk=False):
         info = (b or {}).get("info") or {}
         figs = info.get("figures", self._toc_n > 0)
         title = (info.get("title") or {}).get("t")
         text = (self.tr(title) if title else None) or ("Список рисунков" if figs else "Содержание")
-        self.doc.add_paragraph(text, style="TOF Title UTS" if figs else "TOC Title UTS")
+        head = self.doc.add_paragraph(text, style="TOF Title UTS" if figs else "TOC Title UTS")
+        if brk:                                     # разрыв листа оригинала (docx_struct.mark_breaks)
+            head.paragraph_format.page_break_before = True
         par = self.doc.add_paragraph()
         if figs:
             _field(par, 'TOC \\h \\z \\c "Рисунок"', "[Список рисунков: в Word — правой кнопкой → «Обновить поле»]")
@@ -1739,15 +1790,24 @@ class Builder:
                 par.paragraph_format.line_spacing = Pt(1)
             self.table(b)
         elif k == "toc":
-            self.toc(b)
+            self.toc(b, brk=bool(b.get("break")) and not fresh)
 
     # ---------------------------------------------------------------- лист, колонтитулы, титул
-    def _page(self, sec, L, left, right, top, bottom):
+    def _page(self, sec, L, left, right, top, bottom, size=None):
+        """Поля и размер листа раздела; size — (ширина, высота) своего листа оригинала: альбомный лист — альбомным
+        разделом (w:orient), а не книжным с картинкой во всю ширину (плакат, диаграмма Ганта, альбомные листы таблиц:
+        стенд вёрстки без языка, 22.10)."""
+        from docx.enum.section import WD_ORIENT
         from docx.shared import Pt
-        sec.page_width, sec.page_height = Pt(L["W"]), Pt(L["H"])
-        sec.left_margin, sec.right_margin = Pt(left), Pt(right)
-        sec.top_margin, sec.bottom_margin = Pt(top), Pt(bottom)
-        sec.header_distance, sec.footer_distance = Pt(L["header"]), Pt(L["footer"])
+        w, h = size or (L["W"], L["H"])
+        sec.page_width, sec.page_height = Pt(w), Pt(h)
+        sec.orientation = WD_ORIENT.LANDSCAPE if w > h else WD_ORIENT.PORTRAIT
+        # поля и отступы колонтитулов — не меньше нуля и не больше листа (подвал ниже листа у №40 партии 2 давал
+        # отрицательное нижнее поле, сборка падала, 22.10)
+        cl = lambda v, hi: min(max(float(v or 0), 0.0), hi)
+        sec.left_margin, sec.right_margin = Pt(cl(left, w / 3)), Pt(cl(right, w / 3))
+        sec.top_margin, sec.bottom_margin = Pt(cl(top, h / 3)), Pt(cl(bottom, h / 3))
+        sec.header_distance, sec.footer_distance = Pt(cl(L["header"], h / 3)), Pt(cl(L["footer"], h / 3))
 
     def _num_start(self, sec, value):
         """Нумерация листов раздела — с числа оригинала (pgNumType; место в sectPr — по схеме, иначе Word ругается)."""
@@ -1933,7 +1993,7 @@ class Builder:
             return
         if not L.get("head_imgs") and not L.get("head_lines"):
             return                                  # шапки нет — и таблицы-пустышки нет
-        width = L["W"] - L["left"] - L["right"]
+        width = max(L["W"] - L["left"] - L["right"], 120)
         t = hdr.add_table(rows=1, cols=3, width=Pt(width))
         hdr.paragraphs[0]._p.addprevious(t._tbl)             # таблица — первой: пустой абзац под ней несёт линию
         self._no_borders(t)
@@ -1942,6 +2002,11 @@ class Builder:
         rights = [i for i in L["head_imgs"] if (i["x0"] + i["x1"]) / 2 >= mid_x]
         wl = max([i["x1"] - i["x0"] for i in lefts] + [60]) + 6
         wr = max([i["x1"] - i["x0"] for i in rights] + [60]) + 6
+        # логотипы шире полосы набора (баннер во всю ширину листа, №6 и №27 партии 2) — столбцы логотипов пропорционально
+        # уже, середине не меньше 40 pt: отрицательная ширина роняла сборку (22.10)
+        if wl + wr > width - 40:
+            k = (width - 40) / (wl + wr)
+            wl, wr = wl * k, wr * k
         for c, w in zip(t.columns, (wl, width - wl - wr, wr)):
             c.width = Pt(w)                                  # и сетка таблицы: LibreOffice берёт ширину из неё
             for cell in c.cells:
@@ -2098,9 +2163,28 @@ class Builder:
             self._num_start(first, ns["value"])
             restart = True
         title_foot = []
+        sizes = L.get("page_sizes") or []
+        land = lambda pg: bool(pg and pg <= len(sizes) and sizes[pg - 1][0] > sizes[pg - 1][1])
+        cur_land = land(1)
+        if cur_land:
+            self._page(first, L, L["left"], L["right"], L["top"], L["bottom"], sizes[0])
+        # начала разделов тела: (номер раздела, лист оригинала, альбомный) — сколько листов оригинала у альбомного
+        # раздела (fit_want, для docx_fit)
+        starts, last = [], 1                # первый лист — уже первый раздел
         for b in blocks:
             g = b.get("geom") or {}
             page = g.get("page")
+            # лист другой ориентации, чем раздел (альбомные листы посреди книжного документа) — свой раздел; и каждый
+            # альбомный лист — своим разделом: таблица во весь альбомный лист оригинала переливалась 2–3 строками на
+            # следующий (HAKSER: 74 листа → 94), а раздел в один лист оригинала docx_fit ужимает кеглем (22.10)
+            if not in_title and page and sizes and (land(page) != cur_land or cur_land and page > last):
+                cur_land = land(page)
+                sec = self.doc.add_section(WD_SECTION.NEW_PAGE)
+                self.fresh = True
+                self._page(sec, L, L["left"], L["right"], L["top"], L["bottom"], sizes[page - 1])
+                starts.append((len(self.doc.sections) - 1, page, cur_land))
+            if page:
+                last = max(last, page)
             if in_title and page is not None and page >= 2:
                 in_title = False
                 sec = self.doc.add_section(WD_SECTION.NEW_PAGE)
@@ -2207,6 +2291,9 @@ class Builder:
                 first_p._p.getparent().remove(first_p._p)
         self._tab_groups()
         self.doc.settings.element.append(_el("w:updateFields", w__val="true"))
+        # листов оригинала у альбомных разделов: {номер раздела: листов} (docx_fit ужимает разделы в один лист)
+        nxt = [p for _, p, _ in starts[1:]] + [len(sizes) + 1]
+        self.fit_want = {i: n - p for (i, p, ld), n in zip(starts, nxt) if ld}
         self.doc.save(out)
         font_table(out, (L or {}).get("font_class") or {})
 
@@ -2320,7 +2407,17 @@ def blocks_layout(pdf, segs, mode):
         import docx_layout
         blocks, info = docx_layout.load(str(pdf), segs, text=mode == "text")
         if mode == "text":
-            return blocks, dict(docx_struct.layout(str(pdf), blocks, content=info.get("content_boxes")), sizes=True)
+            L = dict(docx_struct.layout(str(pdf), blocks, content=info.get("content_boxes")), sizes=True)
+            # логотип своей шапки первого листа (L["first"]) — уже в колонтитуле; рисунком тела он шёл второй копией
+            # (E42 корпуса: логотип OAH дважды, 22.10)
+            first = L.get("first") or {}
+            him = (first.get("head_imgs") or []) + [r["img"] for r in ((first.get("head_grid") or {}).get("paras")
+                                                                       or {}).get("rows", []) if r.get("img")]
+            half = lambda r, i, a, z: min(r[z], i[z]) - max(r[a], i[a]) > 0.5 * (i[z] - i[a])
+            dup = lambda r: any(half(r, i, "x0", "x1") and half(r, i, "top", "bottom") for i in him)
+            blocks = [b for b in blocks if not (him and b["k"] == "p" and (b.get("geom") or {}).get("page") == 1
+                                                and b.get("runs") and all("img" in r and dup(r["img"]) for r in b["runs"]))]
+            return blocks, L
         return blocks, docx_layout.layout(str(pdf), blocks, segs, info)
     blocks, _ = docx_struct.load(str(pdf))
     blocks = docx_struct.compose_figures(blocks, str(pdf))   # не в load: load зовёт и coverage при извлечении
@@ -2332,6 +2429,13 @@ def job_memory(segs, res):
     """Память сборки из сегментов задачи: текст страниц, абзацы разметки (loc.struct_only) — переводы после проверки,
     шлифовки и правок редактора; надписи скриншотов — не здесь (их несут картинки)."""
     return Memory([(s["text"], (res.get(str(s["id"])) or {}).get("ru")) for s in segs if "shot" not in s["loc"]])
+
+
+def word_export(meta):
+    """PDF — экспорт из Word (дерево разметки по соглашениям Word): «Microsoft Word», «Microsoft® Office Word 2007» и
+    надстройка Acrobat «PDFMaker … for Word» (отчёт OAH 2003 и №35, №37 партии 2 шли текстовым слоем, 22.10)."""
+    return bool(re.search(r"Microsoft\W{0,3}(?:Office\s+)?Word|PDFMaker.{0,30}Word",
+                          (meta.get("producer") or "") + " " + (meta.get("creator") or ""), re.I))
 
 
 def coverage(pdf, segs):
@@ -2350,8 +2454,7 @@ def coverage(pdf, segs):
     meta = doc.metadata or {}
     # и Word 2007 — «Microsoft® Office Word 2007»: прежнее «Microsoft.{0,4}Word» его не узнавало, и руководства OAH
     # шли переводом поверх PDF (живая проверка, 16.10)
-    if not re.search(r"Microsoft\W{0,3}(?:Office\s+)?Word", (meta.get("producer") or "") + " " + (meta.get("creator") or ""),
-                     re.I):
+    if not word_export(meta):
         return 0.0
     blocks, _ = docx_struct.load(str(pdf))
     blob = "".join(KEY(text_of(b["runs"])) for b in _paras(blocks))

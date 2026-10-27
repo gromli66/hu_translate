@@ -37,7 +37,7 @@ def main():
     a = ap.parse_args()
     prj = P.load_project(a.project) if a.project else None
     if a.cmd in ("run", "extract", "terms"):
-        P.extract(a.inputs, a.work)
+        P.extract(a.inputs, a.work, lang=P.src_lang(prj))
     if a.cmd in ("run", "translate"):
         P.translate(a.work, prj, a.workers, redo=a.redo)
         P.struct_fill(a.work, prj)
