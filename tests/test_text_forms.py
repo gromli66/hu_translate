@@ -668,6 +668,32 @@ def test_sentence_cut_mid_phrase_continues_despite_row_number_against_last_line(
     assert len([p for p in LY.group(items, [], []) if len(p["text"]) > 3]) == 2
 
 
+def test_tall_line_boxes_with_tight_pitch_stay_one_paragraph():
+    """Моноширинный шрифт 3SZ17: рамка строки 15 pt при шаге строк 10 pt — рамки соседних строк перекрываются на 5 pt;
+    строка 2 не подходила к абзацу строки 1, а строка 3 — подходила, и абзац шёл через строку («valaséhez», 28.10)."""
+    import layout as LY
+    fr = lambda t, y: {"t": t, "bbox": [323, y, 557, y + 15], "size": 9.5, "bold": False, "family": "mono"}
+    frags = [fr("MEGJEGYZÉS: A 30UJ04S201 vala-", 108), fr("mint a 30UJ04D001 szivattyú BV-i működteté-", 118),
+             fr("séhez az ENGEDÉLYEZÉS gomb megnyomása,", 128), fr("valamint az érintett működtető kapcsolók", 138)]
+    pars = LY.group(frags, [], [])
+    assert len(pars) == 1
+    assert pars[0]["text"] == ("MEGJEGYZÉS: A 30UJ04S201 valamint a 30UJ04D001 szivattyú BV-i működtetéséhez az "
+                               "ENGEDÉLYEZÉS gomb megnyomása, valamint az érintett működtető kapcsolók")
+    # два кусочка на одной строке (разные столбцы) — по-прежнему два абзаца
+    side = [{"t": "bal", "bbox": [71, 100, 120, 115], "size": 9.5, "bold": False, "family": "mono"},
+            {"t": "jobb", "bbox": [330, 100, 380, 115], "size": 9.5, "bold": False, "family": "mono"}]
+    assert len(LY.group(side, [], [])) == 2
+
+
+def test_trailing_space_does_not_hide_column_rule():
+    """Хвостовой пробел моноширинной строки доходит до линии столбца: рамка «…tudja » кончалась правее линии, и строки
+    двух столбцов склеивались в один кусок («…kézzel tudja Az érintett tartályokhoz», 3SZ17, 28.10)."""
+    import layout as LY
+    f = {"t": "kell lennie, hogy kézzel tudja ", "bbox": [71, 283, 321, 299]}
+    assert LY._ink_x1(f) < 319.1 and LY._vrule_in([(234, 316, 319.1)], LY._ink_x1(f), 323, 283, 299)
+    assert LY._ink_x1({"t": "tudja", "bbox": [71, 283, 321, 299]}) == 321
+
+
 def test_page_number_found_by_place_when_label_differs_per_page(tmp_path):
     """Подпись номера листа разная на листах («Oldalszám:» / «Oldal» «:» / «Old.» …, 30BLFKSZ): общего набора слов нет,
     число ищется по месту — прежде оно застывало числом одного листа во всех шапках."""
@@ -703,3 +729,36 @@ def test_header_label_column_widens_for_longer_russian_label():
     w = b._fit_widths(rows, [55, 300, 70, 40], 11.0)
     assert w[0] > 55 and w[2] > 70 and abs(sum(w) - 465) < 1 and w[1] >= 0.6 * 300
     assert b._fit_widths(rows, [120, 200, 100, 45], 11.0) == [120, 200, 100, 45]
+
+
+def test_header_words_keep_glyphs_of_fallback_font_raised_by_two_points():
+    """«ő» запасного шрифта стоит на 2,1 pt выше соседей: при допуске по высоте 2 pt он отрывался «словом» «ő ő ő», а
+    в названии не хватало букв («gzfejleszt», «ellenrz»; шапка 30GF118GT, 28.10)."""
+    chars, x = [], 100.0
+    for ch in "gőzfejlesztő":
+        raised = ch == "ő"
+        chars.append({"text": ch, "x0": x, "x1": x + 5.5, "top": 54.6 if raised else 56.7, "bottom": 65.5 if raised else 67.6,
+                      "size": 10.9, "upright": True, "doctop": 0, "fontname": "Times"})
+        x += 5.5
+    assert [w["text"] for w in D._words(chars)] == ["gőzfejlesztő"]
+    assert D._words([]) == []
+
+
+def test_full_page_row_is_capped_below_body_height(tmp_path):
+    """Строка таблицы во весь лист оригинала задана «не ниже» его высоты и вместе с шапкой выше поля тела (линии оригинала
+    доходят ниже измеренного поля); абзац в 1 pt перед таблицей раздела — и таблица уходила на следующий лист, оставляя
+    пустой (30THHAGT, 28.10). Потолок высоты строки — поле тела минус 60 pt; обычные строки не трогаются."""
+    g = lambda top: {"page": 1, "top": top, "bottom": top + 10, "x0": 80, "x1": 300, "first_x0": 80, "size": 10,
+                     "lines": 1}
+    cellp = lambda t, top: {"blocks": [{"k": "p", "runs": [{"t": t, "font": "Tahoma", "size": 10, "b": False,
+                                                            "i": False, "color": "000000"}], "geom": g(top)}],
+                            "th": False, "geom": g(top)}
+    tab = {"k": "table", "rows": [[cellp("1.1.", 100), cellp("Első", 100)], [cellp("1.2.", 112), cellp("Második", 112)]],
+           "borders": True, "geom": dict(g(100), x1=500),
+           "frame": {"xs": [70, 120, 500], "ys": [78.0, 90.0, 742.0], "row_lines": True}}
+    out = tmp_path / "cap.docx"
+    B.Builder(B.Memory([("Első", "Первый"), ("Második", "Второй")]), lambda img: png(), PROFILE).build(
+        [tab], str(out), dict(LAYOUT, page_tok="2", num_start={"page": 1, "value": 2}, first_is_body=True))
+    heights = [int(h.get(W + "val")) / 20 for h in Document(str(out)).element.body.iter(W + "trHeight")]
+    body_h = LAYOUT["H"] - LAYOUT["top"] - LAYOUT["bottom"]
+    assert heights and max(heights) <= body_h - 60 + 0.1 and min(heights) == 12.0

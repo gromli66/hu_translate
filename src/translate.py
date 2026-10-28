@@ -105,10 +105,14 @@ CYR = re.compile(r"[а-яА-Я]")
 TAG = re.compile(r"</?f\d+>")
 
 
+NUM_GLUED = re.compile(r"(?<=\d\.)(?=(?!(?:docx?|xlsx?|pdf|txt|html?|json|xml|png|jpe?g|zip)\b)[a-záéíóöőúüű]{4,}(?![\w.]))")
+
+
 def to_model(text):
     """Серия табуляций — одна метка [TAB×4]: подряд идущие [TAB][TAB][TAB][TAB] модель пересчитывает
-    неверно (42 из 50 вызовов DOCX-замера были повторами из-за этого, 01.10)."""
-    t = re.sub(r"\t+", lambda m: "[TAB]" if len(m.group()) == 1 else f"[TAB×{len(m.group())}]", text)
+    неверно (42 из 50 вызовов DOCX-замера были повторами из-за этого, 01.10). Слово, приставшее к номеру точкой
+    («ugrás a(z) 4.1.2.29.fejezetre»), отделяется пробелом: слитным модель оставляла его по-венгерски (28 строк, 28.10)."""
+    t = re.sub(r"\t+", lambda m: "[TAB]" if len(m.group()) == 1 else f"[TAB×{len(m.group())}]", NUM_GLUED.sub(" ", text))
     return re.sub(r"\n+", lambda m: "[BR]" if len(m.group()) == 1 else f"[BR×{len(m.group())}]", t)
 
 
@@ -134,7 +138,15 @@ def codes_of(src):
         c = re.sub(r"(?<=[\d%])[a-záéíóöőúüű]+$", "", c)
         c = re.sub(r"^[a-záéíóöőúüű]+\.", "", c)
         c = re.sub(r"(?<=^\d)\.[A-ZÁÉÍÓÖŐÚÜŰ][a-záéíóöőúüű]{2,}$|(?<=^\d\d)\.[A-ZÁÉÍÓÖŐÚÜŰ][a-záéíóöőúüű]{2,}$", "", c)  # «5.Teszt» → «5»
-        c = re.sub(r"^[a-záéíóöőúüű]{3,}\((?=\w*\d)", "", c)                          # «üzemállapotban(M2» → «M2»
+        c = re.sub(r"^[a-záéíóöőúüű]{3,}(?:-[a-záéíóöőúüű]+)?\((?=\w*\d)", "", c)     # «üzemállapotban(M2», «bar-os(123» → «M2», «123»
+        c = re.sub(r"^[a-záéíóöőúüű]{3,}-(?=\d)", "", c)                               # «sebességét-5» → «5»
+        c = re.sub(r"^a(?=\d{2}[A-Z])", "", c)                                         # «a30TH60S201» (артикль «a» + код) → «30TH60S201»
+        c = re.sub(r"(?<=\d)\.[A-ZÁÉÍÓÖŐÚÜŰ][a-záéíóöőúüű]{2,}$", "", c)             # «2.1.Személyi» → «2.1»
+        c = c.strip(".,;:()")
+        um = re.fullmatch(r"(\d[\d.,]*)?(?:mbar|bar|kV|kW|MW|mA|nA|Hz)/(\d+)", c)     # «2bar/10 perc» → «2» и «10»: единица переводится
+        if um:
+            out.update(g for g in um.groups() if g)
+            continue
         c = re.sub(r"(?<=\d)(kV|kW|MW|mA|nA|Hz|mbar|bar)$", "", c)   # «0,4kV» → «0,4»: единица переводится (fix_units)
         if c:
             out.add(c)
@@ -213,6 +225,8 @@ def action_flip(src, ru):
     return out
 
 
+# торговые марки и стандарты, которые остаются латиницей, хотя стоят среди прописных слов фразы («STORZ KAPOCS», «ASME OM KÓD»)
+LATIN_BRANDS = frozenset({"STORZ", "ASME"})
 NAME_FIELD = re.compile(r"(?i)\bNév\s*:\s*([^|\n]*?)(?=\s+(?:Szervezet|Aláírás|Dátum|Beosztás)\b|\||$)")
 MAIL = re.compile(r"([^;<:\n]*?)\s*<([^<>@\s]+@[^<>\s]+)>")
 HYPHEN_CAPS = re.compile(r"(?<=[A-ZÁÉÍÓÖŐÚÜŰ])- (?=[A-ZÁÉÍÓÖŐÚÜŰ]{2})")      # «MENNYI- SÉG» — перенос слова в узкой ячейке
@@ -274,7 +288,9 @@ def check(src, ru, allowed_latin=frozenset(), gloss_abbr=frozenset(), vocab=froz
     # прописная фраза оригинала из 2+ слов (NEM LETT ELVÉGEZVE, KISEBB VAGY EGYENLŐ) — текст, а не обозначения
     left += [w for w in phrase_words if w in caps_ru and len(w) >= 3 and w not in left]
     names = name_words(src) | {w for d in DESIGNATOR.findall(plain) for w in LETTERS.findall(d)}     # обозначения — код
-    left = [w for w in left if w not in names]
+    # прописное слово внутри обозначения с цифрами («3SZ17/INFO») — часть кода, а не слово текста
+    names |= {w for tok in re.findall(r"\S*\d\S*", plain) for w in LETTERS.findall(tok) if w.isupper()}
+    left = [w for w in left if w not in names and w not in LATIN_BRANDS]
     if left:
         issues.append("венгерский остался: " + ", ".join(left[:6]))
     if CJK.search(ru):
@@ -395,8 +411,9 @@ def check_generic(src, out, s_lang, t_lang):
 
 UNITS = [("mg/dm3", "мг/дм³"), ("g/dm3", "г/дм³"), ("mg/kg", "мг/кг"), ("g/kg", "г/кг"), ("kg/cm2", "кгс/см²"),
          ("m3/h", "м³/ч"), ("m3/óra", "м³/ч"), ("dm3/óra", "дм³/ч"), ("t/óra", "т/ч"), ("l/óra", "л/ч"), ("kg/óra", "кг/ч"), ("mm/s", "мм/с"), ("t/h", "т/ч"), ("l/h", "л/ч"), ("mbar", "мбар"), ("bar", "бар"),
-         ("kV", "кВ"), ("KV", "кВ"), ("kW", "кВт"), ("MW", "МВт"), ("Hz", "Гц"), ("mA", "мА"), ("nA", "нА")]
-UNIT_RE = re.compile(r"(?<=\d)\s?(" + "|".join(re.escape(u) for u, _ in UNITS) + r")(?![\w/])")
+         ("kV", "кВ"), ("KV", "кВ"), ("kW", "кВт"), ("MW", "МВт"), ("Hz", "Гц"), ("mA", "мА"), ("nA", "нА"), ("1/min", "1/мин")]
+UNIT_RE = re.compile(r"(?<=\d)\s?(" + "|".join(re.escape(u) for u, _ in UNITS) + r")(?!\w|/(?!\d))")   # «1,5 bar/10 мин» — единица перед «/10»
+PER_MIN = re.compile(r"(?<![\w/])1/min(?!\w)")             # «Fordulatszám (1/min)» — без числа впереди
 
 
 # несуществующие слова, которые модель собирает сама от глагола глоссария («вывесить плакат» → «ВЫВЕСИВАНИЕ»: 107 строк
@@ -421,16 +438,17 @@ def fix_units(ru):
     # служебная пометка глоссария, скопированная моделью в текст («Собрать электрическую схему [уточнить] …»):
     # 35 сегментов v3, 21 — v31 (слепое сравнение 04.10); убирается здесь, т. к. fix_units стоит на всех путях вывода
     ru = re.sub(r"\s*\[(уточнить|проверено Claude)\]", "", ru)
-    return fix_nonwords(UNIT_RE.sub(lambda x: " " + m[x.group(1)], ru))
+    return fix_nonwords(PER_MIN.sub("1/мин", UNIT_RE.sub(lambda x: " " + m[x.group(1)], ru)))
 
 
 CYR_CAPS = re.compile(r"(?<![А-ЯЁа-яё])[А-ЯЁ]{5,}(?![А-ЯЁа-яё])")
 
 
-def fix_caps(src, ru):
+def fix_caps(src, ru, keep=frozenset()):
     """Лишние прописные: в оригинале нет ни одного прописного слова (кроме обозначений), а модель пишет
     «НЕМЕДЛЕННО отключить», «ОСТАНОВИТЬ турбину» (правило про AZONNAL → НЕМЕДЛЕННО применено не к месту,
-    вычитка v2 01.10). Слова от 5 букв понижаются; первое слово сегмента — с заглавной."""
+    вычитка v2 01.10). Слова от 5 букв понижаются; первое слово сегмента — с заглавной. keep — прописные слова,
+    которые пишет сам глоссарий (ДАПЭН, АПЭН, САОЗ): «KÜTSZ» без слова с гласными в оригинале давало «дапэн», 25 строк 28.10."""
     plain = TAG.sub(" ", src)
     # «НЕ затронутой»: подсказка «nem X = НЕ + X» давала прописное «НЕ», когда в оригинале «nem» строчное (02.10)
     if not re.search(r"(?<![\wÀ-ɏ])(NEM|NE|SEM)(?![\wÀ-ɏ])", plain):
@@ -443,6 +461,8 @@ def fix_caps(src, ru):
             return ru
     def low(m):
         w = m.group()
+        if w in keep:
+            return w
         start = m.start() == 0 or re.fullmatch(r"[\s\-–•\d.)(]*", ru[:m.start()]) is not None
         return w.capitalize() if start else w.lower()
     return CYR_CAPS.sub(low, ru)
@@ -539,6 +559,7 @@ class Translator:
         self.strict_entries = [e for e in self.extra_entries if "строгий" in (e.note or "")] or self.extra_entries
         self.abbrs = G.abbreviations(self.entries)
         self.allowed_latin = self._allowed_latin()
+        self.ru_caps = frozenset(w for e in self.entries for w in re.findall(r"(?<![А-ЯЁа-яё])[А-ЯЁ]{5,}(?![А-ЯЁа-яё])", e.ru))
         # всё, что глоссарий переводит: аббревиатуры раздела + прописные венгерские ключи остальных записей
         self.gloss_abbr = frozenset(set(self.abbrs) | {w for e in self.entries for seq in e.alts for w in seq if G._is_abbr(w)})
         self.think, self.retry_think = think, retry_think
@@ -553,7 +574,7 @@ class Translator:
         """Постобработка перевода по паре: hu-ru — прописные и единицы (fix_caps, fix_units); перевод на русский —
         единицы; прочие пары — без изменений."""
         if self.hu_ru:
-            return fix_units(fix_caps(src, out))
+            return fix_units(fix_caps(src, out, self.ru_caps))
         return fix_units(out) if self.tgt == "ru" else out
 
     def term_issues(self, src, ru):

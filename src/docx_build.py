@@ -1429,6 +1429,11 @@ class Builder:
                     el.set(W + "w", str(round(lim * 20)))
         aligns = _col_align(rows, xs, (b.get("geom") or {}).get("page"), any_page=bool(fr.get("row_lines")))
         in_head = True
+        # строка во весь лист оригинала («не ниже» её высоты) вместе с шапкой таблицы и абзацем в 1 pt перед таблицей раздела
+        # выше поля тела (поля листа измерены приближённо: линии оригинала доходят ниже) — таблица не помещалась, лист шёл
+        # пустым, таблица на следующем (30THHAGT: листы 5 и 6, 28.10; по замеру LibreOffice помещает строку до ~610 pt
+        # вместе с шапкой при поле тела 659 pt: шапка колонтитула в три строки). Потолок высоты строки — поле тела минус 60 pt
+        row_cap = (self.L["H"] - self.L["top"] - self.L["bottom"] - 60) if self.L else None
         for ri, row in enumerate(rows):
             if all("span" in c for c in row):               # ячейки по сетке линий (docx_layout) — места известны
                 starts = [sum(c["span"] for c in row[:i]) for i in range(len(row))]
@@ -1468,7 +1473,8 @@ class Builder:
                 # раздувал графы листа изменений ИН-1065 с 18 до 27 pt, хвост листа уходил на новый (19.10)
                 blank = not size and not any("img" in r for c in row for x in c["blocks"] if x["k"] == "p"
                                              for r in x["runs"])
-                _trpr_put(t.rows[ri]._tr, _el("w:trHeight", w__val=round((ys[ri + 1] - ys[ri]) * 20),
+                hh = ys[ri + 1] - ys[ri]
+                _trpr_put(t.rows[ri]._tr, _el("w:trHeight", w__val=round((hh if blank or not row_cap else min(hh, row_cap)) * 20),
                                               w__hRule="exact" if blank else "atLeast"))
             for ci, cell in enumerate(row):
                 dc = t.cell(ri, starts[ci])

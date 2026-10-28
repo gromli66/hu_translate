@@ -31,6 +31,16 @@ BOLD_W = r"Bold|Black|Heavy|Semibold|Demibold|félkövér|Fett|полужирн�
 ITAL_W = r"Italic|Oblique|dőlt|Kursiv|курсив|Italique|Cursiva|Corsivo"
 
 
+def _words(chars):
+    """Слова знаков колонтитула. Допуск по высоте — от кегля: «ő», «ű» запасного шрифта (TimesNewRoman при основном
+    Times) стоят на 2,1 pt выше соседей, при допуске 2 pt они отрывались в «слово» «ő ő ő», а в названии не хватало
+    букв (30GF118GT, 28.10)."""
+    import pdfplumber
+    sizes = sorted(float(c["size"]) for c in chars if c["text"].strip())
+    tol = max(2.0, 0.26 * sizes[len(sizes) // 2]) if sizes else 2.0
+    return pdfplumber.utils.extract_words(chars, x_tolerance=2.5, y_tolerance=tol) if chars else []
+
+
 def _upright(c):
     """Знак не повёрнут — по матрице (у повёрнутого на 90° текста JPDS pdfplumber даёт upright=True)."""
     m = c.get("matrix")
@@ -2316,7 +2326,7 @@ def layout(path, blocks, content=None):
     head_imgs = [{"xref": i["stream"].objid, "x0": float(i["x0"]), "x1": float(i["x1"]), "top": float(i["top"]),
                   "bottom": float(i["bottom"])} for i in page.images if i.get("mcid") is None and float(i["top"]) < body_top and logo(i)]
     head_imgs += _vector_logos(page, body_top, head_chars)
-    hw = pdfplumber.utils.extract_words(head_chars, x_tolerance=2.5, y_tolerance=2) if head_chars else []
+    hw = _words(head_chars) if head_chars else []
     lines = {}
     for w in hw:
         lines.setdefault(round(float(w["top"]) / 4), []).append(w)
@@ -2536,7 +2546,7 @@ def _zone_paras(chars, rects, x_left, x_right, imgs=(), page_w=None):
              and float(r["x1"]) - float(r["x0"]) >= 3 and float(r["bottom"]) - float(r["top"]) >= 3]
     if vs or boxed:
         return None
-    words = pdfplumber.utils.extract_words(chars, x_tolerance=2.5, y_tolerance=2) if chars else []
+    words = _words(chars) if chars else []
     if not words and not imgs:
         return None
     mid = (x_left + x_right) / 2
@@ -2603,7 +2613,7 @@ def _typical_page(pdf, body_top, H, sample=15, cbot=lambda pg: None):
         # без пробелов: пробел в конце строки тела выходит за её рамку (PDF без разметки) и у каждого листа свой —
         # листы с одинаковым штампом не находились, номер листа застывал числом (32RDGT, 20.10)
         sig[i] = re.sub(r"\d+", "#", "".join(c["text"] for c in arts if c["text"].strip()))
-        words[i] = pdfplumber.utils.extract_words(arts, x_tolerance=2.5, y_tolerance=2) if arts else []
+        words[i] = _words(arts) if arts else []
     common = Counter(s for s in sig.values() if s.strip()).most_common(1)
     same = [i for i in idx if common and sig[i] == common[0][0]] or idx
     rep = same[len(same) // 2]
@@ -2718,7 +2728,7 @@ def _rule_grid(chars, rects, imgs=()):
     hs = [((t + u) / 2, a, b) for a, b, t, u in thin if u - t < 3 and b - a > 20]
     clu = lambda vals: [v for i, v in enumerate(sorted(vals)) if i == 0 or v - sorted(vals)[i - 1] > 2.5]
     xs, ys = clu([v[0] for v in vs]), clu([h[0] for h in hs])
-    words = pdfplumber.utils.extract_words(chars, x_tolerance=2.5, y_tolerance=2) if chars else []
+    words = _words(chars) if chars else []
     if len(xs) < 3 or len(ys) < 2 or not (words or imgs):
         return None
     ncol, nrow = len(xs) - 1, len(ys) - 1
@@ -2769,7 +2779,7 @@ def _zone_grid(chars, rects):
     и кегль — по знакам колонтитула. {"rows": [{"cells", "bold"}], "widths", "aligns", "font", "size", "box"}."""
     import pdfplumber
     out = {"rows": [], "widths": [], "aligns": [], "font": None, "size": None, "box": bool(rects), "inner": False}
-    words = pdfplumber.utils.extract_words(chars, x_tolerance=2.5, y_tolerance=2) if chars else []
+    words = _words(chars) if chars else []
     if not words:
         return out
     xs = sorted({round(float(r["x0"])) for r in rects} | {round(float(r["x1"])) for r in rects})

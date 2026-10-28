@@ -40,6 +40,14 @@ def _union(bbs):
     return [min(b[0] for b in bbs), min(b[1] for b in bbs), max(b[2] for b in bbs), max(b[3] for b in bbs)]
 
 
+def _ink_x1(f):
+    """Правый край кусочка по видимым знакам: хвостовой пробел моноширинной строки («…kézzel tudja ») доходил до линии
+    столбца и закрывал её от проверки склейки (3SZ17: строки двух столбцов склеивались в один кусок)."""
+    t, bb = f["t"], f["bbox"]
+    k = len(t) - len(t.rstrip())
+    return bb[2] - k * (bb[2] - bb[0]) / len(t) if t and k else bb[2]
+
+
 def _vrule_in(vs, xa, xb, y0, y1):
     return any(xa - 1 <= x <= xb + 1 and min(y1, ry1) - max(y0, ry0) > 0.5 * (y1 - y0) for ry0, ry1, x in vs)
 
@@ -203,7 +211,7 @@ def frags_from_text(page, vs=()):
                 marker = cur is not None and bool(BULLET.match(cur["t"].strip())) and bb[0] - cur["bbox"][2] > 3
                 if cur is not None and bb[0] - cur["bbox"][2] <= GAP and not marker \
                         and not (bb[0] - cur["bbox"][2] >= CODE_GAP and code_line(cur["t"]) and code_line(txt)) \
-                        and not _vrule_in(vs, cur["bbox"][2], bb[0], bb[1], bb[3]) \
+                        and not _vrule_in(vs, _ink_x1(cur), bb[0], bb[1], bb[3]) \
                         and not (_lead(cur["t"]) and _image_between(icons, cur["bbox"][2], bb[0], bb[1], bb[3])):
                     cur["t"] += txt
                     cur["bbox"] = _union([cur["bbox"], bb])
@@ -222,7 +230,7 @@ def frags_from_text(page, vs=()):
     for f in out:
         m = merged[-1] if merged else None
         if m is not None and abs(m["bbox"][1] - f["bbox"][1]) < 2.5 and abs(m["bbox"][3] - f["bbox"][3]) < 2.5 \
-                and 0 <= f["bbox"][0] - m["bbox"][2] <= GAP and not _vrule_in(vs, m["bbox"][2], f["bbox"][0], f["bbox"][1], f["bbox"][3]) \
+                and 0 <= f["bbox"][0] - m["bbox"][2] <= GAP and not _vrule_in(vs, _ink_x1(m), f["bbox"][0], f["bbox"][1], f["bbox"][3]) \
                 and not (f["bbox"][0] - m["bbox"][2] >= CODE_GAP and code_line(m["t"]) and code_line(f["t"])) \
                 and not (_lead(m["t"]) and _image_between(icons, m["bbox"][2], f["bbox"][0], f["bbox"][1], f["bbox"][3])) \
                 and not (BULLET.match(m["t"].strip()) and f["bbox"][0] - m["bbox"][2] > 3):
@@ -378,7 +386,10 @@ def group(frags, hs, vs=(), form=False):
                 last = p["frags"][-1]["bbox"]
                 gap = y0 - last[3]
                 size = max(p["size"], f["size"])
-                if not (-0.35 * size <= gap <= 0.6 * size):
+                # рамка строки выше шага строк (моноширинный шрифт 3SZ17: рамка 15 pt при шаге 10 pt) — рамки соседних
+                # строк перекрываются; строка ниже верха предыдущей на шаг — продолжение, а не та же строка
+                tall = gap < 0 and -0.7 * size <= gap and y0 - last[1] >= 0.85 * size
+                if not (-0.35 * size <= gap <= 0.6 * size or tall):
                     continue
                 if min(x1, px1) - max(x0, px0) <= 0:
                     continue

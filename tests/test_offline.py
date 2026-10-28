@@ -204,3 +204,38 @@ def test_numpy_values_in_segments_do_not_break_saving(tmp_path):
     P.save_doc(tmp_path, "d", {"segs": [{"id": np.int64(1), "loc": {"ocr": np.bool_(True), "size": np.float32(10.5)}}]})
     d = json.loads((tmp_path / "json" / "d.json").read_text(encoding="utf-8"))
     assert d["segs"][0] == {"id": 1, "loc": {"ocr": True, "size": 10.5}}
+
+
+def test_glued_tokens_codes_units_and_brands_are_not_false_issues():
+    """Ложные замечания партии 4 (28.10): слово или артикль, приставшие к номеру («2.1.Személyi», «a30TH60S201»,
+    «bar-os(123», «sebességét-5», «mivoltát.(30»); «INFO» в «3SZ17/INFO» — часть кода; STORZ, ASME — марки; «1,5 bar/10 мин»
+    и «1/min» — единицы по глоссарию."""
+    assert T.check("2.1.Személyi és adminisztratív feltételek", "2.1. Персональные и административные условия") == []
+    assert T.check("A 30GE01 panelen a30TH60S201 üzemmód kapcsolót", "На панели 30GE01 переключатель режима 30TH60S201") == []
+    assert T.check("132 bar-os(123", "при 132 бар (123") == []
+    assert T.check("a nyomáscsökkentés sebességét-5 bar/perc- betartva", "соблюдая скорость 5 бар/мин") == []
+    assert T.check("ellenőrizni a stabil mivoltát.(30 perc időtartamig stabil.)", "проверить стабильность (30 мин)") == []
+    vocab = frozenset({"info"})
+    assert T.check("Azonosító: 3SZ17/INFO", "Идентификатор: 3SZ17/INFO", vocab=vocab) == []
+    assert T.check("ZÁRVA, STORZ KAPOCS ZÁRÓKUPAKOK FELSZERELVE", "ЗАКРЫТО, ЗАГЛУШКИ НА СОЕДИНЕНИЯХ STORZ УСТАНОВЛЕНЫ") == []
+    assert T.fix_units("Перепад давления < 1,5 bar/10 мин.") == "Перепад давления < 1,5 бар/10 мин."
+    assert T.fix_units("Частота вращения (1/min), 2900 1/min") == "Частота вращения (1/мин), 2900 1/мин"
+    assert T.fix_units("5 bar/h и 1,5 bar") == "5 bar/h и 1,5 бар"
+    # единица внутри «2bar/10 perc» переводится: коды — «2» и «10»
+    assert {"2", "10"} <= T.codes_of("dp/dt< 2bar/10 perc") and "2bar/10" not in T.codes_of("dp/dt< 2bar/10 perc")
+    assert T.check("ha a dp/dt< 2bar/10 perc.", "если dp/dt< 2 бар/10 мин.") == []
+
+
+def test_word_glued_to_number_is_separated_for_the_model():
+    """«ugrás a(z) 4.1.2.29.fejezetre» слитным модель оставляла по-венгерски (28 строк); в запросе слово отделено,
+    а номер файла «3SZ17.pdf» и десятичное «2.5mm» не трогаются."""
+    assert T.to_model("ugrás a(z) 4.1.2.29.fejezetre") == "ugrás a(z) 4.1.2.29. fejezetre"
+    assert T.to_model("a 4.6.fejezetre és 2.5mm, 3SZ17.pdf, 5.Teszt") == "a 4.6. fejezetre és 2.5mm, 3SZ17.pdf, 5.Teszt"
+
+
+def test_fix_caps_keeps_capitals_of_glossary_abbreviations():
+    """«KÜTSZ» (одна гласная — не слово) в оригинале: ДАПЭН из глоссария понижался до «дапэн» (25 строк 28.10);
+    лишние прописные модели («НЕМЕДЛЕННО») по-прежнему понижаются."""
+    assert T.fix_caps("ÜTSZ, KÜTSZ, A204", "АПЭН, ДАПЭН, A204", frozenset({"ДАПЭН"})) == "АПЭН, ДАПЭН, A204"
+    assert T.fix_caps("ÜTSZ, KÜTSZ, A204", "АПЭН, ДАПЭН, A204") == "АПЭН, дапэн, A204"
+    assert T.fix_caps("azonnal leállítani", "НЕМЕДЛЕННО остановить", frozenset({"ДАПЭН"})) == "Немедленно остановить"
