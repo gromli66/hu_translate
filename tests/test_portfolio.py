@@ -80,3 +80,12 @@ def test_docx_from_pdf_keeps_every_page_and_label(tmp_path):
     xml = Document(out).element.body.xml
     assert all(f"Note{i}{k}" in xml for i in range(3) for k in range(5))
     assert xml.count("<w:sectPr") == 3                         # каждая страница — свой раздел
+
+
+def test_attachment_name_in_utf8_bytes_read_as_latin1_is_repaired():
+    """Имя вложения /F записано байтами UTF-8, прочитанными как Latin-1 («CÃ\x8dML» вместо «CÍML») — в имена готовых
+    файлов попадали «Ã³» (30BOXVILGT, 30YBGT, 28.10); юникодное имя /UF, если есть, берётся как есть."""
+    bad = "30X C\u00cdML.pdf".encode("utf-8").decode("latin-1")
+    assert P.attachment_name({"filename": bad}, "x") == "30X CÍML.pdf"
+    assert P.attachment_name({"filename": bad, "ufilename": "30X CÍML.pdf"}, "x") == "30X CÍML.pdf"
+    assert P.attachment_name({"filename": "Ñoño Ã.pdf"}, "x") == "Ñoño Ã.pdf"          # не UTF-8 — не трогать

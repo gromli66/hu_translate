@@ -102,6 +102,16 @@ def set_vocab(tr, segs):
 DOC_SUFFIXES = (".docx", ".pdf", ".doc")
 
 
+def attachment_name(info, fallback):
+    """Имя вложения: юникодное (/UF) важнее, а имя /F, записанное байтами UTF-8 как Latin-1 («CÃ\x8dML» вместо «CÍML»),
+    возвращается в UTF-8 (30BOXVILGT, 30YBGT: имена файлов с «Ã³» в готовых переводах, 28.10)."""
+    raw = info.get("ufilename") or info.get("filename") or fallback
+    try:
+        return raw.encode("latin-1").decode("utf-8") if re.search("[ÂÃ]", raw) else raw
+    except UnicodeError:
+        return raw
+
+
 def unpack_portfolio(f, dest):
     """PDF-портфолио (в каталоге есть /Collection): видимая страница — заглушка Adobe «откройте в Acrobat X»,
     сами документы лежат вложениями. Вложенные DOCX/PDF распаковываются в dest и переводятся как отдельные
@@ -113,7 +123,7 @@ def unpack_portfolio(f, dest):
     dest.mkdir(parents=True, exist_ok=True)
     out, emb = [], {}
     for i in range(d.embfile_count()):
-        name = Path(d.embfile_info(i).get("filename") or f"{f.stem}_{i}").name
+        name = Path(attachment_name(d.embfile_info(i), f"{f.stem}_{i}")).name
         if Path(name).suffix.lower() not in DOC_SUFFIXES:
             continue
         if not name.startswith(f.stem):                 # имя документа в комплекте должно быть уникальным

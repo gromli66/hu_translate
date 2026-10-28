@@ -41,8 +41,12 @@ def _numbers(t):
     return sorted(re.findall(r"\d+(?:[.,]\d+)*", C.TAGS.sub(" ", t)))
 
 
+LATIN_TAIL = re.compile(r"(?<=[\w%])-[a-záéíóöőúüű]{1,6}(?![\w])")        # «2.5mm-re», «UTS-ben» — венгерский суффикс
+
+
 def _ok(old, new, hu, rules, kind):
-    """Ответ портала принят: метки и числа те же, длина в разумных пределах, нарушений стало меньше и новых нет.
+    """Ответ портала принят: метки и числа те же, без нового венгерского суффикса («2.5mm-re»), длина в разумных
+    пределах, нарушений стало меньше и новых нет.
     Длина — против старого перевода; при Я5 — против оригинала, шире: сворачивание раскрытого названия укорачивает
     перевод в разы («Включите ЭВМ системы оперативной информации!» → «Включите ЭВМ UTS!»)."""
     if not new or sorted(re.findall(r"</?f\d+>", old)) != sorted(re.findall(r"</?f\d+>", new)):
@@ -53,6 +57,8 @@ def _ok(old, new, hu, rules, kind):
     else:
         base, lo, hi = old, 0.6, 1.6
     if _numbers(old) != _numbers(new) or not lo < len(new) / max(1, len(base)) < hi:
+        return False
+    if set(LATIN_TAIL.findall(new)) - set(LATIN_TAIL.findall(old)):      # портал вернул суффикс оригинала (30TH50, 28.10)
         return False
     after = C.check(hu, new, rules, kind)
     return len([v for v in after if not v[2]]) < len([v for v in before if not v[2]]) and len(after) <= len(before)

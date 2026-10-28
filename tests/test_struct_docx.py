@@ -192,6 +192,15 @@ def test_polish_accepts_collapsing_expanded_name_rejects_cut_answer():
     assert not PL._ok(old, "UTS", hu, RULES, "text")
 
 
+def test_polish_rejects_hungarian_suffix_brought_back_from_the_source():
+    """Шлифовка вернула «2.5mm-re» вместо «2.5 мм» (30TH50, 28.10): суффикс оригинала в переводе — не правка, а порча;
+    суффикс, уже бывший в старом переводе, правку не блокирует."""
+    hu, old = "Kapcsolja be az UTS-ben!", "Включите ЭВМ системы оперативной информации!"
+    assert PL._ok(old, "Включите ЭВМ UTS!", hu, RULES, "text")
+    assert not PL._ok(old, "Включите UTS-ben!", hu, RULES, "text")
+    assert PL.LATIN_TAIL.findall("с 25mm-ről на 2.5mm-re, кто-то") == ["-ről", "-re"]
+
+
 def test_vocab_skips_paths_and_abbreviation_written_once_lowercase():
     """«uts» в путях и именах файлов и один раз строчными в тексте при сотнях «UTS» — не венгерское слово (иначе голое
     «UTS» переводилось и не ловилась потерянная латиница, сервис 15.10); слова через косую и венгерское слово
@@ -1782,6 +1791,14 @@ def test_case_suffix_and_dotted_abbreviation_are_not_codes():
     ru = "ЕСЛИ разность значений в 4.1.10. и 4.1.9., <5 бар"
     assert C.fix_code("Ha a 4.1.10. és 4.1.9.-ben rögzített", ru, RULES)[0] == ru
     assert not [v for v in C.check("Oszt.vez.", "Нач. отдела", RULES) if v[0] == "Я6"]
+
+
+def test_number_with_glued_unit_is_not_a_verbatim_code():
+    """«7.4bar», «2.5mm-re» — число с единицей: единицу переводят («7.4 бар»), шлифовка не должна возвращать латиницу
+    (30RXBSZGT, 30TH50: «≤7.4bar», «2.5mm-re», 28.10); имя файла с числом внутри — по-прежнему код."""
+    assert C._codes("≤7.4bar és 25mm-ről 2.5mm-re, 5mbar") == []
+    assert C._codes("lásd a rev2.5mm_x.ini fájlt") == ["rev2.5mm_x.ini"]
+    assert not [v for v in C.check("Nyomás ≤7.4bar", "Давление ≤7.4 бар", RULES) if v[0] == "Я6"]
 
 
 def test_hungarian_leftover_ignores_document_codes_and_first_use_abbreviation():
