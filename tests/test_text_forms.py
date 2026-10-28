@@ -741,6 +741,12 @@ def test_header_words_keep_glyphs_of_fallback_font_raised_by_two_points():
                       "size": 10.9, "upright": True, "doctop": 0, "fontname": "Times"})
         x += 5.5
     assert [w["text"] for w in D._words(chars)] == ["gőzfejlesztő"]
+    # слово с «ő» выше соседей по строке — верх выровнен, строка колонтитула не рвётся при округлении верха
+    row = [dict(c, x0=c["x0"] + 200, x1=c["x1"] + 200) for c in chars]
+    plain = [{"text": t, "x0": 20.0 + 6 * i, "x1": 25.5 + 6 * i, "top": 56.7, "bottom": 67.6, "size": 10.9,
+              "upright": True, "doctop": 0, "fontname": "Times"} for i, t in enumerate("blokk")]
+    got = D._words(plain + row)
+    assert len({round(w["top"] / 3) for w in got}) == 1 and [w["text"] for w in got] == ["blokk", "gőzfejlesztő"]
     assert D._words([]) == []
 
 

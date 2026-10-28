@@ -34,11 +34,28 @@ ITAL_W = r"Italic|Oblique|dőlt|Kursiv|курсив|Italique|Cursiva|Corsivo"
 def _words(chars):
     """Слова знаков колонтитула. Допуск по высоте — от кегля: «ő», «ű» запасного шрифта (TimesNewRoman при основном
     Times) стоят на 2,1 pt выше соседей, при допуске 2 pt они отрывались в «слово» «ő ő ő», а в названии не хватало
-    букв (30GF118GT, 28.10)."""
+    букв (30GF118GT, 28.10). Верх слова с таким знаком выше, чем у соседей по строке, — строки колонтитула группируются
+    по округлённому верху, и слова с «ő» уходили в соседнюю строку; верх слов одной строки (по низу) выравнивается."""
     import pdfplumber
     sizes = sorted(float(c["size"]) for c in chars if c["text"].strip())
     tol = max(2.0, 0.26 * sizes[len(sizes) // 2]) if sizes else 2.0
-    return pdfplumber.utils.extract_words(chars, x_tolerance=2.5, y_tolerance=tol) if chars else []
+    words = pdfplumber.utils.extract_words(chars, x_tolerance=2.5, y_tolerance=tol) if chars else []
+    order = {id(w): i for i, w in enumerate(words)}
+    words.sort(key=lambda w: float(w["bottom"]))
+    groups, cur = [], []
+    for w in words:
+        if cur and float(w["bottom"]) - float(cur[-1]["bottom"]) > tol:
+            groups.append(cur)
+            cur = []
+        cur.append(w)
+    groups.append(cur)
+    for g in (g for g in groups if g):
+        tops = sorted(float(w["top"]) for w in g)
+        med = tops[len(tops) // 2]
+        for w in g:
+            if abs(float(w["top"]) - med) <= tol:
+                w["top"] = med
+    return sorted(words, key=lambda w: order[id(w)])
 
 
 def _upright(c):
