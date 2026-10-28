@@ -56,6 +56,10 @@ def test_gloss_misses_by_stems():
     e = entry("biztonsági hűtővíz", "охлаждающая вода ответственных потребителей")
     assert T.gloss_misses("A biztonsági hűtővíz rendszer", "система", [e]) == ["biztonsági hűtővíz"]
     assert T.gloss_misses("A biztonsági hűtővíz rendszer", "система охлаждающей воды ответственных потребителей", [e]) == []
+    # наречие «fokozatosan» («постепенно») — не «fokozat» («ступень»): к верному переводу замечания нет
+    st = entry("fokozat", "ступень")
+    assert T.gloss_misses("csak fokozatosan nyitható", "открывается только постепенно", [st]) == []
+    assert T.gloss_misses("a fokozat nő", "растёт", [st]) == ["fokozat"]
 
 
 # ------------------------------------------------------------------ проверки перевода

@@ -487,12 +487,18 @@ def badness(issues):
     return n
 
 
+# «fokozatosan» («постепенно») — не «fokozat» («ступень»): цепочка суффиксов os+a+n принимала наречие за форму термина
+# (замечание «термин документа: fokozat → ступень» к верному переводу, 30GF(135)51GT, 28.10)
+FALSE_FRIEND = re.compile(r"(?<![\wÀ-ɏ])fokozatos\w*", re.I)
+
+
 def gloss_misses(src, ru, entries, outer=None):
     """Мягкая проверка: русские термины найденных записей глоссария есть в переводе (по основам).
     Запись, все места которой лежат внутри более длинного термина (outer — весь глоссарий), не проверяется:
     «főgőz → острый пар» внутри «főgőz kollektor → главный паровой коллектор» давало ложные тревоги (v3, 02.10)."""
     low = ru.lower()
     miss = []
+    src = FALSE_FRIEND.sub(" ", src)
     found = G.find(src, entries)
     wider = G.find(src, outer, limit=100000) if outer is not None else found
     sp = {}

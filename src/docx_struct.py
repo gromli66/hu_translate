@@ -39,7 +39,9 @@ def _words(chars):
     import pdfplumber
     sizes = sorted(float(c["size"]) for c in chars if c["text"].strip())
     tol = max(2.0, 0.26 * sizes[len(sizes) // 2]) if sizes else 2.0
-    words = pdfplumber.utils.extract_words(chars, x_tolerance=2.5, y_tolerance=tol) if chars else []
+    # порядок знаков — как в потоке PDF: название бланка «TESZTELÉSI UTASÍTÁS» залезает под «Dátum:» и дату, по положению
+    # знаки двух надписей перемешивались («áDtjááturmha:tóságának», 30RR0102, 28.10)
+    words = pdfplumber.utils.extract_words(chars, x_tolerance=2.5, y_tolerance=tol, use_text_flow=True) if chars else []
     order = {id(w): i for i, w in enumerate(words)}
     words.sort(key=lambda w: float(w["bottom"]))
     groups, cur = [], []
@@ -741,19 +743,29 @@ def evict(bs):
     return out
 
 
-def join_pages(bs):
+def join_pages(bs, cell=False):
     """Абзац, разрезанный листом: Word размечает его половины двумя P — в DOCX выходил разрыв абзаца посреди фразы
     (с отступом первой строки у второй половины, синтетика 16.10). Соседние абзацы на соседних листах — один, если
     первый не кончен знаком конца фразы, а второй начат строчной или без отступа первой строки, который есть у
-    первого. Внутри пунктов списков и ячеек — так же."""
+    первого. Внутри пунктов списков и ячеек — так же. В ячейке слово прописными, перенесённое с дефисом в следующий
+    абзац («ELLENŐR-» / «ZÉS HELYE», шапка таблицы 30YCGT), — один абзац: с текстом страницы («ELLENŐR- ZÉS HELYE») он
+    совпадает, а половинами переводился «МЕСТО» / «КОНТРОЛЯ»."""
     out = []
     for b in bs:
         if b["k"] == "list":
-            b = dict(b, items=[join_pages(it) for it in b["items"]])
+            b = dict(b, items=[join_pages(it, cell) for it in b["items"]])
         elif b["k"] == "table":
-            b = dict(b, rows=[[dict(c, blocks=join_pages(c.get("blocks", []))) for c in r] for r in b["rows"]])
+            b = dict(b, rows=[[dict(c, blocks=join_pages(c.get("blocks", []), True)) for c in r] for r in b["rows"]])
         a = out[-1] if out else None
         ga, gb = (a or {}).get("geom") or {}, b.get("geom") or {}
+        if cell and a and a["k"] == b["k"] == "p" and a["runs"] and b["runs"] and "t" in a["runs"][-1] \
+                and "t" in b["runs"][0] and ga.get("page") == gb.get("page"):
+            ta, tb = text_of(a["runs"]).rstrip(), text_of(b["runs"]).lstrip()
+            if re.search(r"[A-ZÁÉÍÓÖŐÚÜŰ]{3,}-$", ta) and tb[:1].isupper() and len(tb) <= 40:
+                runs = list(a["runs"]) + [dict(r) for r in b["runs"]]
+                runs[len(a["runs"])]["t"] = " " + runs[len(a["runs"])]["t"].lstrip()
+                out[-1] = dict(a, runs=runs, **join_notes(a, b))
+                continue
         if a and a["k"] == b["k"] == "p" and ga.get("page") and gb.get("page") and gb["page"] == ga["page"] + 1 \
                 and a["runs"] and b["runs"] and "t" in a["runs"][-1] and "t" in b["runs"][0]:
             ta, tb = text_of(a["runs"]).rstrip(), text_of(b["runs"]).lstrip()

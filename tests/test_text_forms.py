@@ -768,3 +768,61 @@ def test_full_page_row_is_capped_below_body_height(tmp_path):
     heights = [int(h.get(W + "val")) / 20 for h in Document(str(out)).element.body.iter(W + "trHeight")]
     body_h = LAYOUT["H"] - LAYOUT["top"] - LAYOUT["bottom"]
     assert heights and max(heights) <= body_h - 60 + 0.1 and min(heights) == 12.0
+
+
+def test_flowchart_of_many_shape_bitmaps_is_a_whole_page_figure():
+    """Блок-схема Word: фигура — десятки картинок (градиент, тень), надписи лежат на них. Рисунок по краске не находился
+    (текст вычтен), схема шла таблицами и абзацами россыпью на трёх листах (30GF(135)51GT, л. 19, 28.10): лист с ≥ 60
+    картинками, на которых лежит половина надписей, — снимок листа с переведённого PDF; лист с мелкими значками,
+    рядом с которыми стоит текст, — нет."""
+    import layout as LY
+    import docx_layout as DLY
+    png_bytes = png()
+    doc = fitz.open()
+    page = doc.new_page(width=842, height=595)
+    segs = []
+    for k in range(70):
+        x, y = 30 + (k % 10) * 78, 60 + (k // 10) * 60
+        page.insert_image(fitz.Rect(x, y, x + 70, y + 30), stream=png_bytes)
+        page.insert_text((x + 4, y + 18), "szöveg", fontsize=8)
+        bb = [x + 4, y + 10, x + 40, y + 22]
+        segs.append({"id": k, "page": 0, "text": "szöveg", "loc": {"bbox": bb, "frags": [bb]}})
+    assert DLY._graphic_page(page, segs, []) is True
+    icons = doc.new_page(width=842, height=595)
+    segs2 = []
+    for k in range(70):
+        x, y = 30, 20 + k * 7.5
+        icons.insert_image(fitz.Rect(x, y, x + 5, y + 5), stream=png_bytes)
+        icons.insert_text((x + 12, y + 5), "pont", fontsize=5)
+        bb = [x + 12, y, x + 30, y + 6]
+        segs2.append({"id": k, "page": 1, "text": "pont", "loc": {"bbox": bb, "frags": [bb]}})
+    assert DLY._graphic_page(icons, segs2, []) is False
+
+
+def test_overlapping_header_texts_are_not_interleaved_by_position():
+    """Название бланка залезает под «Dátum:» и дату: по положению знаки двух надписей перемешивались
+    («áDtjááturmha:tóságának», 30RR0102, 28.10) — слова берутся в порядке потока PDF."""
+    chars, x = [], 100.0
+    def put(text, x0, step=5.0):
+        nonlocal chars
+        for k, ch in enumerate(text):
+            chars.append({"text": ch, "x0": x0 + k * step, "x1": x0 + k * step + step, "top": 56.0, "bottom": 66.0,
+                          "size": 10.0, "upright": True, "doctop": 0, "fontname": "Times"})
+    put("atjarhatosag", 100.0)            # название: 100…160
+    put("Datum:", 110.0)                  # метка лежит поверх названия
+    got = [w["text"] for w in D._words(chars)]
+    assert "atjarhatosag" in got and "Datum:" in got
+
+
+def test_caps_word_split_between_cell_paragraphs_is_one_paragraph():
+    """Шапка таблицы 30YCGT: «ELLENŐR-» и «ZÉS HELYE» — два P одной ячейки; с текстом страницы («ELLENŐR- ZÉS HELYE») они
+    не совпадали, и половины переводились «МЕСТО» / «КОНТРОЛЯ» (28.10). Вне ячейки и со строчной второй частью — как было."""
+    g = {"page": 4, "top": 100, "bottom": 110, "x0": 80, "x1": 140, "first_x0": 80, "size": 9, "lines": 1}
+    para = lambda t: {"k": "p", "runs": [{"t": t, "font": "Tahoma", "size": 9, "b": True, "i": False, "color": "000000"}],
+                      "geom": dict(g)}
+    cell = lambda *ts: {"blocks": [para(t) for t in ts], "th": True}
+    tab = {"k": "table", "rows": [[cell("ELLENŐR-", "ZÉS HELYE"), cell("MEGNEVEZÉS-", "tetel")]], "geom": dict(g)}
+    out = D.join_pages([tab, para("ELLENŐR-"), para("ZÉS HELYE")])
+    texts = [[D.text_of(x["runs"]) for x in c["blocks"]] for c in out[0]["rows"][0]]
+    assert texts == [["ELLENŐR- ZÉS HELYE"], ["MEGNEVEZÉS-", "tetel"]]
+    assert len(out) == 3                                        # вне ячейки абзацы не склеиваются

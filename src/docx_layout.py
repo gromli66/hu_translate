@@ -1161,6 +1161,12 @@ def _graphic_page(page, segs, figs):
     плакат «Как работает АЭС» 1 лист → 2, брошюра 12 → 17), а целиком с переведённого PDF (стенд вёрстки без языка,
     22.10)."""
     import fitz
+    # блок-схема Word: каждая фигура — десятки картинок (градиент, тень), надписи лежат на них; рисунок по тени не
+    # находится (текст сегментов вычтен из краски), схема уходила в таблицы и абзацы россыпью (30GF(135)51GT, 28.10)
+    if segs:
+        imgs = [fitz.Rect(i["bbox"]) for i in page.get_image_info()]
+        if len(imgs) >= 60 and sum(1 for s in segs if any(r.contains(fitz.Point(*_center(s))) for r in imgs)) >= 0.5 * len(segs):
+            return True
     rects = [r for r, _ in figs]
     if not rects or not segs:
         return False
