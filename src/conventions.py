@@ -36,11 +36,21 @@ def load(path, terms=None):
     return rules
 
 
+FILE_EXT = frozenset("""txt log ini cfg conf xml json csv xls xlsx doc docx pdf exe dll bat cmd sh py lis dat bak zip png
+jpg gif tif htm html sql db rpt tmp lnk msi jar war rar cab ocx sys vbs js css md""".split())
+
+
 def _codes(hu):
     out = []
-    for c in set(CODE.findall(hu)):
-        c = c.rstrip(".")
+    for c, dotted in {(m.group(), hu[m.end():m.end() + 1] == ".") for m in CODE.finditer(hu)}:
+        # падежный суффикс номера пункта: «4.1.9.-ben» (в 4.1.9.) — код «4.1.9», суффикс по-русски не нужен; прежде
+        # шлифовка «восстанавливала» его в верном переводе, 18 строк 30RR2126GT (28.10)
+        c = re.sub(r"(?<=[\d.])-[a-záéíóöőúüű]{1,6}$", "", c).rstrip(".")
         if not re.search(r"[A-Za-z]", c):
+            continue
+        # «Oszt.vez.» (osztályvezető) — сокращение со строчными частями и точкой в конце, не имя файла: код дословно
+        # вернул бы венгерское в перевод («Нач. отдела» → «Oszt.vez.», 28.10)
+        if dotted and re.fullmatch(r"[\w\-]+\.[a-záéíóöőúüű]{2,4}", c) and c.rsplit(".", 1)[1] not in FILE_EXT:
             continue
         # «5.sz» (5. szám), «10.3Nem», «a.BER» — номер, слипшийся с текстом, а не код
         if re.fullmatch(r"\d+\.[a-záéíóöőúüű]{1,4}", c) or re.match(r"\d+(?:\.\d+)+[A-Z][a-z]", c) \
@@ -122,8 +132,10 @@ def check_text(ru, rules):
             out.append(("Я5", f"«{k}» — латиницей"))
     if re.match(r"\s*(ВНИМАНИЕ\s*[:.]|Внимание\s*[!:.])", t):
         out.append(("Я8", "«ВНИМАНИЕ!»"))
-    if _hungarian(t):
-        out.append(("Я11", "венгерский остался: " + ", ".join(_hungarian(t)[:5])))
+    # «НСБ (BLÜGY)» — первое употребление сокращения (translate.first_use): расшифровка и оригинал в скобках, не остаток
+    left = _hungarian(re.sub(r"(?<=[А-Яа-яЁё])\s\([A-ZÁÉÍÓÖŐÚÜŰ]{2,}\)", "", t))
+    if left:
+        out.append(("Я11", "венгерский остался: " + ", ".join(left[:5])))
     return out
 
 
@@ -189,8 +201,9 @@ def _hungarian(ru):
     """Венгерские слова в переводе: с венгерскими буквами, строчные или ПРОПИСНЫЕ (имя с прописной — название фирмы,
     «Paksi Atomerőmű Zrt.», — латиницей законно); формула Word — математическими буквами, поэтому через NFKC."""
     t = unicodedata.normalize("NFKC", ru)
-    return [w for w in re.findall(r"[A-Za-zÁÉÍÓÖŐÚÜŰáéíóöőúüű_]{2,}", t)
-            if re.search(r"[áéíóöőúüűÁÉÍÓÖŐÚÜŰ]", w) and (w.islower() or w.isupper() or "_" in w)]
+    # слово с цифрами впритык («TLÜ302» — обозначение документа) — код, не венгерское слово
+    return [w for w in re.findall(r"[A-Za-zÁÉÍÓÖŐÚÜŰáéíóöőúüű_]{2,}\d*", t)
+            if not w[-1].isdigit() and re.search(r"[áéíóöőúüűÁÉÍÓÖŐÚÜŰ]", w) and (w.islower() or w.isupper() or "_" in w)]
 
 
 def _code_guess(c, ru):

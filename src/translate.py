@@ -130,6 +130,8 @@ def codes_of(src):
         c = re.sub(r"(?<=\d)\.[a-záéíóöőúüű]{2,}$", "", c)
         c = re.sub(r"(?<=[\d%])[a-záéíóöőúüű]+$", "", c)
         c = re.sub(r"^[a-záéíóöőúüű]+\.", "", c)
+        c = re.sub(r"(?<=^\d)\.[A-ZÁÉÍÓÖŐÚÜŰ][a-záéíóöőúüű]{2,}$|(?<=^\d\d)\.[A-ZÁÉÍÓÖŐÚÜŰ][a-záéíóöőúüű]{2,}$", "", c)  # «5.Teszt» → «5»
+        c = re.sub(r"^[a-záéíóöőúüű]{3,}\((?=\w*\d)", "", c)                          # «üzemállapotban(M2» → «M2»
         c = re.sub(r"(?<=\d)(kV|kW|MW|mA|nA|Hz|mbar|bar)$", "", c)   # «0,4kV» → «0,4»: единица переводится (fix_units)
         if c:
             out.add(c)
@@ -222,6 +224,8 @@ def check(src, ru, allowed_latin=frozenset(), gloss_abbr=frozenset(), vocab=froz
         issues.append("нет кодов/чисел: " + ", ".join(sorted(miss)[:6]))
     # обратная проверка: число в переводе, которого нет в оригинале (OCR «ti ≤ 70» → «tiz 70» → «при 10 70 °C»)
     src_nums = {n.replace(",", ".") for n in re.findall(r"\d+(?:[.,]\d+)?", TAG.sub(" ", src))}
+    # «30RS61S004,30RS61S005» (коды через запятую без пробела): «004,30» — не дробь; в переводе «004, 30RS61S005»
+    src_nums |= {p for m in re.finditer(r"(?<=[A-Za-z])\d+[.,]\d+", TAG.sub(" ", src)) for p in re.split(r"[.,]", m.group())}
     extra = sorted({n for n in re.findall(r"\d+(?:[.,]\d+)?", TAG.sub(" ", ru))
                     if len(re.sub(r"\D", "", n)) >= 2 and n.replace(",", ".") not in src_nums})
     if extra:

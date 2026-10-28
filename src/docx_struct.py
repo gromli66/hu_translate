@@ -2581,6 +2581,9 @@ def _zone_paras(chars, rects, x_left, x_right, imgs=(), page_w=None):
     return {"rows": rows, "font": f[0][0][0] if f else None, "size": f[0][0][1] if f else None}
 
 
+PAGE_WORD = re.compile(r"(?:\D*[:.\-–#№])?(\d+)(?:\.|/\d+)?")
+
+
 def _typical_page(pdf, body_top, H, sample=15, cbot=lambda pg: None):
     """Лист для колонтитулов — с самыми частыми колонтитулами (текст без цифр), а не второй по счёту: у ÜFK
     второй лист — оглавление, и в подвал всех листов попадало «Tartalom» («Содержание», 16.10). Заодно — номер
@@ -2608,9 +2611,11 @@ def _typical_page(pdf, body_top, H, sample=15, cbot=lambda pg: None):
     tok, off, boxes = None, 0, []
     if len(same) >= 2 and len({len(words[i]) for i in same}) == 1:
         for j, w in enumerate(words[rep]):
-            # «13.», «13» и «13/57» (лист/всего листов, OAH): номер — первая часть
-            vals = [re.fullmatch(r"(\d+)(?:\.|/\d+)?", words[i][j]["text"]) for i in same]
-            t = w["text"].split("/")[0]
+            # «13.», «13» и «13/57» (лист/всего листов, OAH): номер — первая часть; приклеенный к подписи двоеточием
+            # или точкой («Oldalszám:7.», 30RR2126GT) — тоже: слово целиком в число не складывалось, и номер листа
+            # застывал числом одного листа во всех колонтитулах
+            vals = [PAGE_WORD.fullmatch(words[i][j]["text"]) for i in same]
+            t = w["text"][vals[same.index(rep)].start(1):].split("/")[0] if all(vals) else ""
             if all(vals) and len({int(v[1]) - i for v, i in zip(vals, same)}) == 1 \
                     and (tok is None or int(vals[0][1]) - same[0] == off and t == tok):
                 if tok is None:

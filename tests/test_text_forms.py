@@ -585,3 +585,65 @@ def test_field_boxes_under_row_line_are_not_table_columns():
     tabs = DL._tables(hs, vs)
     big = max(tabs, key=lambda t: t[0][-1] - t[0][0])
     assert [round(x) for x in big[0]] == [42, 90, 469, 574]
+
+
+def _glued_pdf(path, pages=6):
+    """Лист за листом: шапка «Azonosító» + «Oldalszám:N.» (номер приклеен к подписи без пробела), тело разное."""
+    doc = fitz.open()
+    for pno in range(pages):
+        pg = doc.new_page(width=595, height=842)
+        put = lambda x, y, t: pg.insert_text((x, y), t, fontsize=10, fontname="tiro")
+        put(60, 40, "Azonosító: 30RR2126GT")
+        put(440, 40, f"Oldalszám:{pno + 2}.")
+        words = ("elsődleges tömítettség szivattyú indítás szelep zárás nyomás hőmérséklet teljesítmény áramlás "
+                 "szint vezérlés védelem mérés kapcsoló betáplálás hűtés fűtés csővezeték").split()
+        for k in range(8):
+            put(60, 120 + 40 * k, f"A {words[(pno * 3 + k) % len(words)]} és a {words[(pno * 5 + k * 2 + 1) % len(words)]}"
+                                  f" ellenőrzése megtörtént, az eredmény megfelelő ({words[(pno + k * 7) % len(words)]}).")
+        put(60, 812, "Nyomtatva: 2026-10-28")
+    doc.save(str(path))
+
+
+def test_page_number_glued_to_label_is_a_field(tmp_path):
+    """Номер листа, приклеенный к подписи без пробела («Oldalszám:7.», 30RR2126GT), — поле PAGE в шапке; прежде слово
+    целиком не складывалось в число, и во всех шапках DOCX стояло число одного листа («Номер страницы: 7»)."""
+    src = tmp_path / "glued.pdf"
+    _glued_pdf(src)
+    segs = _segs(src)
+    blocks, info = DL.load(str(src), segs, text=True)
+    L = D.layout(str(src), blocks, content=info.get("content_boxes"))
+    assert L["page_tok"] and L["page_marked"]
+    out = tmp_path / "glued.docx"
+    pairs = [(s["text"], s["text"].replace("Oldalszám:", "Номер страницы: ").replace("Azonosító", "Идентификатор"))
+             for s in segs]
+    B.Builder(B.Memory(pairs), lambda img: png(), PROFILE).build(
+        blocks, str(out), dict(LAYOUT, **{k: L[k] for k in ("head_grid", "page_tok", "page_marked", "num_start")
+                                            if k in L}))
+    head = "".join(h._element.xml for s in Document(str(out)).sections for h in (s.header,))
+    assert "PAGE" in head and "Номер страницы" in head
+
+
+def test_notdef_glyph_of_symbol_font_is_a_box():
+    """Пустой глиф шрифта Symbol/Wingdings (код 0, в текстовом слое «�») — флажок «□»; в других шрифтах «�» не трогается."""
+    import layout as LY
+    assert LY.span_text({"text": "�", "font": "SymbolMT"}) == "□"
+    assert LY.span_text({"text": "� ok", "font": "Wingdings-Regular"}) == "□ ok"
+    assert LY.span_text({"text": "�", "font": "TimesNewRomanPSMT"}) == "�"
+    assert LY.span_text({"text": "abc", "font": "SymbolMT"}) == "abc"
+
+
+def test_row_number_in_middle_of_two_line_cell_opens_paragraph_once():
+    """Номер строки («2.8.») по центру ячейки лежит против обеих строк предложения: начало абзаца — первая строка, вторая
+    продолжает; прежде предложение переводилось двумя обрывками («…участниками и» / «между блочными щитами», 28.10)."""
+    import layout as LY
+    fr = lambda t, bb: {"t": t, "bbox": bb, "size": 11.0, "bold": False, "family": "serif"}
+    frags = [fr("Folyamatos hírkapcsolatot kell biztosítani a résztvevők és a", [154, 628, 429, 643]),
+             fr("2.8.", [81, 635, 101, 650]),
+             fr("blokkvezénylő között.", [154, 642, 251, 656])]
+    pars = LY.group(frags, [], [])
+    texts = sorted(p["text"] for p in pars)
+    assert texts == ["2.8.", "Folyamatos hírkapcsolatot kell biztosítani a résztvevők és a blokkvezénylő között."]
+    # номер и название на одной строке — по-прежнему два абзаца (оглавление 3SZ19)
+    pars = LY.group([fr("1.6.", [60, 100, 80, 112]), fr("FOT szintcsökkenés", [100, 100, 200, 112]),
+                     fr("FOT szint folytatás", [100, 113, 200, 125])], [], [])
+    assert sorted(p["text"] for p in pars) == ["1.6.", "FOT szintcsökkenés FOT szint folytatás"]

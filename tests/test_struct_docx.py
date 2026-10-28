@@ -1771,3 +1771,22 @@ def test_label_column_splits_table_row_into_sub_rows():
     assert [text(c) for c in b["rows"][1]] == [["1.2."], ["A 31RD31P702 kör"], ["O"]]
     assert not b["rows"][0][1]["edges"]["bottom"] and not b["rows"][1][1]["edges"]["top"]
     assert len(b["frame"]["ys"]) == 3
+
+
+def test_case_suffix_and_dotted_abbreviation_are_not_codes():
+    """«4.1.9.-ben» — номер пункта с падежным суффиксом, «Oszt.vez.» — сокращение (не имя файла): шлифовка не должна
+    возвращать их в верный перевод; настоящее имя файла в конце предложения — код по-прежнему (30RR2126GT, 28.10)."""
+    assert C._codes("Ha a 4.1.10. és 4.1.9.-ben rögzített nyomásértékek") == []
+    assert C._codes("Oszt.vez. Oszt.vez.") == []
+    assert "config.ini" in C._codes("lásd a config.ini.")
+    ru = "ЕСЛИ разность значений в 4.1.10. и 4.1.9., <5 бар"
+    assert C.fix_code("Ha a 4.1.10. és 4.1.9.-ben rögzített", ru, RULES)[0] == ru
+    assert not [v for v in C.check("Oszt.vez.", "Нач. отдела", RULES) if v[0] == "Я6"]
+
+
+def test_hungarian_leftover_ignores_document_codes_and_first_use_abbreviation():
+    """«TLÜ302» (обозначение документа) и «НСБ (BLÜGY)» (первое употребление сокращения) — не остаток венгерского в
+    готовом DOCX; настоящее венгерское слово по-прежнему замечается (30RR2126GT, 28.10)."""
+    ok = lambda t: not [v for v in C.check_text(t, RULES) if v[0] == "Я11"]
+    assert ok("в соответствии с TLÜ302 провел совещание") and ok("Начало теста разрешается НСБ (BLÜGY).")
+    assert not ok("ЗАКРЫТЬ szelepeket и ellenőrizni")

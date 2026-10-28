@@ -124,3 +124,14 @@ def test_doc_files_skip_review_backups(tmp_path):
     for n in ("a.json", "a.before_review.json"):
         (tmp_path / "json" / n).write_text("{}", encoding="utf-8")
     assert [f.name for f in P.doc_files(tmp_path)] == ["a.json"]
+
+
+def test_check_does_not_flag_glued_codes_and_numbered_words():
+    """Коды через запятую без пробела, слово в скобку и номер пункта, слипшийся со словом («5.Teszt»), — не потеря кодов
+    и не лишнее число в верном переводе (30RR2126GT: 8 ложных замечаний, 28.10)."""
+    assert T.check("ZÁRNI a 30RS61S004,30RS61S005 és a 30RS61S006 kézi szelepeket.",
+                   "ЗАКРЫТЬ ручные вентили 30RS61S004, 30RS61S005 и 30RS61S006.") == []
+    assert T.check("A blokk M1 üzemállapotban vagy leállási üzemállapotban(M2) van.",
+                   "Блок находится в состоянии M1 или в состоянии останова (M2).") == []
+    assert T.check("5.Teszt utáni állapot", "5. Состояние после тестирования") == []
+    assert T.check("A 30RS61S004 szelep.", "Вентиль 30RS61S004 и 77.") == ["лишнее число: 77"]       # настоящее лишнее — по-прежнему

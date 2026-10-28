@@ -158,6 +158,16 @@ def _split_columns(frags, words):
     return out
 
 
+SYMBOLIC = re.compile(r"Symbol|Wingdings|Webdings", re.I)
+
+
+def span_text(s):
+    """Текст куска; пустой глиф шрифта Symbol/Wingdings (код 0, в текстовом слое — «�») — флажок «□»: в Word он
+    рисуется рамкой, а модель и сборка получали мусорный знак (30RR2126GT: 18 флажков бланка, 28.10)."""
+    t = s["text"]
+    return t.replace("�", "□") if "�" in t and SYMBOLIC.search(s["font"]) else t
+
+
 def frags_from_text(page, vs=()):
     """Фрагменты из текстового слоя: [{t, bbox, size, bold}]. vs — вертикальные линейки.
     Координаты — как страница видна (с учётом /Rotate), как у слов OCR с картинки: PyMuPDF отдаёт текст в системе
@@ -181,7 +191,7 @@ def frags_from_text(page, vs=()):
                 continue
             cur = None
             for s in _cut_spans(ln["spans"], vs, rot):
-                txt = s["text"]
+                txt = span_text(s)
                 if hidden and _covered(hidden, s["bbox"]):
                     continue
                 if not txt.strip():
@@ -314,8 +324,19 @@ def group(frags, hs, vs=(), form=False):
     # начинает новый абзац — иначе название приклеивалось к названию пункта выше, а у «1.6.» оставалось пустым (17.10)
     label = re.compile(r"^\(?\d+(\.\d+)*\.?\)?$|^[a-zA-Z][.)]$")
     nums = [f["bbox"] for f in frags if label.match(f["t"].strip())]
-    numbered = lambda bb: any(n[2] < bb[0] and bb[0] - n[2] < 120 and min(n[3], bb[3]) - max(n[1], bb[1]) > 0.5 * (
-        bb[3] - bb[1]) for n in nums)
+    used = set()                              # номер открывает абзац один раз — для первой строки против него
+
+    def numbered(bb):
+        """Номер слева на той же строке — этот кусок начинает абзац. Номер по центру ячейки в две строки («2.8.» против
+        строк «…участниками и» / «blokkvezénylő között.») лежит против обеих — начало только первой, вторая продолжает
+        (30RR2126GT: предложение переводилось двумя обрывками, 28.10)."""
+        for k, n in enumerate(nums):
+            if n[2] < bb[0] and bb[0] - n[2] < 120 and min(n[3], bb[3]) - max(n[1], bb[1]) > 0.5 * (bb[3] - bb[1]):
+                if k in used:
+                    continue
+                used.add(k)
+                return True
+        return False
     pars = []
     for f in frags:
         x0, y0, x1, y1 = f["bbox"]
