@@ -194,3 +194,13 @@ def test_retry_hides_equipment_designator_behind_a_mark(monkeypatch):
     res = tr.run_batch({"units": [{"key": "1", "text": src}], "first_abbr": [], "context": ""})["1"]
     assert asked[0] == src and "X1" in asked[1]
     assert res["ru"] == "ПРОТЕЧКА НА УПЛОТНЕНИИ 1.GF.H.ÁG.SZEK.FEDÉL (↑P 30YA12P501B1)" and res["issues"] == []
+
+
+def test_numpy_values_in_segments_do_not_break_saving(tmp_path):
+    """Из распознавания листов в сегменты попадали значения numpy (bool_, int64): json.dumps падал и обрывал весь набор
+    на извлечении (30GF118GT_nyilv, 28.10)."""
+    import numpy as np
+    (tmp_path / "json").mkdir()
+    P.save_doc(tmp_path, "d", {"segs": [{"id": np.int64(1), "loc": {"ocr": np.bool_(True), "size": np.float32(10.5)}}]})
+    d = json.loads((tmp_path / "json" / "d.json").read_text(encoding="utf-8"))
+    assert d["segs"][0] == {"id": 1, "loc": {"ocr": True, "size": 10.5}}

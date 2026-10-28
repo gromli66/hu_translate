@@ -74,8 +74,16 @@ def load_docs(work):
     return {f.stem: json.loads(f.read_text(encoding="utf-8")) for f in doc_files(work)}
 
 
+def _plain(o):
+    """Значения numpy (bool_, int64, float32), попавшие в сегменты при распознавании листов, — обычные числа JSON
+    (30GF118GT_nyilv: «Object of type bool is not JSON serializable» оборвало весь набор на извлечении, 28.10)."""
+    if hasattr(o, "item"):
+        return o.item()
+    raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
+
+
 def save_doc(work, stem, d):
-    (Path(work) / "json" / f"{stem}.json").write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    (Path(work) / "json" / f"{stem}.json").write_text(json.dumps(d, ensure_ascii=False, default=_plain), encoding="utf-8")
 
 
 # путь, имя файла, адрес — не текст: «/etc/uts/», «uts.ini», «uts_<éééé>.tar.gz» вносили «uts» в словарь документа,
@@ -265,7 +273,7 @@ def extract(inputs, work, progress=_quiet, src_lang="hu"):
                 struct["roles"] = sum(1 for s in segs if s["loc"].get("roles")) > 0
                 log(f"извлечение: {f.name} — роли строк порталом: {'да' if struct['roles'] else 'нет (сбой портала)'}")
         jf.write_text(json.dumps({"file": str(f.resolve()), "segs": segs, "res": {}, "info": info, "docx": dplan,
-                                  "struct": struct}, ensure_ascii=False), encoding="utf-8")
+                                  "struct": struct}, ensure_ascii=False, default=_plain), encoding="utf-8")
         log(f"извлечение: {f.name} — сегментов {len(segs)}, OCR-страниц {len(info.get('ocr_pages', []))}, {time.time() - t0:.0f} с")
     progress("извлечение", len(files), len(files))
 
