@@ -118,9 +118,12 @@ def from_model(text):
     return t.replace("ё", "е").replace("Ё", "Е")
 
 
+FILLER = re.compile(r"[.…_]{3,}")       # линия-заполнитель бланка: «20.......év.........hó.....nap»
+
+
 def codes_of(src):
     out = set()
-    for m in CODE.finditer(TAG.sub(" ", src)):
+    for m in CODE.finditer(TAG.sub(" ", FILLER.sub(" ", src))):
         c = HU_SUFFIX.sub("", m.group().strip(".,;:()-"))
         c = c.strip(".,;:()")
         if not c or not re.search(r"\d", c):
@@ -153,7 +156,10 @@ def code_present(c, nru, gloss_abbr):
     if mu and mu.group(2) in umap:
         return _norm_code(mu.group(1)) in nru
     m = re.match(r"^([A-ZÁÉÍÓÖŐÚÜŰ]{2,})-?(\d[\w.\-/]*)$", c)
-    return bool(m and m.group(1) in gloss_abbr and _norm_code(m.group(2)) in nru)
+    if m and m.group(1) in gloss_abbr and _norm_code(m.group(2)) in nru:
+        return True
+    m = re.match(r"^(\d+)\.\s?([A-ZÁÉÍÓÖŐÚÜŰ]{2,})$", c)        # «1.VT» → «СВО-1»: номер впереди, аббревиатура переводится
+    return bool(m and m.group(2) in gloss_abbr and re.search(rf"(?<!\d){m.group(1)}(?!\d)", nru))
 
 
 def _norm_code(s):
@@ -207,6 +213,24 @@ def action_flip(src, ru):
     return out
 
 
+NAME_FIELD = re.compile(r"(?i)\bNév\s*:\s*([^|\n]*?)(?=\s+(?:Szervezet|Aláírás|Dátum|Beosztás)\b|\||$)")
+MAIL = re.compile(r"([^;<:\n]*?)\s*<([^<>@\s]+@[^<>\s]+)>")
+HYPHEN_CAPS = re.compile(r"(?<=[A-ZÁÉÍÓÖŐÚÜŰ])- (?=[A-ZÁÉÍÓÖŐÚÜŰ]{2})")      # «MENNYI- SÉG» — перенос слова в узкой ячейке
+
+
+def name_words(src):
+    """Слова-имена оригинала: поле «Név:», «Фамилия Имя <адрес>» и сам адрес. По глоссарию остаются латиницей —
+    замечанием «венгерский остался» на них шумело больше половины всех замечаний партии (28.10)."""
+    plain = TAG.sub(" ", src)
+    out = set()
+    for m in NAME_FIELD.finditer(plain):
+        out.update(LETTERS.findall(m.group(1)))
+    for m in MAIL.finditer(plain):
+        out.update(LETTERS.findall(m.group(1)))
+        out.update(LETTERS.findall(m.group(2)))
+    return out
+
+
 def check(src, ru, allowed_latin=frozenset(), gloss_abbr=frozenset(), vocab=frozenset(), abbr_keep=frozenset()):
     """Жёсткие замечания к переводу сегмента (пустой список — годен).
     gloss_abbr — аббревиатуры глоссария (их переводят); vocab — строчные слова документа:
@@ -231,7 +255,7 @@ def check(src, ru, allowed_latin=frozenset(), gloss_abbr=frozenset(), vocab=froz
                     if len(re.sub(r"\D", "", n)) >= 2 and n.replace(",", ".") not in src_nums})
     if extra:
         issues.append("лишнее число: " + ", ".join(extra[:4]))
-    plain = TAG.sub(" ", src)
+    plain = HYPHEN_CAPS.sub("", TAG.sub(" ", src))
     phrase_words = set()                  # слова прописных фраз оригинала — текст, их переводят
     for m in CAPS_PHRASE.finditer(plain):
         words = [w for w in LAT_ABBR.findall(m.group()) if w not in abbr_keep]
@@ -249,6 +273,8 @@ def check(src, ru, allowed_latin=frozenset(), gloss_abbr=frozenset(), vocab=froz
     left += [a for a in caps_ru if a.lower() in vocab and a not in abbr_keep and len(a) >= 3]   # «NR» — индекс, не слово
     # прописная фраза оригинала из 2+ слов (NEM LETT ELVÉGEZVE, KISEBB VAGY EGYENLŐ) — текст, а не обозначения
     left += [w for w in phrase_words if w in caps_ru and len(w) >= 3 and w not in left]
+    names = name_words(src) | {w for d in DESIGNATOR.findall(plain) for w in LETTERS.findall(d)}     # обозначения — код
+    left = [w for w in left if w not in names]
     if left:
         issues.append("венгерский остался: " + ", ".join(left[:6]))
     if CJK.search(ru):
@@ -471,6 +497,24 @@ def gloss_misses(src, ru, entries, outer=None):
     return miss
 
 
+DESIGNATOR = re.compile(r"(?<![\w.])\d+\.[A-ZÁÉÍÓÖŐÚÜŰ]{1,6}(?:\.[A-ZÁÉÍÓÖŐÚÜŰ0-9]{1,6}){2,}(?![\w])")
+
+
+def mask_designators(text):
+    """Точечные обозначения оборудования (1.GF.H.ÁG.SZEK.FEDÉL) → метки «X1», «X2»: {метка: обозначение}."""
+    back = {}
+    for n, c in enumerate(dict.fromkeys(DESIGNATOR.findall(text)), 1):
+        back[f"X{n}"] = c
+        text = re.sub(rf"(?<![\w.]){re.escape(c)}(?![\w])", f"X{n}", text)
+    return text, back
+
+
+def unmask_designators(ru, back):
+    for k, c in back.items():
+        ru = re.sub(rf"(?<![\w.]){k}(?![\w])", lambda _: c, ru)
+    return ru
+
+
 class Translator:
     def __init__(self, glossary, think=False, retry_think=True, extra=None, domain=None, tm=None, pair=None):
         import langs as L
@@ -633,9 +677,13 @@ class Translator:
                             + "; ".join(cur["issues"]) + f". Fix it and answer in {L.NAME_EN[self.tgt]}. Every number "
                             "and code of the original must be in the translation (with the decimal separator of the "
                             "target language).")
-                g2, _ = self._call([u], [a for a in plan["first_abbr"] if a in u["text"]], plan["context"],
-                                   self.retry_think, note + ("" if attempt == 0 else " (повторная попытка)"))
-                ru2 = g2.get(0, "")
+                # обозначение «1.GF.H.ÁG.SZEK.FEDÉL» модель каждый раз «расшифровывает» по-своему (48 строк 30YCGT, 28.10):
+                # в повторе оно уходит под меткой и возвращается дословно
+                lost = any(i.startswith("нет кодов") for i in cur["issues"])
+                masked, back = mask_designators(u["text"]) if lost and self.hu_ru else (u["text"], {})
+                g2, _ = self._call([{**u, "text": masked}], [a for a in plan["first_abbr"] if a in u["text"]],
+                                   plan["context"], self.retry_think, note + ("" if attempt == 0 else " (повторная попытка)"))
+                ru2 = unmask_designators(g2.get(0, ""), back)
                 iss2 = self.full_check(u["text"], ru2)
                 if ru2 and badness(iss2) < badness(cur["issues"]):
                     cur = {"ru": ru2, "issues": iss2, "tries": cur["tries"] + 1}

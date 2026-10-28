@@ -147,3 +147,50 @@ def test_invented_noun_vyvesivanie_is_fixed_in_every_case():
     """«ВЫВЕСИВАНИЕ» — слова нет: модель собрала его от «вывесить плакат» глоссария (107 строк партии «Пакш», 28.10)."""
     assert T.fix_units("ПЛОМБИРОВАНИЕ, ВЫВЕСИВАНИЕ ПЛАКАТА") == "ПЛОМБИРОВАНИЕ, ВЫВЕШИВАНИЕ ПЛАКАТА"
     assert T.fix_units("Вывесивание плаката") == "Вывешивание плаката" and T.fix_units("вывесивания") == "вывешивания"
+
+
+def test_names_in_signature_block_and_mail_header_are_not_hungarian_leftover():
+    """Имена остаются латиницей по глоссарию: «Név: Bajnai Péter Krisztián», «Juhász Antal <juhasza@npp.hu>» — шум более
+    половины замечаний партии (28.10). Настоящий венгерский остаток рядом по-прежнему ловится."""
+    assert T.check("Név: Bajnai Péter Krisztián | Szervezet: RTO Aláírás:",
+                   "Ф. И. О.: Bajnai Péter Krisztián | Подразделение: RTO Подпись:") == []
+    assert T.check("Név: DOLHA GÁBOR | Szervezet: RTO", "Ф. И. О.: DOLHA GÁBOR | Подразделение: RTO") == []
+    assert T.check("Cc: Bucsi Gábor <bucsi@npp.hu>; Kaszás István <kaszasi@npp.hu>",
+                   "Копия: Bucsi Gábor <bucsi@npp.hu>; Kaszás István <kaszasi@npp.hu>") == []
+    assert T.check("Név: Bárdos Zoltán Aláírás: rendben", "Ф. И. О.: Bárdos Zoltán Подпись: rendben") == ["венгерский остался: rendben"]
+
+
+def test_filler_line_hyphenated_caps_and_numbered_abbreviation_are_not_lost():
+    """Линия-заполнитель «20.......év.....hó.....nap» не код; «MENNYI- SÉG» — одно слово, перенесённое в ячейке;
+    «1.VT» → «СВО-1» (номер впереди, аббревиатура переводится) — всё это верный перевод (30RXBSZGT, 30YCGT)."""
+    assert T.check("P a k s , 20.......év.........................hó............nap",
+                   "Пакш, 20.......г.........................мес............день") == []
+    assert T.check("MENNYI- SÉG (liter)", "КОЛИЧЕСТВО (литр)") == []
+    assert T.check("30TE01N001 TÖMÖRTELENSÉG AZ 1.VT. SZŰRŐ FEDÉLNÉL", "30TE01N001 НЕГЕРМЕТИЧНОСТЬ НА КРЫШКЕ ФИЛЬТРА СВО-1",
+                   gloss_abbr=frozenset({"VT"})) == []
+    assert T.check("30TE01N001 TÖMÖRTELENSÉG AZ 1.VT. SZŰRŐ", "30TE01N001 НЕГЕРМЕТИЧНОСТЬ ФИЛЬТРА СВО-2",
+                   gloss_abbr=frozenset({"VT"})) == ["нет кодов/чисел: 1.VT"]
+
+
+def test_retry_hides_equipment_designator_behind_a_mark(monkeypatch):
+    """«SZIVÁRGÁS A 1.GF.H.ÁG.SZEK.FEDÉL TÖMÍTÉSEN» модель «расшифровывала» каждый раз по-своему (48 строк 30YCGT);
+    в повторе обозначение уходит под меткой X1 и возвращается дословно."""
+    src = "SZIVÁRGÁS A 1.GF.H.ÁG.SZEK.FEDÉL TÖMÍTÉSEN (↑P 30YA12P501B1)"
+    assert T.mask_designators(src) == ("SZIVÁRGÁS A X1 TÖMÍTÉSEN (↑P 30YA12P501B1)", {"X1": "1.GF.H.ÁG.SZEK.FEDÉL"})
+    assert T.mask_designators("A 30YA12P501B1 szelep, 5.Teszt.") == ("A 30YA12P501B1 szelep, 5.Teszt.", {})
+    asked = []
+
+    def call(self, units, *a, **k):
+        asked.append(units[0]["text"])
+        # первый проход (пачка) «расшифровывает», повтор видит метку
+        ru = "ПРОТЕЧКА КРЫШКИ ГОРЯЧЕГО ОТВОДА 1-ГО ПГ (↑P 30YA12P501B1)" if "X1" not in units[0]["text"] \
+            else "ПРОТЕЧКА НА УПЛОТНЕНИИ X1 (↑P 30YA12P501B1)"
+        return {0: ru}, {}
+    monkeypatch.setattr(T.Translator, "_call", call)
+    tr = T.Translator.__new__(T.Translator)
+    tr.hu_ru, tr.ru_en, tr.src, tr.tgt = True, False, "hu", "ru"
+    tr.allowed_latin, tr.gloss_abbr, tr.vocab, tr.abbrs, tr.strict_entries, tr.entries = frozenset(), frozenset(), frozenset(), {}, [], []
+    tr.think, tr.retry_think = False, False
+    res = tr.run_batch({"units": [{"key": "1", "text": src}], "first_abbr": [], "context": ""})["1"]
+    assert asked[0] == src and "X1" in asked[1]
+    assert res["ru"] == "ПРОТЕЧКА НА УПЛОТНЕНИИ 1.GF.H.ÁG.SZEK.FEDÉL (↑P 30YA12P501B1)" and res["issues"] == []
