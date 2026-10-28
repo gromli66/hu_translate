@@ -99,8 +99,10 @@ def mixed_script(src, out):
     """Слова перевода из букв двух алфавитов («СОORУЖЕНИЕ» — латинские O и R внутри русского слова: сбой портала,
     корпус HU 22.10), кроме записанных так в самом оригинале."""
     have = set(LETTERS.findall(TAG.sub(" ", src)))
+    # «Tмакс», «Fмин», «Uном»: латинская буква величины и русская пометка — перевод «Tmax», «Fmin» (28.10)
+    unit_mark = re.compile(r"^[A-Za-z]{1,2}(?:макс|мин|ном|ср|доп|уст)$")
     return [w for w in LETTERS.findall(TAG.sub(" ", out))
-            if CYR.search(w) and re.search(r"[A-Za-zÁÉÍÓÖŐÚÜŰáéíóöőúüű]", w) and w not in have]
+            if CYR.search(w) and re.search(r"[A-Za-zÁÉÍÓÖŐÚÜŰáéíóöőúüű]", w) and w not in have and not unit_mark.match(w)]
 CYR = re.compile(r"[а-яА-Я]")
 TAG = re.compile(r"</?f\d+>")
 
@@ -128,7 +130,7 @@ FILLER = re.compile(r"[.…_]{3,}")       # линия-заполнитель б
 def codes_of(src):
     out = set()
     for m in CODE.finditer(TAG.sub(" ", FILLER.sub(" ", src))):
-        c = HU_SUFFIX.sub("", m.group().strip(".,;:()-"))
+        c = HU_SUFFIX.sub("", m.group().strip(".,;:()-/"))
         c = c.strip(".,;:()")
         if not c or not re.search(r"\d", c):
             continue
@@ -142,7 +144,15 @@ def codes_of(src):
         c = re.sub(r"^[a-záéíóöőúüű]{3,}-(?=\d)", "", c)                               # «sebességét-5» → «5»
         c = re.sub(r"^a(?=\d{2}[A-Z])", "", c)                                         # «a30TH60S201» (артикль «a» + код) → «30TH60S201»
         c = re.sub(r"(?<=\d)\.[A-ZÁÉÍÓÖŐÚÜŰ][a-záéíóöőúüű]{2,}$", "", c)             # «2.1.Személyi» → «2.1»
-        c = c.strip(".,;:()")
+        c = re.sub(r"^[A-Za-záéíóöőúüű]+\.[a-záéíóöőúüű]+[./](?=\d)", "", c)             # «Turb.géph/31(32)UJ21» → «31(32)UJ21»
+        c = re.sub(r"(?<=\d)\.[A-ZÁÉÍÓÖŐÚÜŰ]{4,}$", "", c)                                 # «1.LÉPÉS» → «1»
+        c = re.sub(r"^[a-záéíóöőúüű]{3,}(?=\d+$)", "", c)                                    # «információ7», «idő10» → число
+        c = re.sub(r"(?<=\d)/[a-záéíóöőúüű]{5,}$", "", c)                                    # «1/kampány» → «1»
+        if c == "1/min":                                                           # частота вращения: «об/мин» или «1/мин» — оба верны
+            continue
+        c = re.sub(r"^(\d+)/min$", r"\1", c)                                           # «1500/min», «1/min» — единица переводится (fix_units)
+        c = re.sub(r"(?<=\d)[oº°]?C$", "", c)                                                 # «50oC» → «50»: °C переводится (fix_units)
+        c = c.strip(".,;:()/")
         um = re.fullmatch(r"(\d[\d.,]*)?(?:mbar|bar|kV|kW|MW|mA|nA|Hz)/(\d+)", c)     # «2bar/10 perc» → «2» и «10»: единица переводится
         if um:
             out.update(g for g in um.groups() if g)
@@ -290,7 +300,8 @@ def check(src, ru, allowed_latin=frozenset(), gloss_abbr=frozenset(), vocab=froz
     names = name_words(src) | {w for d in DESIGNATOR.findall(plain) for w in LETTERS.findall(d)}     # обозначения — код
     # прописное слово внутри обозначения с цифрами («3SZ17/INFO») — часть кода, а не слово текста
     names |= {w for tok in re.findall(r"\S*\d\S*", plain) for w in LETTERS.findall(tok) if w.isupper()}
-    left = [w for w in left if w not in names and w not in LATIN_BRANDS]
+    # «max.», «pmax», «Tmax»: сокращения наибольшего/наименьшего значения — не слово венгерского
+    left = [w for w in left if w not in names and w not in LATIN_BRANDS and not re.fullmatch(r"[A-Za-z]{0,2}(?:max|min)", w)]
     if left:
         issues.append("венгерский остался: " + ", ".join(left[:6]))
     if CJK.search(ru):
@@ -302,7 +313,9 @@ def check(src, ru, allowed_latin=frozenset(), gloss_abbr=frozenset(), vocab=froz
         issues.append("отрицание потеряно: " + ", ".join(w for w, *_ in morph.neg_words(TAG.sub(" ", src))[:4]))
     issues += action_flip(TAG.sub(" ", src), TAG.sub(" ", ru))
     plain_src = TAG.sub("", src)
-    if re.search(r"[a-záéíóöőúüű]{3,}", plain_src) and not CYR.search(ru):
+    # название системы из прописных и строчных букв слитно («INFObank») — имя, а не текст к переводу
+    named = re.sub(r"(?<![\wÀ-ɏ])[A-ZÁÉÍÓÖŐÚÜŰ]{3,}[a-záéíóöőúüű]{2,}(?![\wÀ-ɏ])", " ", plain_src)
+    if re.search(r"[a-záéíóöőúüű]{3,}", named) and not CYR.search(ru):
         issues.append("не переведено")
     if len(plain_src) >= 25:
         k = len(TAG.sub("", ru)) / len(plain_src)
@@ -438,7 +451,10 @@ def fix_units(ru):
     # служебная пометка глоссария, скопированная моделью в текст («Собрать электрическую схему [уточнить] …»):
     # 35 сегментов v3, 21 — v31 (слепое сравнение 04.10); убирается здесь, т. к. fix_units стоит на всех путях вывода
     ru = re.sub(r"\s*\[(уточнить|проверено Claude)\]", "", ru)
-    return fix_nonwords(PER_MIN.sub("1/мин", UNIT_RE.sub(lambda x: " " + m[x.group(1)], ru)))
+    ru = UNIT_RE.sub(lambda x: " " + m[x.group(1)], ru)
+    ru = re.sub(r"(?<=\d)\s?o\s?C(?![\w])", " °C", ru)       # «50oC» — градус буквой «o»
+    ru = re.sub(r"(?<=\d)/min(?![\w])", "/мин", ru)                              # «1500/min» → «1500/мин»
+    return fix_nonwords(PER_MIN.sub("1/мин", ru))
 
 
 CYR_CAPS = re.compile(r"(?<![А-ЯЁа-яё])[А-ЯЁ]{5,}(?![А-ЯЁа-яё])")

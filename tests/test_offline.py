@@ -243,3 +243,21 @@ def test_fix_caps_keeps_capitals_of_glossary_abbreviations():
     assert T.fix_caps("ÜTSZ, KÜTSZ, A204", "АПЭН, ДАПЭН, A204", frozenset({"ДАПЭН"})) == "АПЭН, ДАПЭН, A204"
     assert T.fix_caps("ÜTSZ, KÜTSZ, A204", "АПЭН, ДАПЭН, A204") == "АПЭН, дапэн, A204"
     assert T.fix_caps("azonnal leállítani", "НЕМЕДЛЕННО остановить", frozenset({"ДАПЭН"})) == "Немедленно остановить"
+
+
+def test_batch5_false_issues_and_units():
+    """Партия 5 (28.10): «Tmax» → «Tмакс» (буква величины + русская пометка), «max.»/«pmax» — не венгерский, «50oC» → «50 °C»,
+    «1.LÉPÉS», «információ3», «idő10», «/6FKSz-enként/», «Turb.géph/31(32)UJ21», «1/kampány», «1500/min» и «(1/min)» с
+    «об/мин» — не потеря кода; «INFObank» — название системы, а не непереведённый текст."""
+    ok = [("T≈50oC, Tmax=120oC", "T≈50 °C, Tмакс=120 °C"), ("1.LÉPÉS Áttárolás", "ШАГ 1. Перекачка"),
+          ("♦ Megszűnik a szöveges információ3:", "♦ Исчезает текстовая информация 3:"),
+          ("02TD91S006 ZÁRNI Figyelő idő10 perc", "02TD91S006 ЗАКРЫТЬ Время наблюдения 10 мин"),
+          ("Villamos betáplálás helye /6FKSz-enként/", "Место электропитания /6FKSz/"),
+          ("Tartály szint Turb.géph/31(32)UJ21 oltóberendezés", "Уровень Турб. маш. зал/31(32)UJ21 пожаротушение"),
+          ("Fordulatszám  (1/min)", "Частота вращения  (об/мин)"), ("1500/min", "1500/мин"), ("(1/kampány)", "(1/кампания)"),
+          ("INFObank | - | - | -", "INFObank | - | - | -"), ("max.30 óra", "max.30 ч"), ("pmax. = 3,7 bar", "pmax. = 3,7 бар")]
+    for src, ru in ok:
+        assert T.check(src, ru) == [], (src, T.check(src, ru))
+    assert T.check("nyomás 1500/min", "давление 1500/мин") == [] and T.check("nyomás 1500/min", "давление") == ["нет кодов/чисел: 1500"]
+    assert T.fix_units("T≈50oC, 120 oC; 1500/min; 2900 1/min") == "T≈50 °C, 120 °C; 1500/мин; 2900 1/мин"
+    assert T.check("Szöveges információ", "Szöveges információ") != []                      # непереведённое по-прежнему ловится

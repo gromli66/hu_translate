@@ -1434,6 +1434,7 @@ class Builder:
         # пустым, таблица на следующем (30THHAGT: листы 5 и 6, 28.10; по замеру LibreOffice помещает строку до ~610 pt
         # вместе с шапкой при поле тела 659 pt: шапка колонтитула в три строки). Потолок высоты строки — поле тела минус 60 pt
         row_cap = (self.L["H"] - self.L["top"] - self.L["bottom"] - 60) if self.L else None
+        row_ys = fr.get("ys") or []
         for ri, row in enumerate(rows):
             if all("span" in c for c in row):               # ячейки по сетке линий (docx_layout) — места известны
                 starts = [sum(c["span"] for c in row[:i]) for i in range(len(row))]
@@ -1461,7 +1462,10 @@ class Builder:
                 _trpr_put(t.rows[ri]._tr, _el("w:tblHeader"))
             # короткая строка не рвётся между листами (в оригинале строки целые; длинная — пусть рвётся, иначе не влезет)
             size = sum(len(text_of(x["runs"])) for c in row for x in c["blocks"] if x["k"] == "p")
-            if size < 600 and not any("img" in r for c in row for x in c["blocks"] if x["k"] == "p" for r in x["runs"]):
+            # высокая строка (больше трети поля тела по линиям оригинала) тоже рвётся: русский текст длиннее, строка не
+            # помещалась после заголовка таблицы и уходила на следующий лист целиком (3PR10, листы 5–6, 28.10)
+            tall_row = bool(row_cap) and len(row_ys) == len(rows) + 1 and row_ys[ri + 1] - row_ys[ri] > 0.35 * (row_cap + 60)
+            if size < 600 and not tall_row and not any("img" in r for c in row for x in c["blocks"] if x["k"] == "p" for r in x["runs"]):
                 _trpr_put(t.rows[ri]._tr, _el("w:cantSplit"))
             # пустая строка (графы для подписей листов ознакомления ИН-1065) — не ниже, чем в оригинале: без текста
             # она схлопывалась в 6 pt, лист ознакомления выходил вдвое короче (19.10); высота — по линиям таблицы
@@ -1474,8 +1478,14 @@ class Builder:
                 blank = not size and not any("img" in r for c in row for x in c["blocks"] if x["k"] == "p"
                                              for r in x["runs"])
                 hh = ys[ri + 1] - ys[ri]
-                _trpr_put(t.rows[ri]._tr, _el("w:trHeight", w__val=round((hh if blank or not row_cap else min(hh, row_cap)) * 20),
-                                              w__hRule="exact" if blank else "atLeast"))
+                # длинная строка (текст на пол-листа и больше, не рвущаяся: ≥ 600 знаков) — по содержимому: «не ниже» высоты
+                # строки оригинала не помещалась после строк заголовка, строка уходила на следующий лист, предыдущий
+                # оставался почти пустым (3PR10, листы 5–6: 34 листа оригинала → 44, 28.10)
+                if row_cap and not blank and size >= 600 and hh > 0.5 * (row_cap + 60):
+                    pass
+                else:
+                    _trpr_put(t.rows[ri]._tr, _el("w:trHeight", w__val=round((hh if blank or not row_cap else min(hh, row_cap)) * 20),
+                                                  w__hRule="exact" if blank else "atLeast"))
             for ci, cell in enumerate(row):
                 dc = t.cell(ri, starts[ci])
                 self._tab_base = min((float(x["geom"]["x0"]) for x in cell["blocks"]
