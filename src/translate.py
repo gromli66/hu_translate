@@ -373,6 +373,21 @@ UNITS = [("mg/dm3", "мг/дм³"), ("g/dm3", "г/дм³"), ("mg/kg", "мг/кг
 UNIT_RE = re.compile(r"(?<=\d)\s?(" + "|".join(re.escape(u) for u, _ in UNITS) + r")(?![\w/])")
 
 
+# несуществующие слова, которые модель собирает сама от глагола глоссария («вывесить плакат» → «ВЫВЕСИВАНИЕ»: 107 строк
+# партии «Пакш», 28.10): основа — слово, замена — настоящее; регистр сохраняется
+NONWORDS = [(re.compile(r"(?i)вывесиван"), "вывешиван")]
+
+
+def _same_case(old, new):
+    return new.upper() if old.isupper() else new.capitalize() if old[:1].isupper() else new
+
+
+def fix_nonwords(ru):
+    for rx, new in NONWORDS:
+        ru = rx.sub(lambda m: _same_case(m.group(), new), ru)
+    return ru
+
+
 def fix_units(ru):
     """Единицы после числа — по разделу «Единицы» глоссария: «10 g/dm3» → «10 г/дм³», «0,4kV» → «0,4 кВ»
     (модель оставляла латиницу, вычитка v2 01.10)."""
@@ -380,7 +395,7 @@ def fix_units(ru):
     # служебная пометка глоссария, скопированная моделью в текст («Собрать электрическую схему [уточнить] …»):
     # 35 сегментов v3, 21 — v31 (слепое сравнение 04.10); убирается здесь, т. к. fix_units стоит на всех путях вывода
     ru = re.sub(r"\s*\[(уточнить|проверено Claude)\]", "", ru)
-    return UNIT_RE.sub(lambda x: " " + m[x.group(1)], ru)
+    return fix_nonwords(UNIT_RE.sub(lambda x: " " + m[x.group(1)], ru))
 
 
 CYR_CAPS = re.compile(r"(?<![А-ЯЁа-яё])[А-ЯЁ]{5,}(?![А-ЯЁа-яё])")
