@@ -36,21 +36,22 @@ def load(path, terms=None):
     return rules
 
 
-FILE_EXT = frozenset("""txt log ini cfg conf xml json csv xls xlsx doc docx pdf exe dll bat cmd sh py lis dat bak zip png
-jpg gif tif htm html sql db rpt tmp lnk msi jar war rar cab ocx sys vbs js css md""".split())
+FILE_EXT = frozenset("""txt log ini cfg conf xml json csv xls xlsx xlsm doc docx pdf exe dll bat cmd sh py lis lst dat bak zip
+png jpg jpeg gif tif tiff bmp ico htm html sql db mdb rpt tmp lnk msi jar war rar cab ocx sys vbs js css md rtf odt ods dbf
+key pem crt cer yml yaml xsl xsd cpp java pptx wav avi""".split())
 
 
 def _codes(hu):
     out = []
-    for c, dotted in {(m.group(), hu[m.end():m.end() + 1] == ".") for m in CODE.finditer(hu)}:
+    for c in {m.group() for m in CODE.finditer(hu)}:
         # падежный суффикс номера пункта: «4.1.9.-ben» (в 4.1.9.) — код «4.1.9», суффикс по-русски не нужен; прежде
         # шлифовка «восстанавливала» его в верном переводе, 18 строк 30RR2126GT (28.10)
         c = re.sub(r"(?<=[\d.])-[a-záéíóöőúüű]{1,6}$", "", c).rstrip(".")
         if not re.search(r"[A-Za-z]", c):
             continue
-        # «Oszt.vez.» (osztályvezető) — сокращение со строчными частями и точкой в конце, не имя файла: код дословно
-        # вернул бы венгерское в перевод («Нач. отдела» → «Oszt.vez.», 28.10)
-        if dotted and re.fullmatch(r"[\w\-]+\.[a-záéíóöőúüű]{2,4}", c) and c.rsplit(".", 1)[1] not in FILE_EXT:
+        # «Oszt.vez» (osztályvezető) — сокращение из одних букв, не имя файла: имя без цифр и «_» — только с известным
+        # расширением; иначе код дословно вернул бы венгерское в перевод («Нач. отдела» → «Oszt.vez», 28.10)
+        if re.fullmatch(r"[A-Za-z\-]+\.[A-Za-z]{2,4}", c) and c.rsplit(".", 1)[1].lower() not in FILE_EXT:
             continue
         # «5.sz» (5. szám), «10.3Nem», «a.BER» — номер, слипшийся с текстом, а не код
         if re.fullmatch(r"\d+\.[a-záéíóöőúüű]{1,4}", c) or re.match(r"\d+(?:\.\d+)+[A-Z][a-z]", c) \
@@ -201,9 +202,11 @@ def _hungarian(ru):
     """Венгерские слова в переводе: с венгерскими буквами, строчные или ПРОПИСНЫЕ (имя с прописной — название фирмы,
     «Paksi Atomerőmű Zrt.», — латиницей законно); формула Word — математическими буквами, поэтому через NFKC."""
     t = unicodedata.normalize("NFKC", ru)
-    # слово с цифрами впритык («TLÜ302» — обозначение документа) — код, не венгерское слово
-    return [w for w in re.findall(r"[A-Za-zÁÉÍÓÖŐÚÜŰáéíóöőúüű_]{2,}\d*", t)
-            if not w[-1].isdigit() and re.search(r"[áéíóöőúüűÁÉÍÓÖŐÚÜŰ]", w) and (w.islower() or w.isupper() or "_" in w)]
+    # слово с цифрами впритык («TLÜ302», «30BLHÜT» — обозначения) — код, не венгерское слово; слово начинается на
+    # границе: «BLHÜT» внутри «30BLHÜT» слова не начинает (шлифовка «исправляла» код на «30BLHUT», 28.10)
+    return [w for w in re.findall(r"(?<![\w])[A-Za-zÁÉÍÓÖŐÚÜŰáéíóöőúüű_]{2,}\d*", t)
+            if not w[-1].isdigit() and re.search(r"[áéíóöőúüűÁÉÍÓÖŐÚÜŰ]", w) and (w.islower() or w.isupper() or "_" in w)
+            and not (w.isupper() and len(w) <= 4)]            # ÜBO, ÍV, ÜIO — сокращения подразделений: латиницей, как есть
 
 
 def _code_guess(c, ru):

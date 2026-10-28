@@ -1777,7 +1777,7 @@ def test_case_suffix_and_dotted_abbreviation_are_not_codes():
     """«4.1.9.-ben» — номер пункта с падежным суффиксом, «Oszt.vez.» — сокращение (не имя файла): шлифовка не должна
     возвращать их в верный перевод; настоящее имя файла в конце предложения — код по-прежнему (30RR2126GT, 28.10)."""
     assert C._codes("Ha a 4.1.10. és 4.1.9.-ben rögzített nyomásértékek") == []
-    assert C._codes("Oszt.vez. Oszt.vez.") == []
+    assert C._codes("Oszt.vez. Oszt.vez.") == [] and C._codes("Oszt.vez aláírása") == []
     assert "config.ini" in C._codes("lásd a config.ini.")
     ru = "ЕСЛИ разность значений в 4.1.10. и 4.1.9., <5 бар"
     assert C.fix_code("Ha a 4.1.10. és 4.1.9.-ben rögzített", ru, RULES)[0] == ru
@@ -1790,3 +1790,10 @@ def test_hungarian_leftover_ignores_document_codes_and_first_use_abbreviation():
     ok = lambda t: not [v for v in C.check_text(t, RULES) if v[0] == "Я11"]
     assert ok("в соответствии с TLÜ302 провел совещание") and ok("Начало теста разрешается НСБ (BLÜGY).")
     assert not ok("ЗАКРЫТЬ szelepeket и ellenőrizni")
+
+
+def test_short_capital_abbreviations_are_not_hungarian_leftovers():
+    """ÜBO, ÍV, ÜIO — сокращения подразделений (латиницей, как есть по глоссарию): не остаток венгерского, шлифовка не
+    выдумывает «УБО»/«ИВ» (30BL150FÜT: 30 строк); слово из пяти и более прописных букв — по-прежнему замечается."""
+    assert C._hungarian("Подразделение: ÜBO, ÍV, ÜIO") == [] and C._hungarian("ЗАКРЫТО ZÁRVA") == ["ZÁRVA"]
+    assert C._hungarian("с идентификатором 30BLHÜT, TLÜ302") == []                           # обозначения с цифрами

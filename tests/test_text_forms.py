@@ -647,3 +647,40 @@ def test_row_number_in_middle_of_two_line_cell_opens_paragraph_once():
     pars = LY.group([fr("1.6.", [60, 100, 80, 112]), fr("FOT szintcsökkenés", [100, 100, 200, 112]),
                      fr("FOT szint folytatás", [100, 113, 200, 125])], [], [])
     assert sorted(p["text"] for p in pars) == ["1.6.", "FOT szintcsökkenés FOT szint folytatás"]
+
+
+def test_page_number_found_by_place_when_label_differs_per_page(tmp_path):
+    """Подпись номера листа разная на листах («Oldalszám:» / «Oldal» «:» / «Old.» …, 30BLFKSZ): общего набора слов нет,
+    число ищется по месту — прежде оно застывало числом одного листа во всех шапках."""
+    src = tmp_path / "labels.pdf"
+    doc = fitz.open()
+    labels = ["Oldalszám:", "Oldal :", "Old.", "Oldalsz.:", "Lap", "Lapszám:"]
+    words = ("elsődleges tömítettség szivattyú indítás szelep zárás nyomás hőmérséklet teljesítmény áramlás "
+             "szint vezérlés védelem mérés kapcsoló betáplálás hűtés fűtés csővezeték").split()
+    for pno in range(6):
+        pg = doc.new_page(width=595, height=842)
+        put = lambda x, y, t: pg.insert_text((x, y), t, fontsize=10, fontname="tiro")
+        if pno:                                             # лист 1 — титул без шапки
+            put(60, 40, "Azonosító: 30BLFKSZ")
+            put(420, 40, labels[pno])
+            put(520, 40, str(pno + 1))
+        for k in range(8):
+            put(60, 120 + 40 * k, f"A {words[(pno * 3 + k) % len(words)]} és a {words[(pno * 5 + k * 2 + 1) % len(words)]}"
+                                  f" ellenőrzése megtörtént ({words[(pno + k * 7) % len(words)]}).")
+    doc.save(str(src))
+    segs = _segs(src)
+    blocks, info = DL.load(str(src), segs, text=True)
+    L = D.layout(str(src), blocks, content=info.get("content_boxes"))
+    assert L["page_tok"] and L["page_marked"]
+
+
+def test_header_label_column_widens_for_longer_russian_label():
+    """Столбец подписи шапки («Azonosító:» 55 pt) не вмещает «Идентификатор:» — слово рвалось посреди («Идентифика / тор:»);
+    ширина добавляется за счёт самого широкого столбца, общая ширина таблицы та же; без нужды ширины не меняются."""
+    rows = [{"cells": ["Azonosító:", "30KBFPRBIGT", "Verziószám:", "0."], "bold": True}]
+    mem = B.Memory([("Azonosító:", "Идентификатор:"), ("Verziószám:", "Номер версии:"), ("30KBFPRBIGT", "30KBFPRBIGT"),
+                    ("0.", "0.")])
+    b = B.Builder(mem, lambda img: png(), PROFILE)
+    w = b._fit_widths(rows, [55, 300, 70, 40], 11.0)
+    assert w[0] > 55 and w[2] > 70 and abs(sum(w) - 465) < 1 and w[1] >= 0.6 * 300
+    assert b._fit_widths(rows, [120, 200, 100, 45], 11.0) == [120, 200, 100, 45]

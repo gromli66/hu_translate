@@ -2627,6 +2627,23 @@ def _typical_page(pdf, body_top, H, sample=15, cbot=lambda pg: None):
                     if sl:
                         bx["x1"] = float(sl[0]["x0"])
                 boxes.append(bx)
+    # подпись номера листа разная на листах («Oldalszám:» / «Oldal» «:» — 30BLFKSZ), общих колонтитулов с одним набором
+    # слов нет: число ищется по месту — то же место на листах, значение растёт вместе с листом
+    if tok is None and len(idx) >= 3:
+        for w in words[rep]:
+            mw = PAGE_WORD.fullmatch(w["text"])
+            if not mw:
+                continue
+            pairs = []
+            for i in idx:
+                q = next((v for v in words[i] if abs(float(v["x0"]) - float(w["x0"])) < 12 and abs(float(v["top"]) - float(w["top"])) < 4
+                          and PAGE_WORD.fullmatch(v["text"])), None)
+                if q:
+                    pairs.append((i, int(PAGE_WORD.fullmatch(q["text"])[1])))
+            if len(pairs) >= 3 and any(i == rep for i, _ in pairs) and len({v - i for i, v in pairs}) == 1:
+                tok, off = w["text"][mw.start(1):].split("/")[0], pairs[0][1] - pairs[0][0]
+                boxes = [{k: float(w[k]) for k in ("x0", "x1", "top")}]
+                break
     return pdf.pages[rep], tok, off, boxes
 
 

@@ -147,7 +147,8 @@ def code_present(c, nru, gloss_abbr):
     low = c.lower()
     umap = {u.lower(): r for u, r in UNITS}
     if low in umap:
-        return umap[low] in nru or low in nru.lower()
+        flat = lambda t: t.replace("³", "3").replace("²", "2")        # «дм3/ч» и «дм³/ч» — одна единица
+        return flat(umap[low]) in flat(nru) or low in nru.lower()
     mu = re.match(r"^(\d[\d.,]*)\s?([a-z/0-9]+)$", low)
     if mu and mu.group(2) in umap:
         return _norm_code(mu.group(1)) in nru
@@ -367,7 +368,7 @@ def check_generic(src, out, s_lang, t_lang):
 
 
 UNITS = [("mg/dm3", "мг/дм³"), ("g/dm3", "г/дм³"), ("mg/kg", "мг/кг"), ("g/kg", "г/кг"), ("kg/cm2", "кгс/см²"),
-         ("m3/h", "м³/ч"), ("mm/s", "мм/с"), ("t/h", "т/ч"), ("l/h", "л/ч"), ("mbar", "мбар"), ("bar", "бар"),
+         ("m3/h", "м³/ч"), ("m3/óra", "м³/ч"), ("dm3/óra", "дм³/ч"), ("t/óra", "т/ч"), ("l/óra", "л/ч"), ("kg/óra", "кг/ч"), ("mm/s", "мм/с"), ("t/h", "т/ч"), ("l/h", "л/ч"), ("mbar", "мбар"), ("bar", "бар"),
          ("kV", "кВ"), ("KV", "кВ"), ("kW", "кВт"), ("MW", "МВт"), ("Hz", "Гц"), ("mA", "мА"), ("nA", "нА")]
 UNIT_RE = re.compile(r"(?<=\d)\s?(" + "|".join(re.escape(u) for u, _ in UNITS) + r")(?![\w/])")
 

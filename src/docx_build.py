@@ -1828,12 +1828,41 @@ class Builder:
             b.append(_el(f"w:{side}", w__val="nil"))
         _tblpr_put(table, b)
 
+    def _fit_widths(self, rows, widths, size):
+        """Столбец подписи шапки по ширине венгерской («Azonosító:», 55 pt) не вмещает русскую («Идентифика / тор:»):
+        столбцам, где перевод короткой ячейки длиннее оригинала и не помещается в строку, ширина добавляется за счёт
+        самого широкого столбца (он остаётся не меньше 60 % прежнего)."""
+        n = len(widths)
+        if n < 2:
+            return widths
+        need = [0.0] * n
+        for r in rows:
+            # средняя ширина знака Times — около 0,55 кегля (полужирного — 0,6); поля ячейки LibreOffice — 2 × 5,4 pt
+            k = (0.6 if r.get("bold") else 0.55) * (size or 10)
+            for ci, txt in enumerate(r["cells"][:n]):
+                if isinstance(txt, dict) or "\n" in txt or not txt.strip() or len(txt) > 30:
+                    continue
+                ru = self.tr(txt.replace(PAGE_MARK, "00")) or txt
+                if len(ru) > len(txt) and widths[ci] < len(ru) * k + 12:
+                    need[ci] = max(need[ci], len(ru) * k + 12)
+        deficit = [max(0.0, need[i] - widths[i]) for i in range(n)]
+        total = sum(deficit)
+        if total < 1:
+            return widths
+        donor = max((i for i in range(n) if not deficit[i]), key=lambda i: widths[i], default=None)
+        if donor is None or widths[donor] - total < 0.6 * widths[donor]:
+            return widths
+        out = [w + d for w, d in zip(widths, deficit)]
+        out[donor] -= total
+        return out
+
     def _zone_table(self, part, grid, style, page_tok=None, page_marked=False):
         """Таблица колонтитула по сетке оригинала (docx_struct._zone_grid): ширины и выравнивание столбцов, рамка —
         все линии (штамп UTS) / только внешняя (строка-рамка ÜFK) / без рамки; номер листа — полем PAGE."""
         from docx.shared import Pt
         from docx.enum.text import WD_ALIGN_PARAGRAPH as AL
         rows, widths, aligns = grid["rows"], grid.get("widths") or [], grid.get("aligns") or []
+        widths = self._fit_widths(rows, widths, grid.get("size"))
         ncol = max(len(r["cells"]) for r in rows)
         t = part.add_table(rows=len(rows), cols=ncol, width=Pt(sum(widths) or 400))
         if grid.get("inner", True):

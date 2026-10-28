@@ -135,3 +135,9 @@ def test_check_does_not_flag_glued_codes_and_numbered_words():
                    "Блок находится в состоянии M1 или в состоянии останова (M2).") == []
     assert T.check("5.Teszt utáni állapot", "5. Состояние после тестирования") == []
     assert T.check("A 30RS61S004 szelep.", "Вентиль 30RS61S004 и 77.") == ["лишнее число: 77"]       # настоящее лишнее — по-прежнему
+
+
+def test_hourly_units_hungarian_and_flat_digit_variant():
+    """«5 dm3/óra» → «5 дм3/ч» (цифра без степени) — единица переведена, не потеря кода (30BL150FÜT: 10 замечаний)."""
+    assert T.check("Szivárgás < 5 dm3/óra.", "Протечка < 5 дм3/ч.") == []
+    assert T.fix_units("5 dm3/óra") == "5 дм³/ч"
