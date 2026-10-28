@@ -316,6 +316,13 @@ def _partner(frags, vs, bb, left=False):
     return any(f["bbox"][0] >= x1 + 5 and same(f) and not _vrule_in(vs, x1, f["bbox"][0], y0, y1) for f in frags)
 
 
+def mid_phrase(prev, nxt):
+    """Строка оборвалась на середине фразы: в ней ≥ 3 слов, она кончается буквой или запятой, следующая начинается
+    строчной буквой. Одиночные значения столбика («rendben» ×4) и пункты с точкой не подходят."""
+    prev, nxt = prev.rstrip(), nxt.lstrip()
+    return len(prev.split()) >= 3 and bool(re.search(r"[^\W\d_]$|,$", prev)) and nxt[:1].isalpha() and nxt[:1].islower()
+
+
 def group(frags, hs, vs=(), form=False):
     """form=True (скан формы): строка, кончающаяся двоеточием, — подпись поля, к ней не приклеивается следующая."""
     page_right = max((f["bbox"][2] for f in frags), default=0)
@@ -325,6 +332,20 @@ def group(frags, hs, vs=(), form=False):
     label = re.compile(r"^\(?\d+(\.\d+)*\.?\)?$|^[a-zA-Z][.)]$")
     nums = [f["bbox"] for f in frags if label.match(f["t"].strip())]
     used = set()                              # номер открывает абзац один раз — для первой строки против него
+
+    def labeled(bb):
+        return any(n[2] < bb[0] and bb[0] - n[2] < 120 and min(n[3], bb[3]) - max(n[1], bb[1]) > 0.5 * (bb[3] - bb[1])
+                   for n in nums)
+
+    def continues(f):
+        """Предыдущая строка этого же столбца оборвана на середине фразы, начинается без номера и выровнена с этой."""
+        x0, y0 = f["bbox"][0], f["bbox"][1]
+        for q in reversed(pars[-12:]):
+            last = q["frags"][-1]["bbox"]
+            size = max(q["size"], f["size"])
+            if -0.35 * size <= y0 - last[3] <= 0.6 * size and min(f["bbox"][2], q["bbox"][2]) - max(x0, q["bbox"][0]) > 0:
+                return abs(x0 - last[0]) < 3 and mid_phrase(q["frags"][-1]["t"], f["t"]) and not labeled(q["frags"][0]["bbox"])
+        return False
 
     def numbered(bb):
         """Номер слева на той же строке — этот кусок начинает абзац. Номер по центру ячейки в две строки («2.8.» против
@@ -343,7 +364,13 @@ def group(frags, hs, vs=(), form=False):
         best = None
         # маркер пункта отдельным фрагментом — сам по себе: маркеры соседних пунктов слипались в один «• •», и пункт
         # оставался без своего (Eskom 331-165, 17.10)
-        if not MARK.match(f["t"]) and not f.get("item") and not BULLET.match(f["t"].strip()) and not numbered(f["bbox"]):
+        plain = not MARK.match(f["t"]) and not f.get("item") and not BULLET.match(f["t"].strip())
+        starts = plain and numbered(f["bbox"])
+        # номер строки таблицы напротив последней строки ячейки («0.» против «…szintváltozásának módosítása…»): у первой
+        # строки абзаца своего номера нет — продолжение фразы, а не новый пункт (30TH50, 28.10)
+        if starts and continues(f):
+            starts = False
+        if plain and not starts:
             for p in reversed(pars[-12:]):
                 if len(p["frags"]) == 1 and BULLET.match(p["frags"][0]["t"].strip()):
                     continue
@@ -363,6 +390,12 @@ def group(frags, hs, vs=(), form=False):
                     continue
                 if code_line(p["frags"][-1]["t"]) and code_line(f["t"]):
                     continue                                # строки перечня кодов — каждая своим куском
+                # фраза оборвана на середине: длинная строка без знака конца, следующая — со строчной (центрированный
+                # текст в ячейке: «…A hidroakkumulátorok megengedett» / «szintváltozásának módosítása…» шли порознь, и
+                # перевод выходил «Допустимые гидроемкостей САОЗ изменение изменения уровня», 30TH50, 28.10)
+                if abs(x0 - last[0]) < 3 and mid_phrase(p["frags"][-1]["t"], f["t"]):
+                    best = p
+                    break
                 # короткая строка (до преграды справа далеко) закрывает абзац — если первое слово следующей строки
                 # в остаток влезло бы: в узкой ячейке строка коротка, потому что слово не поместилось
                 # («Teszt / szüneteltetése», таблица 1 UTS — ячейка переводилась по строкам, 15.10)

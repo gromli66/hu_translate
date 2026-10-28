@@ -649,6 +649,25 @@ def test_row_number_in_middle_of_two_line_cell_opens_paragraph_once():
     assert sorted(p["text"] for p in pars) == ["1.6.", "FOT szintcsökkenés FOT szint folytatás"]
 
 
+def test_sentence_cut_mid_phrase_continues_despite_row_number_against_last_line():
+    """Строка оборвана на середине фразы («…megengedett» / «szintváltozásának…»), номер строки таблицы («0.») стоит против
+    последней строки: это продолжение, а не новый пункт (30TH50: «Допустимые гидроемкостей САОЗ изменение изменения
+    уровня», 28.10). Пункт списка со своим номером в первой строке и строчной буквой по-прежнему отдельный."""
+    import layout as LY
+    fr = lambda t, bb: {"t": t, "bbox": bb, "size": 12.0, "bold": False, "family": "serif"}
+    frags = [fr("Ciklikus felülvizsgálat. Ismételt új „0” verziós TU", [113, 158, 358, 174]),
+             fr("kiadása. A hidroakkumulátorok megengedett", [113, 172, 332, 188]),
+             fr("0.", [85, 187, 95, 201]),
+             fr("szintváltozásának módosítása 25mm-ről 2.5mm-re.", [113, 186, 362, 202])]
+    texts = sorted(p["text"] for p in LY.group(frags, [], []))
+    assert texts == ["0.", "Ciklikus felülvizsgálat. Ismételt új „0” verziós TU kiadása. A hidroakkumulátorok megengedett "
+                     "szintváltozásának módosítása 25mm-ről 2.5mm-re."]
+    # пункты списка: у первой строки каждого — свой номер, текст со строчной, без точки в конце — каждый пункт отдельно
+    items = [fr("1.", [60, 100, 70, 112]), fr("a nyomás mérése az első szakaszon", [90, 100, 300, 112]),
+             fr("2.", [60, 113, 70, 125]), fr("a szelep zárása a második szakaszon", [90, 113, 300, 125])]
+    assert len([p for p in LY.group(items, [], []) if len(p["text"]) > 3]) == 2
+
+
 def test_page_number_found_by_place_when_label_differs_per_page(tmp_path):
     """Подпись номера листа разная на листах («Oldalszám:» / «Oldal» «:» / «Old.» …, 30BLFKSZ): общего набора слов нет,
     число ищется по месту — прежде оно застывало числом одного листа во всех шапках."""
