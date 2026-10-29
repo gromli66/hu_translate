@@ -311,3 +311,13 @@ def test_abbreviation_slash_code_and_liter_per_hour():
     assert T.check("30TK61P101 BSZG/30GA01", "30TK61P101 ИВС/30GA01", gloss_abbr=ga) == []
     assert T.check("30TK61P101 BSZG/30GA01", "30TK61P101 ИВС", gloss_abbr=ga) == ["нет кодов/чисел: BSZG/30GA01"]
     assert T.fix_units("ΔF = FTK – FTX = ……………liter /h") == "ΔF = FTK – FTX = ……………л/ч"
+
+
+def test_portfolio_shell_does_not_overwrite_translated_attachment(tmp_path):
+    """Оболочка портфолио и вложение с одним именем (30BLM1M2GT, 30RYBSZGT, 29.10): PDF оболочки со страницей-заглушкой
+    затирал перевод основного документа — оболочка теперь рядом, под своим именем."""
+    import pipeline as P
+    assert P.portfolio_target(tmp_path, "30ABC").name == "30ABC_RU.pdf"            # вложения с таким именем нет
+    (tmp_path / "30ABC_RU.pdf").write_bytes(b"%PDF translated attachment")
+    assert P.portfolio_target(tmp_path, "30ABC").name == "30ABC_RU_портфолио.pdf"
+    assert (tmp_path / "30ABC_RU.pdf").read_bytes() == b"%PDF translated attachment"

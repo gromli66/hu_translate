@@ -146,6 +146,14 @@ def unpack_portfolio(f, dest):
     return out
 
 
+def portfolio_target(out, stem, sfx="_RU"):
+    """Файл переведённого портфолио. Вложение с тем же именем, что у оболочки (30BLM1M2GT.PDF ⊃ 30BLM1M2GT.pdf), уже
+    переведено в `<имя>_RU.pdf` — оболочка с заглушкой «откройте в Acrobat» затирала настоящий перевод (30BLM1M2GT,
+    30RYBSZGT, 29.10); тогда оболочка — рядом, под своим именем."""
+    t = Path(out) / f"{stem}{sfx}.pdf"
+    return t.with_name(f"{stem}{sfx}_портфолио.pdf") if t.exists() else t
+
+
 def rebuild_portfolios(work, out, sfx="_RU"):
     """Переведённое портфолио: копия исходного, где каждое вложение заменено своим переводом (PDF — PDF «на месте»,
     DOCX — DOCX). Заказчик получает один файл той же структуры, что прислал; переводы по отдельности тоже остаются."""
@@ -165,7 +173,7 @@ def rebuild_portfolios(work, out, sfx="_RU"):
                 d.embfile_add(key, ru.read_bytes(), filename=info.get("filename"), ufilename=info.get("ufilename"),
                               desc=info.get("desc"))
                 done += 1
-        target = Path(out) / f"{Path(m['source']).stem}{sfx}.pdf"
+        target = portfolio_target(out, Path(m["source"]).stem, sfx)
         d.save(target, garbage=3, deflate=True)
         log(f"сборка: {target.name} — портфолио, переведённых вложений {done} из {len(m['map'])}")
 
