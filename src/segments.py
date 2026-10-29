@@ -26,10 +26,20 @@ HU_WORD = re.compile(r"[a-záéíóöőúüű]{2,}")
 CODE = re.compile(r"\w+(?:[./-]\w+){2,}")
 
 
+# имя из программы одним словом или перечнем: «get_ stat_name», «Char16», «MarkTrigger», «real*4», «mf_load(loa, meas)» — не текст к
+# переводу: модель делала из них «реал*4», «цел.*4», «Рутин Check_clients», «Промышленность» (ПО тренажёра IS_reko_09, 29.10)
+_ID = (r"(?:[A-Za-z]\w*_\w*|[A-Za-z]+\d+\w*|\w*[a-z][A-Z]\w*|(?i:int|integer|real|float|char|character)(?:\*\d+)?"
+       r"|[A-Za-z]\w*\.(?:dat|txt|inc|lis|doc|sql|exe|bmp|log|cfg|ini|xls|c|h)|(?:\w+\\)+\w+)"
+       r"(?:\[\d*\])?(?:\([^)]*\))?;?")
+IDENT_ONLY = re.compile(rf"[\s{{}}]*\*?{_ID}(?:[\s,;/]+\*?{_ID})*[\s,;:{{}}]*")
+
+
 def needs_translation(text):
     """Есть ли что переводить: строчное слово или аббревиатура из букв (не чистые коды/числа)."""
     t = re.sub(r"<\/?f\d+>", "", text)
     if CODE.fullmatch(t.strip()) and re.search(r"\d{3}", t):
+        return False
+    if IDENT_ONLY.fullmatch(t.strip()):
         return False
     return bool(HU_WORD.search(t)) or bool(re.search(r"\b[A-ZÁÉÍÓÖŐÚÜŰ]{2,}\b", t)) \
         or bool(re.search(r"[А-Яа-яЁё]", t))          # русский источник (проект "pair": "ru-en"): и «№ п/п»

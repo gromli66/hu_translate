@@ -261,3 +261,44 @@ def test_batch5_false_issues_and_units():
     assert T.check("nyomás 1500/min", "давление 1500/мин") == [] and T.check("nyomás 1500/min", "давление") == ["нет кодов/чисел: 1500"]
     assert T.fix_units("T≈50oC, 120 oC; 1500/min; 2900 1/min") == "T≈50 °C, 120 °C; 1500/мин; 2900 1/мин"
     assert T.check("Szöveges információ", "Szöveges információ") != []                      # непереведённое по-прежнему ловится
+
+
+def test_it_document_identifiers_and_numbers_are_not_false_issues():
+    """IS_reko_09 (ПО тренажёра, 29.10): идентификаторы кода («get_ stat_name», «Char16», «MarkTrigger»), имена файлов и
+    ключевые слова (.dat, SQL, FIFO, char) остаются латиницей — не «не переведено»/«венгерский остался»; «Sorszám1»,
+    «30RW72S201(1.szinten)», «31,32 SA» и пробелы в конце ячейки — не потеря кода/лишнее число/длина; «ASME OM CODE»."""
+    ok = [("get_ stat_name", "get_ stat_name"), ("Char16", "Char16"), ("MarkTrigger", "MarkTrigger"), ("l3=ipar4", "l3=ipar4"),
+          ("IS_TERM-nek", "IS_TERM"), ("7.2.3\tMain_form\t110", "7.2.3\tMain_form\t110"),
+          ("8.4.7\tA paramsxx.dat file-ok szerkezete\t146", "8.4.7\tСтруктура файлов paramsxx.dat\t146"),
+          ("1.2.1\tAz SQL adatbázis tartalma\t9", "1.2.1\tСодержание базы данных SQL\t9"),
+          ("4.6.3\tA CDQ FIFO puffer\t51", "4.6.3\tБуфер CDQ FIFO\t51"),
+          ("  char TRIG_ID[3];\t// a trigger fv. sorszáma", "  char TRIG_ID[3];\t// порядковый номер функции триггера"),
+          ("malfun\t\t(integer*2)\tMérés meghibásodás státusza", "malfun\t\t(integer*2)\tСтатус отказа измерения"),
+          ("Sorszám1", "№ п/п 1"), ("30RW72S201(1.szinten)", "30RW72S201 (на 1-м уровне)"),
+          ("30TV61S001(fent a podiumon)", "30TV61S001 (на подиуме)"), ("31,32 SA üzemen kívül.", "31, 32 SA вне работы."),
+          ("Módosított oldalak:1,11", "Измененные страницы: 1, 11"), ("Szivattyú indulás                          ", "Пуск насоса"),
+          ("Elektronikus tesztelési utasítások az ASME OM CODE", "Электронные инструкции по ASME OM CODE")]
+    for src, ru in ok:
+        assert T.check(src, ru) == [], (src, T.check(src, ru))
+    assert T.check("Szöveges információ", "Szöveges információ") != []                      # венгерский текст по-прежнему ловится
+    assert T.check("Szelep áteresztés", "Szelep áteresztés") != []
+    assert T.fix_units("переход к 4.1.0.26.fejezetre") == "переход к разделу 4.1.0.26"
+    assert T.fix_units("переход к 4.3. fejezetre") == "переход к разделу 4.3"
+
+
+def test_program_identifiers_are_not_translated():
+    """ПО тренажёра (IS_reko_09, 29.10): имена из кода и типы данных — не текст к переводу."""
+    for t in ("get_ stat_name", "Char16", "MarkTrigger", "real*4", "int*4", "Integer*2", "float", "mf_load(loa, meas, stb..)",
+              "Check_clients", "<f1>valve_up</f1>", "switch_n,\tswitch_r", "ipar4", "boardMouseMove", "SNPTimeToStep",
+              "is_cmd0xx.dat", "Trgxxx.dat", "IS_TERM\\VMS\\comment", "  char PAR2[2];"):
+        assert not S.needs_translation(t), t
+    for t in ("Sorszám1", "Parancsok", "Szelep zárva", "Integer paraméter címe", "Real output", "Egyedi azonosító"):
+        assert S.needs_translation(t), t
+
+
+def test_it_doc_decimal_dot_and_single_are_not_false_issues():
+    """IS_reko_09 (29.10): «0.2 mp.» → «0,2 с» (десятичная запятая) не потеря кода; «egyetlen» — «единственный», не отрицание;
+    «int *icon_adr» — код."""
+    assert T.check("amely 0.2 mp.-ként adatot küld", "которая каждые 0,2 с отправляет данные") == []
+    assert T.check("Egyetlen szimulációs ciklus alatt", "В рамках одного цикла") == []
+    assert not S.needs_translation("int *icon_adr") and not S.needs_translation("IS_reko_09.doc")

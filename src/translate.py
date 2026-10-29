@@ -136,6 +136,7 @@ def codes_of(src):
             continue
         # «70 %-ig» → «70»; «3-án» → «3»; «6.csoport» → «6»; «110%os» → «110%»; «128bar» → «128»; «max.2» → «2»
         c = re.sub(r"-[a-záéíóöőúüű]+$", "", c)
+        c = re.sub(r"(?<=[\d%])-[A-ZÁÉÍÓÖŐÚÜŰ]{2,4}$", "", c)                       # «NR<1%-NÁL» (заголовок прописными) → «1%»
         c = re.sub(r"(?<=\d)\.[a-záéíóöőúüű]{2,}$", "", c)
         c = re.sub(r"(?<=[\d%])[a-záéíóöőúüű]+$", "", c)
         c = re.sub(r"^[a-záéíóöőúüű]+\.", "", c)
@@ -147,6 +148,8 @@ def codes_of(src):
         c = re.sub(r"^[A-Za-záéíóöőúüű]+\.[a-záéíóöőúüű]+[./](?=\d)", "", c)             # «Turb.géph/31(32)UJ21» → «31(32)UJ21»
         c = re.sub(r"(?<=\d)\.[A-ZÁÉÍÓÖŐÚÜŰ]{4,}$", "", c)                                 # «1.LÉPÉS» → «1»
         c = re.sub(r"^[a-záéíóöőúüű]{3,}(?=\d+$)", "", c)                                    # «információ7», «idő10» → число
+        c = re.sub(r"^[A-ZÁÉÍÓÖŐÚÜŰ][a-záéíóöőúüű]{4,}(?=\d+$)", "", c)                      # «Sorszám1» → «1» («№ п/п 1»)
+        c = re.sub(r"\((?:\d+|[a-záéíóöőúüű]+)$", "", c)                                     # «30RW72S201(1.szinten)» → «30RW72S201»
         c = re.sub(r"(?<=\d)/[a-záéíóöőúüű]{5,}$", "", c)                                    # «1/kampány» → «1»
         if c == "1/min":                                                           # частота вращения: «об/мин» или «1/мин» — оба верны
             continue
@@ -168,6 +171,8 @@ def code_present(c, nru, gloss_abbr):
     Единица («g/dm3») или число с единицей («400KV») — засчитывается перевод единицы (fix_units): верное «400 кВ»
     давало замечание, а неверное «400KV» проходило чисто, и повтор перевода выбирал неверное (редтим 05.10)."""
     if _norm_code(c) in nru:
+        return True
+    if re.fullmatch(r"\d+\.\d+", c) and c.replace(".", ",") in nru:       # «0.2 mp.» → «0,2 с»: десятичная запятая
         return True
     low = c.lower()
     umap = {u.lower(): r for u, r in UNITS}
@@ -236,7 +241,15 @@ def action_flip(src, ru):
 
 
 # торговые марки и стандарты, которые остаются латиницей, хотя стоят среди прописных слов фразы («STORZ KAPOCS», «ASME OM KÓD»)
-LATIN_BRANDS = frozenset({"STORZ", "ASME"})
+LATIN_BRANDS = frozenset({"STORZ", "ASME", "CODE"})
+# ИТ-документы (ПО тренажёра, IS_reko_09): ключевые слова языков, протоколы и расширения остаются латиницей — не «венгерский остался»
+IT_WORDS = frozenset("""sql fifo ftp bluetooth windows ethernet winsock socket ascii true false char int integer real float double
+void struct include define null dat txt doc docx lis inc src exe bmp log cfg ini xls""".split())
+# слово внутри имени файла, пути, идентификатора с «_» или типа «Real*4» — часть кода, а не слово текста
+CODE_TOKEN = re.compile(r"\S*(?:[_\\*]|\w\.(?:dat|txt|inc|lis|doc|sql|exe|bmp|log|cfg|ini|xls|c|h)\b)\S*")
+# идентификатор программы: «get_stat_name», «Char16», «MarkTrigger» (с приставшим венгерским «-nek») — не текст к переводу
+FIELD_DECL = re.compile(r"(?m)^\s*([A-Za-z]\w*)\s*\t+\s*\((?:[Ii]nteger|[Rr]eal)\*\d\)")      # «malfun\t(integer*2)\tСтатус…» — имя поля записи
+IDENT = re.compile(r"\w*_\w*(?:-[a-záéíóöőúüű]+)?|(?<![\wÀ-ɏ])[A-Za-z]+\d+(?![\wÀ-ɏ])|(?<![\wÀ-ɏ])[A-Z][a-z]+(?:[A-Z][a-z]*)+(?![\wÀ-ɏ])")
 NAME_FIELD = re.compile(r"(?i)\bNév\s*:\s*([^|\n]*?)(?=\s+(?:Szervezet|Aláírás|Dátum|Beosztás)\b|\||$)")
 MAIL = re.compile(r"([^;<:\n]*?)\s*<([^<>@\s]+@[^<>\s]+)>")
 HYPHEN_CAPS = re.compile(r"(?<=[A-ZÁÉÍÓÖŐÚÜŰ])- (?=[A-ZÁÉÍÓÖŐÚÜŰ]{2})")      # «MENNYI- SÉG» — перенос слова в узкой ячейке
@@ -252,6 +265,9 @@ def name_words(src):
     for m in MAIL.finditer(plain):
         out.update(LETTERS.findall(m.group(1)))
         out.update(LETTERS.findall(m.group(2)))
+    for tok in CODE_TOKEN.findall(plain):
+        out.update(LETTERS.findall(tok))
+    out.update(FIELD_DECL.findall(plain))
     return out
 
 
@@ -275,6 +291,8 @@ def check(src, ru, allowed_latin=frozenset(), gloss_abbr=frozenset(), vocab=froz
     src_nums = {n.replace(",", ".") for n in re.findall(r"\d+(?:[.,]\d+)?", TAG.sub(" ", src))}
     # «30RS61S004,30RS61S005» (коды через запятую без пробела): «004,30» — не дробь; в переводе «004, 30RS61S005»
     src_nums |= {p for m in re.finditer(r"(?<=[A-Za-z])\d+[.,]\d+", TAG.sub(" ", src)) for p in re.split(r"[.,]", m.group())}
+    # «31,32 SA», «oldalak:1,11»: целые через запятую без пробела — перечень, в переводе «31, 32» (28.10)
+    src_nums |= {p for m in re.finditer(r"(?<![\d.,])[1-9]\d*,[1-9]\d+(?![\d.,])", TAG.sub(" ", src)) for p in m.group().split(",")}
     extra = sorted({n for n in re.findall(r"\d+(?:[.,]\d+)?", TAG.sub(" ", ru))
                     if len(re.sub(r"\D", "", n)) >= 2 and n.replace(",", ".") not in src_nums})
     if extra:
@@ -283,6 +301,8 @@ def check(src, ru, allowed_latin=frozenset(), gloss_abbr=frozenset(), vocab=froz
     phrase_words = set()                  # слова прописных фраз оригинала — текст, их переводят
     for m in CAPS_PHRASE.finditer(plain):
         words = [w for w in LAT_ABBR.findall(m.group()) if w not in abbr_keep]
+        if any(w.lower() in IT_WORDS for w in words):             # «CDQ FIFO» — название ИТ-объекта, а не прописной текст
+            continue
         if any(len(w) >= 4 and len(re.findall(r"[AEIOUÁÉÍÓÖŐÚÜŰ]", w)) >= 2 for w in words):
             phrase_words.update(words)
     if not plain.isupper():           # строка целиком прописными — это текст (НЕ ДОПУСКАЕТСЯ), а не обозначения
@@ -301,7 +321,8 @@ def check(src, ru, allowed_latin=frozenset(), gloss_abbr=frozenset(), vocab=froz
     # прописное слово внутри обозначения с цифрами («3SZ17/INFO») — часть кода, а не слово текста
     names |= {w for tok in re.findall(r"\S*\d\S*", plain) for w in LETTERS.findall(tok) if w.isupper()}
     # «max.», «pmax», «Tmax»: сокращения наибольшего/наименьшего значения — не слово венгерского
-    left = [w for w in left if w not in names and w not in LATIN_BRANDS and not re.fullmatch(r"[A-Za-z]{0,2}(?:max|min)", w)]
+    left = [w for w in left if w not in names and w not in LATIN_BRANDS and w.lower() not in IT_WORDS
+            and not re.fullmatch(r"[A-Za-z]{0,2}(?:max|min)", w)]
     if left:
         issues.append("венгерский остался: " + ", ".join(left[:6]))
     if CJK.search(ru):
@@ -314,11 +335,12 @@ def check(src, ru, allowed_latin=frozenset(), gloss_abbr=frozenset(), vocab=froz
     issues += action_flip(TAG.sub(" ", src), TAG.sub(" ", ru))
     plain_src = TAG.sub("", src)
     # название системы из прописных и строчных букв слитно («INFObank») — имя, а не текст к переводу
-    named = re.sub(r"(?<![\wÀ-ɏ])[A-ZÁÉÍÓÖŐÚÜŰ]{3,}[a-záéíóöőúüű]{2,}(?![\wÀ-ɏ])", " ", plain_src)
+    named = IDENT.sub(" ", re.sub(r"(?<![\wÀ-ɏ])[A-ZÁÉÍÓÖŐÚÜŰ]{3,}[a-záéíóöőúüű]{2,}(?![\wÀ-ɏ])", " ", plain_src))
     if re.search(r"[a-záéíóöőúüű]{3,}", named) and not CYR.search(ru):
         issues.append("не переведено")
+    plain_src = plain_src.strip()                # хвостовые пробелы ячейки («Szelep áteresztés      ») длину не меняют
     if len(plain_src) >= 25:
-        k = len(TAG.sub("", ru)) / len(plain_src)
+        k = len(TAG.sub("", ru).strip()) / len(plain_src)
         if not 0.5 <= k <= 2.6:
             issues.append(f"длина ×{k:.2f}")
     return issues
@@ -454,6 +476,7 @@ def fix_units(ru):
     ru = UNIT_RE.sub(lambda x: " " + m[x.group(1)], ru)
     ru = re.sub(r"(?<=\d)\s?o\s?C(?![\w])", " °C", ru)       # «50oC» — градус буквой «o»
     ru = re.sub(r"(?<=\d)/min(?![\w])", "/мин", ru)                              # «1500/min» → «1500/мин»
+    ru = re.sub(r"(?<![\wА-Яа-я])к\s+(\d+(?:\.\d+)*)\.?\s?fejezetre(?![\wÀ-ɏ])", r"к разделу \1", ru)   # «ugrás a(z) 4.1.0.26.fejezetre» (21 строка 30RL2126GT)
     return fix_nonwords(PER_MIN.sub("1/мин", ru))
 
 
@@ -611,6 +634,9 @@ class Translator:
         return [f"термин документа: {m} → {ru_of.get(m, '?')}" for m in miss[:3]]
 
     def full_check(self, src, ru):
+        from segments import needs_translation
+        if ru.strip() == src.strip() and not needs_translation(src):         # имя из кода, код, число — остаются как есть
+            return []
         if self.ru_en:
             return check_en(src, ru) + (self.term_issues(src, ru) if ru else [])
         if not self.hu_ru:

@@ -14,7 +14,7 @@ from glossary import _is_suffix_chain
 NEG = re.compile(r"(hatatlan|hetetlen|talan|telen|atlan|etlen|otlan|tlan|tlen)")
 HU_WORD = re.compile(r"[A-Za-zÁÉÍÓÖŐÚÜŰáéíóöőúüű]{6,}")
 # слова, где -telen/-talan не несёт отрицания по смыслу перевода или уже «вшито» (hirtelen — внезапно)
-NOT_NEG = ("hirtelen", "kedvezőtlen",
+NOT_NEG = ("hirtelen", "kedvezőtlen", "egyetlen",      # egyetlen = единственный, один (IS_reko_09, 29.10)
            # отрицание «растворяется» в переводе: haladéktalanul → немедленно, maradéktalanul → полностью,
            # közvetlenül → напрямую, függetlenül → вне зависимости (ложные тревоги на прогоне 01.10)
            "haladéktalan", "maradéktalan", "közvetlen", "független")
