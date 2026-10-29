@@ -378,7 +378,10 @@ def translate(work, prj, workers=4, redo=False, progress=_quiet):
             units, by_text = [], {}
             for s in sec:
                 if not S.needs_translation(s["text"]) or keep_abbr(s["text"]):
-                    res[s["id"]] = {"ru": s["text"], "issues": [], "tries": 0, "copied": True}; continue
+                    # значение без слов («1,7 kW», «6 t/h»): портал не зовётся, но единица — по глоссарию («1,7 кВт»);
+                    # сборка берёт это из res (docx_build.Memory.get), иначе в таблицах оставалась латиница (аудит 29.10, C6)
+                    res[s["id"]] = {"ru": fix_units(s["text"]) if tr.tgt == "ru" else s["text"],
+                                    "issues": [], "tries": 0, "copied": True}; continue
                 m = from_memory(s["text"])
                 if m:
                     res[s["id"]] = m; continue

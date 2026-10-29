@@ -80,3 +80,14 @@ def test_piece_of_long_rule_is_not_a_vector_shape():
     assert not DL._on_rule(fitz.Rect(200, 140, 201, 151), rules)                    # не на линии
     assert not DL._on_rule(fitz.Rect(130, 140, 150, 160), rules)                    # рамка, не отрезок линии
     assert not DL._on_rule(fitz.Rect(139.5, 60, 140.5, 71), ([], [(140.0, 60.0, 80.0)]))   # линия короче 40 pt
+
+
+def test_row_labels_at_sheet_top_stay_in_table_on_every_sheet(tmp_path):
+    """«Berendezés alfanumerika», «Beépítés helye»: подписи строк таблицы вверху каждого листа (3PR10: 9 листов) — тело,
+    не «название раздела, повторяющее верх прошлого листа»: в переводе оставались на одном листе из девяти."""
+    src = tmp_path / "labels.pdf"
+    segs = _sheets_pdf(src, labels=True)
+    blocks, _ = DL.load(str(src), segs, text=True)
+    cells = " ".join("".join(r.get("t", "") for r in x["runs"]) for b in blocks if b["k"] == "table"
+                     for row in b["rows"] for c in row for x in c["blocks"])
+    assert cells.count("Berendezés alfanumerika") == 5 and cells.count("Beépítés helye") == 5

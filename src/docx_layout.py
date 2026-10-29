@@ -1132,21 +1132,27 @@ def _page_rules(doc, text=False):
 
 
 def _head_rows(doc, rules, body, keys, H):
-    """Строки заголовков столбцов таблиц: первая строка сетки от двух столбцов, под которой в той же таблице есть текст
-    тела (не повтор колонтитула). Повторяется на каждом листе (Word печатает шапку таблицы на каждом листе) — и
-    снималась как колонтитул или бегущее название: у 30RDGT шапка таблицы уходила в шапку DOCX узкой сеткой, 15 листов
-    → 68; у 31RDGT заголовки столбцов пропадали со второго листа (20.10). → {id сегмента}."""
+    """Содержимое таблиц, в которых под первой строкой сетки от двух столбцов есть текст тела (не повтор колонтитула), —
+    тело, не колонтитул и не бегущее название. Шапка такой таблицы повторяется на каждом листе (Word печатает её на
+    каждом листе) — и снималась как колонтитул или бегущее название: у 30RDGT шапка таблицы уходила в шапку DOCX
+    узкой сеткой, 15 листов → 68; у 31RDGT заголовки столбцов пропадали со второго листа (20.10). Не только первая
+    строка: подписи строк («Berendezés alfanumerika», «Beépítés helye» вверху каждого листа 3PR10, «Alfanumerika»,
+    «Állapot» в 3SZ17, 3SZ23, 3FI18) стоят в верхней части листа и повторяются на следующем — их снимало правило
+    «название раздела вверху листа повторяет прошлый лист»: в переводе оставались на одном листе из девяти (29.10).
+    → {id сегмента}."""
     import fitz
     per = rules[1]
     by_page = {}
     for s in body:
         by_page.setdefault(s["page"], []).append(s)
     sure, maybe = set(), []
+    inside = set()
     for pno, (hs, vs) in enumerate(per):
         segs = by_page.get(pno, [])
         for xs, ys, _, _ in _tables(hs, vs):
             if len(xs) < 3 or len(ys) < 3:
                 continue
+            whole = fitz.Rect(xs[0], ys[0], xs[-1], ys[-1])
             head = fitz.Rect(xs[0], ys[0], xs[-1], ys[1])
             rest = fitz.Rect(xs[0], ys[1], xs[-1], ys[-1])
             body_ = [s for s in segs if rest.contains(fitz.Point(*_center(s))) and not _is_running(s, keys, H)]
@@ -1160,12 +1166,13 @@ def _head_rows(doc, rules, body, keys, H):
             # продолжение таблицы в одну-две строки вверху листа — по-прежнему таблица
             if any(not _zone(s, H) for s in body_):
                 sure |= {s["id"] for s in ids}
+                inside |= {s["id"] for s in segs if whole.contains(fitz.Point(*_center(s)))}
             else:
                 maybe.append(ids)
     place = lambda s: (_sig(s["text"]), round(s["loc"]["bbox"][0] / 6), round(s["loc"]["bbox"][1] / 6))
     seen = Counter(place(s) for p in by_page.values() for s in p)
     sigs = {_sig(s["text"]) for p in by_page.values() for s in p if s["id"] in sure}
-    return sure | {s["id"] for ids in maybe if ids and (all(_sig(s["text"]) in sigs for s in ids)
+    return inside | {s["id"] for ids in maybe if ids and (all(_sig(s["text"]) in sigs for s in ids)
                                                          or not any(seen[place(s)] > 1 for s in ids)) for s in ids}
 
 

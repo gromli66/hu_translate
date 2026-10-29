@@ -510,7 +510,10 @@ class Memory:
 
     def get(self, text):
         if not self.need(TAGS.sub("", text)):
-            return unpua(text)
+            # значение без слов («1,7 kW»): портал не нужен, но res хранит его с единицей по глоссарию («1,7 кВт») —
+            # отдаём это, а не исходный текст (аудит 29.10, C6: в таблицах оставалась латиница)
+            r = self.tagged.get(text.strip()) if TAGS.search(text) else self.m.get(KEY(text))
+            return unpua(text if r is None else r)
         if TAGS.search(text):
             return self.tagged.get(text.strip())
         r = self.m.get(KEY(text))
