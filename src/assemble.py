@@ -514,15 +514,16 @@ def _p2d_child(pdf, out):
 
 
 def lost_segments(out, segs, expect, skip_pages=(), H=842):
-    """Инвариант сборки: перевод каждого сегмента листа есть в готовом DOCX (тело, таблицы, колонтитулы). Строки у верха
-    и низа листа повторяются на листах и идут в колонтитул один раз — их считаем по тексту (хоть раз), остальное — по
-    числу сегментов с тем же исходником (повтор «Állapot» на девяти листах — девять вхождений). Листы со снимком
-    (skip_pages, от 0) и надписи на картинках не считаются. Сравнивается начало текста (24 знака без знаков
-    препинания и регистра): сборка переносит слова и ставит метки начертания. → [(сегмент, перевод, сколько
-    вхождений не нашлось)]; сборка из-за потери не падает — потерю смотрит человек (лог и лист «нарушения»)."""
+    """Инвариант сборки: перевод каждого сегмента тела листа есть в готовом DOCX (абзацы, таблицы, сноски, колонтитулы) —
+    столько раз, сколько таких сегментов с тем же исходником (повтор «Állapot» на девяти листах — девять вхождений).
+    Не считаются: шапка и подвал листа (колонтитул один на серию листов, номер листа — полем; их сверяют ворота
+    tools/audit_out.py), листы со снимком (skip_pages, от 0), надписи на картинках и абзацы разметки (struct_only —
+    для DOCX по дереву). Сравнивается начало текста (24 знака без цифр, знаков препинания и регистра): сборка
+    переносит слова и ставит метки начертания. → [(сегмент, перевод, сколько вхождений не нашлось)]; сборка из-за
+    потери не падает — потерю смотрит человек (лог и лист «нарушения»)."""
     import docx_build as B
     from segments import needs_translation
-    key = lambda t: re.sub(r"[\W_]+", "", B.TAGS.sub("", t or "")).lower()
+    key = lambda t: re.sub(r"[\W\d_]+", "", B.TAGS.sub("", t or "")).lower()
     blob = ""
     with zipfile.ZipFile(out) as z:
         for name in z.namelist():
@@ -531,34 +532,23 @@ def lost_segments(out, segs, expect, skip_pages=(), H=842):
                 blob += key(html.unescape(re.sub(r"<[^>]+>", "", xml.replace("</w:p>", " "))))
     groups = {}
     for s in segs:
-        if "shot" in s["loc"] or s["page"] in skip_pages or not s["text"].strip() \
-                or not needs_translation(B.TAGS.sub("", s["text"])):
+        bb = s["loc"].get("bbox")
+        if "shot" in s["loc"] or "struct_only" in s["loc"] or s["page"] in skip_pages or not s["text"].strip()                 or (bb and (bb[3] < 0.14 * H or bb[1] > 0.86 * H)) or not needs_translation(B.TAGS.sub("", s["text"])):
             continue
         ru = expect(s)
         k = key(ru)[:24] if ru else ""
-        if len(k) < 4:
-            continue
-        bb = s["loc"].get("bbox")
-        zone = bool(bb) and (bb[3] < 0.14 * H or bb[1] > 0.86 * H)
-        g = groups.setdefault(k, [s, ru, 0, 0])
-        g[2] += 0 if zone else 1                            # вхождений в теле
-        g[3] += 1
-    lost = []
-    for k, (s, ru, n_body, n_all) in groups.items():
-        have = blob.count(k)
-        n = n_all if have == 0 else max(0, n_body - have)
-        if n:
-            lost.append((s, ru, n))
-    return lost
+        if len(k) >= 4:
+            groups.setdefault(k, [s, ru, 0])[2] += 1
+    return [(s, ru, n - blob.count(k)) for k, (s, ru, n) in groups.items() if blob.count(k) < n]
 
 
 def lost_rows(lost):
     """Потерянные в DOCX тексты (lost_segments) — в лог сборки и строками листа «нарушения»."""
+    pg = lambda s: s["page"] + 1 if s["page"] is not None else "—"
     if lost:
         print(f"DOCX: не попало в документ {len(lost)} текстов: " + "; ".join(
-            f"л.{s['page'] + 1} «{s['text'][:30]}» ×{n}" for s, _, n in lost[:8]), flush=True)
-    return [("", "потеря текста", f"в DOCX нет (×{n}), лист {s['page'] + 1}: {ru[:90]}", s["text"][:90])
-            for s, ru, n in lost]
+            f"л.{pg(s)} «{s['text'][:30]}» ×{n}" for s, _, n in lost[:8]), flush=True)
+    return [("", "потеря текста", f"в DOCX нет (×{n}), лист {pg(s)}: {ru[:90]}", s["text"][:90]) for s, ru, n in lost]
 
 
 def build_struct_docx(src, out, segs, res, rules=None, progress=None, mode="struct", overlay=None, lang_check=True,
