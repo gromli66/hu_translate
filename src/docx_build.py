@@ -528,9 +528,9 @@ class Memory:
 
     def renumbered(self, text):
         """Тот же текст с другим числом — перевод известного текста с подставленным числом: «Oldalszám: 2.» по известному
-        «Oldalszám: 13.» (номер листа в колонтитуле; сегмент у листа с другой версией — «Verziószám: 1 Oldalszám: 2.»
-        целиком, строки шапки отдельно в памяти нет). Только для чисел, что ставит сборка сама (поле листа): «1 perc» и
-        «5 perc» по-русски склоняются по-разному."""
+        «Oldalszám: 13.», «Verziószám: 1» по «Verziószám: 0» (номер листа и версия в колонтитуле; сегмент у листа с другой
+        версией — «Verziószám: 1 Oldalszám: 2.» целиком, строк шапки отдельно в памяти нет). Только для колонтитула:
+        в тексте «1 perc» и «5 perc» по-русски склоняются по-разному."""
         nums = re.findall(r"\d+", KEY(text))
         got = self.num.get(re.sub(r"\d+", "#", KEY(text))) if nums else None
         if got is None:
@@ -2036,7 +2036,7 @@ class Builder:
             ms = list(num.finditer(ru)) if num else []
             mm = (ms[k] if len(ms) == len(num.findall(txt)) else ms[-1]) if ms else None
         else:
-            ru = (self.tr(txt) or txt) if txt else ""
+            ru = (self.tr(txt) or getattr(self.tr, "renumbered", lambda t: None)(txt) or txt) if txt else ""
             mm = num.search(ru) if num and num.search(txt) and not page_marked else None
         if mm:
             r = p.add_run(ru[:mm.start()]); r.bold = bold
