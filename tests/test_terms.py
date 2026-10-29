@@ -42,3 +42,61 @@ def test_kks_signal_suffix_is_not_a_code_name():
     cw = S.code_words(["TH21S801_NYIT", "TJ23S803_NYIT", "NYIT"])
     assert not S.is_code_word("NYIT", cw)
     assert S.code_words(["Zárva", "NYITVA", "A szivattyú"]) == frozenset()
+
+
+# ------------------------------------------------------------------ единые термины внутри документа (termvar)
+import termvar as TV
+
+
+def _doc(pairs):
+    pairs = list(pairs)
+    segs = [{"id": i, "text": hu, "loc": {}} for i, (hu, ru) in enumerate(pairs)]
+    return {"segs": segs, "res": {str(i): {"ru": ru} for i, (hu, ru) in enumerate(pairs)}}
+
+
+FILL = [(f"Más mondat {w}", f"Другое предложение {w}") for w in
+        "белка волна гроза дерево ежевика желудь заря игла камень лодка мыло нора океан перо река свеча тропа утро фонарь хлеб цапля чайка шарф щека".split()]
+MIST = [(f"A vízköddel oltó rendszer {n}. fokozata", f"Система пожаротушения водяным туманом, ступень {n}.") for n in range(1, 7)] + [
+    ("A vízköddel oltó rendszer üzembe helyezése", "Ввод системы пожаротушения водяным паром."),
+    ("Vízköddel oltó rendszer ellenőrzése", "Проверка системы пожаротушения водяным облаком.")]
+
+
+def test_term_variants_detected_in_same_slot():
+    d = _doc(MIST + FILL)
+    g = [g for g in TV.detect(TV.items_of(d["segs"], d["res"])) if g["kind"] == "slot"]
+    assert g and any({v["forms"][0] for v in x["variants"]} >= {"туманом", "паром", "облаком"} for x in g)
+
+
+def test_unify_replaces_minority_with_chosen_form():
+    d = _doc(MIST + FILL)
+    ed, sk = TV.unify_doc(d)
+    assert {e["id"] for e in ed} == {6, 7}
+    assert d["res"]["6"]["ru"] == "Ввод системы пожаротушения водяным туманом."
+    assert d["res"]["7"]["unified"] == "Проверка системы пожаротушения водяным облаком."
+
+
+def test_unify_off_by_default_in_pipeline_and_sheet_is_report_only():
+    """Лист «Термины» только описывает; res не меняется без вызова unify_doc."""
+    from openpyxl import Workbook
+    d = _doc(MIST + FILL)
+    before = {k: dict(v) for k, v in d["res"].items()}
+    wb = Workbook()
+    TV.sheet(wb, d)
+    assert d["res"] == before and "Термины" in wb.sheetnames
+    rows = list(wb["Термины"].iter_rows(values_only=True))
+    assert any(r[1] and "паром" in r[1] for r in rows)
+
+
+def test_same_text_different_translations():
+    d = _doc([("Név", "Ф. И. О.")] * 5 + [("Név", "Имя"), ("Név:", "Имя:")])
+    g = TV.same_text(TV.items_of(d["segs"], d["res"]))
+    assert g and g[0]["variants"][0]["ru"] == "Ф. И. О."
+    d2 = _doc([("Név", "Ф. И. О.")] * 5 + [("Név", "Имя")])
+    ed, _ = TV.unify(TV.items_of(d2["segs"], d2["res"]), TV.same_text(TV.items_of(d2["segs"], d2["res"])), {})
+    assert [e["now"] for e in ed] == ["Ф. И. О."]
+
+
+def test_unify_keeps_numbers_of_clauses():
+    """Сегменты с разными номерами разделов не склеиваются: цифры входят в ключ."""
+    d = _doc([("1. Állapot", "1. Состояние"), ("2. Állapot", "2. Статус")])
+    assert TV.same_text(TV.items_of(d["segs"], d["res"])) == []

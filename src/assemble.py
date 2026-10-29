@@ -778,6 +778,9 @@ def review_xlsx(out, segs, res, title, polish=None, extra_rows=(), pair=None):
     if polish is not None or extra_rows:
         import polish as PL
         PL.add_sheets(wb, (polish or {}).get("edits", []), (polish or {}).get("remaining", []), extra_rows)
+    if (sl, tl) == ("hu", "ru"):
+        import termvar
+        termvar.sheet(wb, {"segs": segs, "res": res})            # лист «Термины»: что разошлось в документе
     wb.save(out)
 
 

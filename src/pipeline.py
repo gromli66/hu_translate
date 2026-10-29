@@ -420,6 +420,10 @@ def translate(work, prj, workers=4, redo=False, progress=_quiet):
                 r["issues"] = tr.full_check(s["text"], r["ru"])
                 r["gloss_miss"] = gloss_misses(TAG.sub("", s["text"]), r["ru"], main, outer=tr.entries)
         d["res"] = {str(k): v for k, v in out.items()}
+        if tr.hu_ru and (os.environ.get("HU_UNIFY_TERMS") == "1" or prj.get("unify_terms")):
+            import termvar                          # единые термины внутри документа (аудит 29.10, №7); по умолчанию выкл.
+            ed, sk = termvar.unify_doc(d, tr.entries)
+            log(f"термины: {stem} — подставлено {len(ed)}, без подходящей формы {len(sk)}")
         if prj.get("pair"):
             d["pair"] = prj["pair"]                 # сборка: суффикс файла перевода (_EN, _HU)
         d.pop("polish", None)                       # перевод новый — шлифовка заново
