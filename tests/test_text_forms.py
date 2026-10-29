@@ -2,6 +2,7 @@
 # лист, отметки кривыми, подложки полей штампа, нумерация листов при таблице в начале раздела.
 import fitz
 from docx import Document
+from docx.oxml.ns import qn
 
 import docx_build as B
 import docx_layout as DL
@@ -847,3 +848,29 @@ def test_cell_of_row_outside_fit_words_still_fits_its_longest_word(tmp_path):
     tb = Document(str(out)).tables[0]
     assert tb._tbl.xpath(".//w:softHyphen")                                            # перенос по слогам
     assert not tb.rows[1].cells[0].paragraphs[0].style.name.endswith("pt")             # а слог влезает — кегль прежний
+
+
+def test_columns_move_so_that_the_word_fits(tmp_path):
+    """Столбцов по рамке нет (поровну по 40 pt), в первом — слово, которому тесно: столбцы двигаются — соседи с запасом отдают
+    место, слово целиком, без мягких переносов и без мелкого кегля (30BOXFELTEL, 12 столбцов по 40 pt, 29.10)."""
+    g = lambda x0: {"page": 1, "top": 100, "bottom": 110, "x0": x0, "x1": x0 + 40, "first_x0": x0, "size": 10,
+                    "lines": 1}
+    cell = lambda t, x0: {"blocks": [{"k": "p", "runs": [{"t": t, "font": "Tahoma", "size": 10, "b": False, "i": False,
+                                                          "color": "000000"}], "geom": g(x0)}], "th": False,
+                          "geom": g(x0), "span": 1, "edges": {"top": True, "bottom": True, "left": True, "right": True}}
+    rows = []
+    for _ in range(3):                       # ячеек меньше, чем столбцов (последняя — на пять): полной строки нет, ширин нет
+        row = [cell("ZÁRVA", 40)] + [cell("x", 40 + 40 * i) for i in range(1, 7)] + [cell("x", 300)]
+        for c, sp in zip(row, [1, 1, 1, 1, 1, 1, 1, 5]):
+            c["span"] = sp
+        rows.append(row)
+    tab = {"k": "table", "rows": rows, "borders": True, "frame": {"ys": [100, 112, 124, 136], "row_lines": True},
+           "geom": {"page": 1, "top": 100, "bottom": 136, "x0": 40, "x1": 520, "first_x0": 40, "size": 10}}
+    out = tmp_path / "s.docx"
+    B.Builder(B.Memory([("ZÁRVA", "ЗАКРЫТО")]), lambda img: png(), PROFILE).build(
+        [tab], str(out), dict(LAYOUT, first_is_body=True))
+    tb = Document(str(out)).tables[0]
+    grid = [int(g.get(qn("w:w"))) for g in tb._tbl.tblGrid.findall(qn("w:gridCol"))]
+    assert grid[0] > grid[1] and sum(grid) > 0                                          # столбец со словом шире соседних
+    assert not tb._tbl.xpath(".//w:softHyphen")
+    assert not tb.rows[0].cells[0].paragraphs[0].style.name.endswith("pt")

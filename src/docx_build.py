@@ -3,6 +3,7 @@
 подписи «Рисунок N. …» полем SEQ, оглавление и список рисунков полями TOC, колонтитулы со штампом.
 Прямого кегля и отступов на отдельных абзацах нет — всё стилями («как будто документ писали по-русски»)."""
 import io
+import math
 import re
 from collections import Counter
 
@@ -1390,6 +1391,15 @@ class Builder:
                         el = _el("w:tblInd", w__w=round(ind * 20), w__type="dxa")   # порядок tblPr — по схеме
                         nxt.addprevious(el) if nxt is not None else tp.append(el)
                 widths = [max(rights[c] - lefts[c], 20) for c in range(ncol)]
+        if not widths and not (tgt is not None) and len(t.columns) == ncol:
+            # ширин нет — поровну, как поставил python-docx. Слово перевода не влезает в столбец — столбцы двигаем (пустые и
+            # просторные отдают место, как в _fit_words), остальные не уже того, что им нужно; не нужно — всё как было
+            eq = [c.cells[0].width.pt if c.cells[0].width else None for c in t.columns]
+            if all(eq):
+                trial = list(eq)
+                self._fit_words(rows, trial, fit_size)
+                if any(abs(a - b) > 0.5 for a, b in zip(trial, eq)):
+                    widths = trial
         if widths:
             # картинка в ячейке — не шире своего столбца: иначе её срезает край ячейки (значки окна JPDS «□», «×» —
             # видна левая полоска, 17.10); недостающее — у самого просторного столбца
@@ -1549,15 +1559,26 @@ class Builder:
                     txt = par.text
                     return max((_text_w(pc, eff, True) for wd in txt.split() for pc in ([wd] if whole else _pieces(wd, txt))),
                                default=0) * (1.1 if sb or any(r.bold for r in par.runs) else 1.0)
+                tight = None
                 if room is None and dc.width:
                     # строка не попала в _fit_words (сетка строки не совпала с сеткой таблицы, 30BOXFELTEL л. 21: «Наимен / ование»,
                     # «ЗАКРЫ / ТО» в столбцах по 40 pt) — мерим саму ячейку: ширина после слияния — сумма столбцов; только
-                    # там, где слог не влезает: остальные ячейки — как были
+                    # там, где слово не влезает: остальные ячейки — как были
                     side = (self.P.get("table") or {}).get("pad_left") or 5.4
                     own = (dc.width.pt, 2 * min(side, max(1.0, (dc.width.pt - 12) / 2)) + 1)
-                    if any((w := widest(par, _style_pt(par.style) or fit_size, True)) and w + own[1] > own[0] + 0.5
-                           for par in dc.paragraphs):             # слово целиком не влезает — мягкие переносы, а кегль — по слогу
-                        room = own
+                    eff_of = lambda par: _style_pt(par.style) or fit_size
+                    wide = [par for par in dc.paragraphs if (w := widest(par, eff_of(par), True)) and w + own[1] > own[0] + 0.5]
+                    if wide:
+                        # слово целиком: поля ячейки 2 pt и кегль не мельче 72 % — слово не рвётся совсем; иначе — мягкие
+                        # переносы по слогам, а кегль — по слогу
+                        gap = 2 * 2.0 + 1
+                        ks = [(own[0] - gap - 1) / widest(par, eff_of(par), True) for par in wide]
+                        if min(ks) >= 0.72:
+                            tight = 2.0
+                            for par, k in zip(wide, ks):
+                                par.style = self._sized(par.style, math.floor(eff_of(par) * min(k, 1.0) * 2) / 2)
+                        else:
+                            room = own
                 if room:
                     # узкий столбец без запаса (_fit_words): мягкие переносы; абзац, где не влезает и слог, — кегль
                     # меньше, до 60 % (стилем: прямой кегль — нарушение профиля), только он: соседние ячейки столбца —
@@ -1580,6 +1601,13 @@ class Builder:
                 fill = fill or cell.get("fill")                     # заливка ячейки по оригиналу (docx_struct)
                 if fill:
                     dc._tc.get_or_add_tcPr().append(_el("w:shd", w__val="clear", w__color="auto", w__fill=fill))
+                if tight is not None:                               # узкие поля ячейки — слово влезло целиком (см. выше)
+                    tcpr = dc._tc.get_or_add_tcPr()
+                    mar_el = _el("w:tcMar")
+                    for side_name in ("left", "right"):
+                        mar_el.append(_el(f"w:{side_name}", w__w=round(tight * 20), w__type="dxa"))
+                    after = next((c for c in tcpr if c.tag in {W + n for n in ("textDirection", "tcFitText", "vAlign", "hideMark")}), None)
+                    after.addprevious(mar_el) if after is not None else tcpr.append(mar_el)
             for ci, cell in enumerate(row):
                 if cell.get("vcont") and ri > 0:
                     try:
@@ -1621,13 +1649,18 @@ class Builder:
         self._room = {}
         for row in rows:
             # строка с объединёнными ячейками по сетке линий (docx_layout: span) — её ячейки в один столбец тоже: шапка
-            # таблицы параметров 30RDIT в два яруса в счёт не шла, «ЗНАЧЕНИЕ» рвалось по буквам (20.10)
+            # таблицы параметров 30RDIT в два яруса в счёт не шла, «ЗНАЧЕНИЕ» рвалось по буквам (20.10). Строка короче сетки
+            # (30BOXFELTEL, 12 столбцов по 40 pt, 29.10) — как в table(): ячейки по порядку, последняя — до края; в счёт
+            # идут ячейки в один столбец
             if len(row) == ncol:
                 cols = list(enumerate(row))
-            elif all("span" in c for c in row) and sum(c["span"] for c in row) == ncol:
-                cols = [(sum(c["span"] for c in row[:i]), c) for i, c in enumerate(row) if c["span"] == 1]
             else:
-                continue
+                if all("span" in c for c in row):
+                    starts = [sum(c["span"] for c in row[:i]) for i in range(len(row))]
+                else:
+                    starts = list(range(len(row)))
+                ends = [starts[i + 1] - 1 if i + 1 < len(row) else ncol - 1 for i in range(len(row))]
+                cols = [(a, c) for a, z, c in zip(starts, ends, row) if a == z and a < ncol]
             for ci, cell in cols:
                 for x in cell["blocks"]:
                     if x["k"] != "p" or not x["runs"]:
