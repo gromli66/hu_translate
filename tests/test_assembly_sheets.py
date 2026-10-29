@@ -1,0 +1,82 @@
+# Сборка DOCX текстового слоя без разметки (аудит 29.10): листы одной сетки бланка — таблица, а не снимок листа;
+# подписи строк вверху листа — тело; шапка у серии листов со своей версией — свой раздел.
+import fitz
+from docx import Document
+from docx.oxml.ns import qn
+
+import docx_build as B
+import docx_layout as DL
+import docx_struct as D
+
+from test_struct_docx import LAYOUT, PROFILE, png
+from test_text_forms import _segs
+
+
+def _sheets_pdf(path, pages=5, head=None, labels=False, pieces=False):
+    """Листы бланка с одной и той же сеткой: рамка во весь лист, внутри — две вертикали ниже и короче рамки (столбцы),
+    линия под шапкой, подвал-рамка; шапка листа и строки в ячейках. head(pno) → (версия, лист); labels — подписи строк
+    вверху таблицы («Berendezés alfanumerika» — на каждом листе одни и те же); pieces — вертикали столбцов рисованы по
+    строкам: стопка отрезков в 11 pt, как рамку таблицы Word."""
+    doc = fitz.open()
+    for pno in range(pages):
+        pg = doc.new_page(width=595, height=842)
+        sh = pg.new_shape()
+        sh.draw_rect(fitz.Rect(60, 90, 540, 700))
+        sh.draw_line((60, 130), (540, 130))
+        sh.draw_rect(fitz.Rect(60, 720, 540, 760))
+        for x in (140, 440):
+            if pieces:
+                for k in range(54):
+                    sh.draw_rect(fitz.Rect(x - 0.5, 130 + 10.5 * k, x + 0.5, 130 + 10.5 * k + 10))
+            else:
+                sh.draw_line((x, 130), (x, 700))
+        sh.finish(color=(0, 0, 0), fill=None if not pieces else (0, 0, 0), width=0.6)
+        sh.commit()
+        put = lambda x, y, t: pg.insert_text((x, y), t, fontsize=9, fontname="tiro")
+        ver, num = head(pno) if head else (0, pno + 1)
+        put(62, 40, "Azonosító: 30XYZ")
+        put(400, 40, f"Verziószám: {ver}")
+        put(62, 56, "Megnevezés: Próba")
+        put(400, 56, f"Oldalszám: {num}")
+        put(64, 124, "Sorsz.")
+        put(200, 124, "Művelet, ellenőrzés")
+        put(450, 124, "Igazolás")
+        y = 150
+        if labels:
+            put(64, y, "Berendezés alfanumerika")
+            put(200, y, f"YA1{pno}S001")
+            put(64, y + 14, "Beépítés helye")
+            put(200, y + 14, f"A30{pno}")
+            y += 40
+        for k in range(14):
+            put(64, y + 22 * k, f"{pno + 1}.{k + 1}.")
+            put(200, y + 22 * k, f"A {pno + 1}. lap {k + 1}. lépése megtörtént.")
+        put(300, 745, "A lapot kitöltötte")
+    doc.save(str(path))
+    return _segs(path)
+
+
+def test_form_grid_repeated_on_every_sheet_is_a_table_not_a_sheet_snapshot(tmp_path):
+    """Одна и та же сетка бланка на каждом листе (30PR132GT: 37 листов из 68; 30PR25GT) — таблица: её вертикали не рамка
+    листа и не снимаются, а без таблицы рамка уходила снимком листа с переведённого PDF (_vector_figures)."""
+    src = tmp_path / "sheets.pdf"
+    segs = _sheets_pdf(src, pieces=True)
+    blocks, _ = DL.load(str(src), segs, text=True)
+    assert not [b for b in blocks if b.get("figure")]
+    tabs = [b for b in blocks if b["k"] == "table"]
+    assert tabs and any("lépése" in "".join(r.get("t", "") for c in row for x in c["blocks"] for r in x["runs"])
+                        for t in tabs for row in t["rows"])
+    d = fitz.open(str(src))
+    hs, vs = DL._page_rules(d, True)[1][2]
+    assert sorted(round(v[0]) for v in vs if v[2] - v[1] > 100) == [60, 140, 440, 540]     # столбцы не сняты как рамка
+
+
+def test_piece_of_long_rule_is_not_a_vector_shape():
+    """Вертикаль таблицы Word — стопка отрезков по строкам (1×11 pt): _rules склеивает их в линию, а как «схема» они
+    давали область листа снимком (3PR10: оглавление и тело листа с рамкой) — кусок длинной линии фигурой не считается."""
+    rules = ([(100.0, 60.0, 540.0)], [(140.0, 130.0, 700.0)])
+    assert DL._on_rule(fitz.Rect(139.5, 140, 140.5, 151) + (-0.5, -0.5, 0.5, 0.5), rules)
+    assert DL._on_rule(fitz.Rect(70, 100, 90, 100) + (-0.5, -0.5, 0.5, 0.5), rules)
+    assert not DL._on_rule(fitz.Rect(200, 140, 201, 151), rules)                    # не на линии
+    assert not DL._on_rule(fitz.Rect(130, 140, 150, 160), rules)                    # рамка, не отрезок линии
+    assert not DL._on_rule(fitz.Rect(139.5, 60, 140.5, 71), ([], [(140.0, 60.0, 80.0)]))   # линия короче 40 pt

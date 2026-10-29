@@ -684,15 +684,29 @@ def _figures(page, segs, drawings, scan=False):
     return out
 
 
-def _vector_figures(page, pno, drawings, segs, masked, tabs, figs):
-    """Скопления векторных фигур (от 6, не во весь лист, не в таблицах и не в найденных рисунках), от 80×60 pt, с двумя
-    и больше подписями внутри и без обычного текста, задетого краем: [(рамка, img)], img — область листа
-    ({"clip", "page_number"}: сборка снимет её с переведённого PDF, надписи — переводом)."""
+def _on_rule(r, rules, long=40):
+    """Фигура — кусок длинной линии листа: тонкая и лежит на линии от long pt. Рамку и столбцы таблицы Word рисует по
+    строкам — десятки отрезков в 11 pt один над другим; _rules склеивает их в одну линию, а рисунком они были «схемой»
+    (3PR10: оглавление и тело листа с рамкой; 30PR132GT: бланк на 37 листах — снимком листа вместо таблицы)."""
+    hs, vs = rules
+    if r.height <= 4.5 and any(abs(y - (r.y0 + r.y1) / 2) <= 2 and a - 2 <= r.x0 and r.x1 <= b + 2 and b - a >= long
+                               for y, a, b in hs):
+        return True
+    return r.width <= 4.5 and any(abs(x - (r.x0 + r.x1) / 2) <= 2 and a - 2 <= r.y0 and r.y1 <= b + 2 and b - a >= long
+                                  for x, a, b in vs)
+
+
+def _vector_figures(page, pno, drawings, segs, masked, tabs, figs, rules=((), ())):
+    """Скопления векторных фигур (от 6, не во весь лист, не в таблицах и не в найденных рисунках, не куски длинных
+    линий — _on_rule), от 80×60 pt, с двумя и больше подписями внутри и без обычного текста, задетого краем:
+    [(рамка, img)], img — область листа ({"clip", "page_number"}: сборка снимет её с переведённого PDF, надписи —
+    переводом)."""
     import fitz
     W, H = page.rect.width, page.rect.height
     off = [fitz.Rect(s["loc"]["bbox"]) for s in masked if s not in segs]       # колонтитулы
     rs = [fitz.Rect(d["rect"]) + (-0.5, -0.5, 0.5, 0.5) for d in drawings]   # линия без толщины — не пустая рамка
     rs = [r for r in rs if r.width < 0.75 * W and r.height < 0.75 * H and (r.width > 0.5 or r.height > 0.5)
+          and not _on_rule(r, rules)
           and not any(r.intersects(t) for t in tabs) and not any(r.intersects(f) for f in figs)
           and not any(r.intersects(o) for o in off)]
     groups = []
@@ -1094,15 +1108,16 @@ def _page_rules(doc, text=False):
                    for i in (-1, 0, 1) for j in (-1, 0, 1) for q in (-1, 0, 1)) >= need
     lines = []
     for hs, vs in per:
-        # текстовый слой: горизонталь как у линии под шапкой других листов — не рамка листа, если таблицу держат свои
-        # вертикали (верх таблицы титула Eskom на высоте линии шапки: таблица не находилась); рамку листа отсекают
-        # её же повторяющиеся вертикали
-        hs = [r for r in hs if text or not running("h", r)]
-        # повторяющиеся вертикали — рамка листа, но три и больше на одном пролёте — столбцы таблицы-бланка, повторённой
-        # на каждом листе (формы RDGT: на листах 2–5 таблица на тех же местах — её вертикали снимались как рамка, и
-        # таблица шла картинкой с переведённого PDF, 20.10)
-        span = Counter((round(r[1] / 6), round(r[2] / 6)) for r in vs if running("v", r))
-        vs = [r for r in vs if not running("v", r) or span[(round(r[1] / 6), round(r[2] / 6))] >= 3]
+        # текстовый слой: линии, повторённые на листах, не снимаются — ни горизонтали (верх таблицы титула Eskom на высоте
+        # линии шапки: таблица не находилась), ни вертикали: бланк с одной и той же сеткой на каждом листе (30PR132GT,
+        # 30PR25GT: столбцы «Sorsz. | Megnevezés | Ellenőrzés» на 37 листах) лишался столбцов вместе с рамкой, таблицы
+        # не было, а линии без неё уходили снимком листа (_vector_figures); сама по себе рамка листа таблицы не даёт —
+        # нужна внутренняя вертикаль (_tables). Лист-скан (линии по картинке) — как прежде: рамку листа и рамку названия
+        # раздела снимают, оставляя вертикали, которых три и больше на одном пролёте (формы RDGT, 20.10)
+        if not text:
+            hs = [r for r in hs if not running("h", r)]
+            span = Counter((round(r[1] / 6), round(r[2] / 6)) for r in vs if running("v", r))
+            vs = [r for r in vs if not running("v", r) or span[(round(r[1] / 6), round(r[2] / 6))] >= 3]
         lines.append((hs, vs))
     # низ рамки шапки (рамка шапки и названия раздела 3SZ19, 3PR42) — что начинается ниже него, то тело листа: нижняя
     # горизонталь верхней пятой части листа той же ширины, что повторяющиеся на листах горизонтали рамки (от половины
@@ -1285,7 +1300,7 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
             # схема из линий с подписями (дерево «Layout format» Eskom: линии короче порога краски — рисунок не
             # находился, подписи перемешивались между разделами, 19.10) — областью листа с переведённого PDF
             tabs = [fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1]) for t in _tables(hs, vs)]
-            figs += _vector_figures(page, pno, draw[pno], segs, masks.get(pno, []), tabs, [f for f, _ in figs])
+            figs += _vector_figures(page, pno, draw[pno], segs, masks.get(pno, []), tabs, [f for f, _ in figs], per[pno])
         elif not scans[pno]:
             tabs = [fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1]) for t in _tables(hs, vs)]
             figs += _scheme_figures(page, pno, draw[pno], segs, tabs, [f for f, _ in figs])
