@@ -484,7 +484,7 @@ class Memory:
     def __init__(self, pairs):
         from segments import needs_translation
         self.need = needs_translation
-        self.m, self.tagged, self.missing = {}, {}, []
+        self.m, self.tagged, self.missing, self.num = {}, {}, [], {}
         for hu, ru in pairs:
             self.add(hu, ru)
 
@@ -500,6 +500,8 @@ class Memory:
             self.tagged.setdefault(hu.strip(), ru)
         else:
             self.m.setdefault(KEY(hu), TAGS.sub("", ru))
+            if re.findall(r"\d+", hu) == re.findall(r"\d+", ru) and len(re.sub(r"[\W\d_]", "", hu)) >= 4:
+                self.num.setdefault(re.sub(r"\d+", "#", KEY(hu)), TAGS.sub("", ru))   # числа в переводе те же
         # пункт списка: номер «a.» в памяти — частью текста, в сборке номер даёт автонумерация (docx_struct.relist);
         # в тексте с метками начертания номер — внутри первой метки: «<f1>a. az UTS …</f1><f2>ping x_pb</f2>»
         mh, mr = LABEL_T.match(hu), LABEL_RU_T.match(ru)
@@ -523,6 +525,18 @@ class Memory:
             if all(g is not None for g in got):
                 r = "\t".join(g.strip() if p.strip() else g for p, g in zip(parts, got))
         return r if r is not None else self._glued(text)
+
+    def renumbered(self, text):
+        """Тот же текст с другим числом — перевод известного текста с подставленным числом: «Oldalszám: 2.» по известному
+        «Oldalszám: 13.» (номер листа в колонтитуле; сегмент у листа с другой версией — «Verziószám: 1 Oldalszám: 2.»
+        целиком, строки шапки отдельно в памяти нет). Только для чисел, что ставит сборка сама (поле листа): «1 perc» и
+        «5 perc» по-русски склоняются по-разному."""
+        nums = re.findall(r"\d+", KEY(text))
+        got = self.num.get(re.sub(r"\d+", "#", KEY(text))) if nums else None
+        if got is None:
+            return None
+        it = iter(nums)
+        return re.sub(r"\d+", lambda m: next(it), got)
 
     def _glued(self, text):
         """Текст, склеенный из подряд стоящих сегментов, — переводом по частям: ячейка шапки «Azonosító: 3SZ23 Verziószám: 1»
@@ -2018,7 +2032,7 @@ class Builder:
         if PAGE_MARK in txt:                    # номер помечен на месте (docx_struct.layout): поле — он, k-й такой же
             k = len(num.findall(txt[:txt.index(PAGE_MARK)])) if num else 0
             txt = re.sub(PAGE_MARK + "+", tok, txt)
-            ru = self.tr(txt) or txt
+            ru = self.tr(txt) or getattr(self.tr, "renumbered", lambda t: None)(txt) or txt
             ms = list(num.finditer(ru)) if num else []
             mm = (ms[k] if len(ms) == len(num.findall(txt)) else ms[-1]) if ms else None
         else:

@@ -151,3 +151,11 @@ def test_header_cell_glued_from_two_segments_is_translated_by_parts():
     assert mem.get("Azonosító: 3SZ23") == "Идентификатор: 3SZ23"
     assert mem.get("Azonosító: 3SZ23 Verziószám: 2") is None and mem.get("Elsőszám: 3SZ23") is None
 
+
+def test_page_label_of_other_sheet_is_translated_by_known_number():
+    """Строка шапки листа серии — «Oldalszám: 2.»: в памяти есть только «Oldalszám: 13.» (и склейка «Verziószám: 1 Oldalszám:
+    2.»); число ставит поле листа, перевод — тот же с другим числом. Число, которого в переводе нет, — не по образцу."""
+    mem = B.Memory([("Oldalszám: 13.", "Номер страницы: 13."), ("Dátum: 2017-04-20", "Дата: 20.04.2017")])
+    assert mem.renumbered("Oldalszám: 2.") == "Номер страницы: 2." and mem.renumbered("Oldalszám: 112.") == "Номер страницы: 112."
+    assert mem.renumbered("Dátum: 2018-05-21") is None and mem.renumbered("Megjegyzés: 2.") is None
+
