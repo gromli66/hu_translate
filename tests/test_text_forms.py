@@ -829,20 +829,21 @@ def test_caps_word_split_between_cell_paragraphs_is_one_paragraph():
 
 
 def test_cell_of_row_outside_fit_words_still_fits_its_longest_word(tmp_path):
-    """Сетка строки не совпала с сеткой таблицы — _fit_words её не видит; ячейка в 24 pt всё равно меряется сама: кегль
-    меньше производным стилем, а не «Наимен / ование» посреди слова (30BOXFELTEL л. 21, 29.10)."""
-    xs = [40 + 24 * i for i in range(10)]                                    # 9 столбцов
-    g = lambda x0: {"page": 1, "top": 100, "bottom": 110, "x0": x0, "x1": x0 + 20, "first_x0": x0, "size": 10,
+    """Сетка строки не совпала с сеткой таблицы — _fit_words её не видит; ячейка в 40 pt всё равно меряется сама: слово,
+    не влезающее целиком, — с мягкими переносами по слогам (а не «ЗАКРЫ / ТО» посреди слова), кегль тот же (слог влезает)."""
+    xs = [40 + 40 * i for i in range(10)]                                    # 9 столбцов по 40 pt
+    g = lambda x0: {"page": 1, "top": 100, "bottom": 110, "x0": x0, "x1": x0 + 36, "first_x0": x0, "size": 10,
                     "lines": 1}
     cell = lambda t, x0: {"blocks": [{"k": "p", "runs": [{"t": t, "font": "Tahoma", "size": 10, "b": False, "i": False,
                                                           "color": "000000"}], "geom": g(x0)}], "th": False,
                           "geom": g(x0), "span": 1, "edges": {"top": True, "bottom": True, "left": True, "right": True}}
-    rows = [[cell("ÉRTÉK", x) for x in xs[:8]] for _ in range(4)]            # 8 ячеек по сетке из 9 — _fit_words пропускает
+    rows = [[cell("x", x) for x in xs[:9]]] + [[cell("ZÁRVA", x) for x in xs[:8]] for _ in range(3)]   # 8 ячеек из 9 — мимо _fit_words
     tab = {"k": "table", "rows": rows, "borders": True, "frame": {"xs": xs, "ys": [100, 112, 124, 136, 148],
                                                                    "row_lines": True},
            "geom": {"page": 1, "top": 100, "bottom": 148, "x0": xs[0], "x1": xs[-1], "first_x0": xs[0], "size": 10}}
     out = tmp_path / "s.docx"
-    B.Builder(B.Memory([("ÉRTÉK", "ЗНАЧЕНИЕ")]), lambda img: png(), PROFILE).build(
+    B.Builder(B.Memory([("ZÁRVA", "ЗАКРЫТО")]), lambda img: png(), PROFILE).build(
         [tab], str(out), dict(LAYOUT, first_is_body=True))
-    names = {p.style.name for c in Document(str(out)).tables[0].rows[1].cells for p in c.paragraphs}
-    assert any(n.endswith("pt") for n in names)
+    tb = Document(str(out)).tables[0]
+    assert tb._tbl.xpath(".//w:softHyphen")                                            # перенос по слогам
+    assert not tb.rows[1].cells[0].paragraphs[0].style.name.endswith("pt")             # а слог влезает — кегль прежний

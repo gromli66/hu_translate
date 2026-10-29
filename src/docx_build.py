@@ -1541,13 +1541,13 @@ class Builder:
                         self.paragraph(x, style, tgt=dc)
                 room = self._room.get(starts[ci]) if spans[ci][1] == spans[ci][0] else None
 
-                def widest(par, eff):
-                    """Самый длинный слог слов абзаца при кегле eff (с поправкой на полужирный)."""
+                def widest(par, eff, whole=False):
+                    """Самый длинный слог слов абзаца (whole — слово целиком) при кегле eff (с поправкой на полужирный)."""
                     st, sb = par.style, None
                     while st is not None and sb is None:
                         sb, st = st.font.bold, st.base_style
                     txt = par.text
-                    return max((_text_w(pc, eff, True) for wd in txt.split() for pc in _pieces(wd, txt)),
+                    return max((_text_w(pc, eff, True) for wd in txt.split() for pc in ([wd] if whole else _pieces(wd, txt))),
                                default=0) * (1.1 if sb or any(r.bold for r in par.runs) else 1.0)
                 if room is None and dc.width:
                     # строка не попала в _fit_words (сетка строки не совпала с сеткой таблицы, 30BOXFELTEL л. 21: «Наимен / ование»,
@@ -1555,8 +1555,8 @@ class Builder:
                     # там, где слог не влезает: остальные ячейки — как были
                     side = (self.P.get("table") or {}).get("pad_left") or 5.4
                     own = (dc.width.pt, 2 * min(side, max(1.0, (dc.width.pt - 12) / 2)) + 1)
-                    if any((w := widest(par, _style_pt(par.style) or fit_size)) and w + own[1] > own[0] + 0.5
-                           for par in dc.paragraphs):
+                    if any((w := widest(par, _style_pt(par.style) or fit_size, True)) and w + own[1] > own[0] + 0.5
+                           for par in dc.paragraphs):             # слово целиком не влезает — мягкие переносы, а кегль — по слогу
                         room = own
                 if room:
                     # узкий столбец без запаса (_fit_words): мягкие переносы; абзац, где не влезает и слог, — кегль
