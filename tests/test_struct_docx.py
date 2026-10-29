@@ -1814,3 +1814,24 @@ def test_short_capital_abbreviations_are_not_hungarian_leftovers():
     выдумывает «УБО»/«ИВ» (30BL150FÜT: 30 строк); слово из пяти и более прописных букв — по-прежнему замечается."""
     assert C._hungarian("Подразделение: ÜBO, ÍV, ÜIO") == [] and C._hungarian("ЗАКРЫТО ZÁRVA") == ["ZÁRVA"]
     assert C._hungarian("с идентификатором 30BLHÜT, TLÜ302") == []                           # обозначения с цифрами
+
+
+def test_join_tables_with_different_columns_gets_common_grid():
+    """Форма на много листов: повтор шапки склеивает таблицы листов с разными столбцами (30BOXFELTEL, 10 и 12 столбцов) —
+    сетка общая из границ обоих листов, ячейки каждого листа — по ней (раньше продолжение оставалось в своей сетке,
+    и сборщик не мог поставить ширины)."""
+    import docx_struct as S
+    cell = lambda t, span, th=False: {"blocks": [{"k": "p", "runs": [{"t": t}]}], "th": th, "span": span, "geom": None}
+    frame = lambda xs, n: {"xs": xs, "ys": list(range(n + 1)), "row_lines": True}
+    a = {"k": "table", "rows": [[cell("H1", 1, True), cell("H2", 1, True), cell("H3", 1, True)],
+                                [cell("x", 1), cell("y", 1), cell("z", 1)]],
+         "frame": frame([50, 150, 300, 500], 2), "geom": {"page": 1}}
+    b = {"k": "table", "rows": [[cell("H1", 2, True), cell("H2", 1, True), cell("H3", 1, True)],
+                                [cell("p", 1), cell("q", 1), cell("r", 1), cell("s", 1)]],
+         "frame": frame([50, 100, 150, 300, 500], 2), "geom": {"page": 2}}
+    out = S.join_tables([a, b])
+    assert len(out) == 1
+    t = out[0]
+    n = len(t["frame"]["xs"]) - 1
+    assert n == 4 and all(sum(c["span"] for c in r) == n for r in t["rows"])
+    assert [c["span"] for c in t["rows"][0]] == [2, 1, 1]                # шапка первого листа растянулась на два столбца сетки

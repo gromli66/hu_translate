@@ -420,6 +420,29 @@ def _same_cols(a, b, tol=3.0):
     return len(xa) == len(xb) and all(abs(p - q) <= tol for p, q in zip(xa, xb))
 
 
+def _union_xs(xa, xb, tol=3.0):
+    """Границы столбцов двух листов — общей сеткой: близкие (в пределах tol) — одна."""
+    out = []
+    for x in sorted(list(xa) + list(xb)):
+        if not out or x - out[-1] > tol:
+            out.append(x)
+    return out
+
+
+def _regrid(rows, xs_old, xs_new):
+    """Ячейки по сетке линий листа (span относительно xs_old) — на сетку xs_new: охват — по границам ячейки. Строка, чьи охваты
+    не сходятся с сеткой листа, остаётся как есть."""
+    idx = lambda x: min(range(len(xs_new)), key=lambda i: abs(xs_new[i] - x))
+    for r in rows:
+        if not r or not all("span" in c for c in r) or sum(c["span"] for c in r) != len(xs_old) - 1:
+            continue
+        pos = 0
+        for c in r:
+            a, z = idx(xs_old[pos]), idx(xs_old[pos + c["span"]])
+            pos += c["span"]
+            c["span"] = max(z - a, 1)
+
+
 def join_tables(bs):
     """Таблица, которую Word при экспорте разрезал по листам (продолжение — отдельная таблица сразу за ней, без шапки,
     с тем же числом столбцов, на следующем листе), — снова одна: в DOCX она переносится сама и повторяет шапку
@@ -461,6 +484,15 @@ def join_tables(bs):
                 and (rep or _same_cols(prev, b)) \
                 and (b.get("geom") or {}).get("page", 0) > (prev.get("geom") or {}).get("page", 0):
             rows = b["rows"][rep:]
+            # столбцы листов разные (повтор шапки пропускает _same_cols, 30BOXFELTEL: форма на 494 строки, у листов 10 и 12
+            # столбцов, ячейки продолжения оставались в своей сетке, ширин не было — столбцы поровну, описание в 40 pt,
+            # ячейка с галочкой на весь остаток, 29.10) — общая сетка из границ обоих листов
+            fa, fb = prev.get("frame") or {}, b.get("frame") or {}
+            if fa.get("row_lines") and fb.get("row_lines") and fa.get("xs") and fb.get("xs") and not _same_cols(prev, b):
+                union = _union_xs(fa["xs"], fb["xs"])
+                _regrid(prev["rows"], fa["xs"], union)
+                _regrid(rows, fb["xs"], union)
+                prev = dict(prev, frame=dict(fa, xs=union))
             # картинки, что Word вложил в повтор шапки (значки строк прошлого листа, JPDS табл. 15), — не прочь:
             # их по месту на листе переселит adopt
             strays = [x for r in b["rows"][:rep] for c in r for x in c.get("blocks", [])
