@@ -522,7 +522,20 @@ class Memory:
             got = [self.get(p) if p.strip() else p for p in parts]
             if all(g is not None for g in got):
                 r = "\t".join(g.strip() if p.strip() else g for p, g in zip(parts, got))
-        return r
+        return r if r is not None else self._glued(text)
+
+    def _glued(self, text):
+        """Текст, склеенный из подряд стоящих сегментов, — переводом по частям: ячейка шапки «Azonosító: 3SZ23 Verziószám: 1»
+        (сетка колонтитула склеивает слова по близости, сегменты листа — по-своему; у листа с другой версией склейка не
+        та, что у образца). Ключ разбирается на ключи памяти без остатка: части от 6 знаков, от двух частей."""
+        k = KEY(text)
+        cut = {0: ()}
+        for i in range(len(k)):
+            for j in (range(i + 6, min(len(k), i + 200) + 1) if i in cut else ()):
+                if j not in cut and k[i:j] in self.m:
+                    cut[j] = cut[i] + (k[i:j],)
+        parts = cut.get(len(k)) if k else None
+        return " ".join(self.m[x] for x in parts) if parts and len(parts) > 1 else None
 
     def __call__(self, text):
         r = self.get(text)

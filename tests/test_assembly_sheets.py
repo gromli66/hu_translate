@@ -140,3 +140,14 @@ def test_text_lost_in_docx_is_reported_with_its_count(tmp_path):
     doc.save(str(out))
     got = A.lost_segments(str(out), segs, lambda s: ru[s["text"]], skip_pages={2})
     assert sorted((s["id"], n) for s, _, n in got) == [(0, 1), (2, 1)]
+
+
+def test_header_cell_glued_from_two_segments_is_translated_by_parts():
+    """Ячейка шапки у листа с другой версией — «Azonosító: 3SZ23 Verziószám: 1» одной строкой, а сегментами листа — две
+    подписи: перевод по частям (прежде оставалась по-венгерски — 3SZ23, лист 5); неизвестное и чужие склейки — не трогаем."""
+    mem = B.Memory([("Azonosító: 3SZ23", "Идентификатор: 3SZ23"), ("Verziószám: 1", "Номер версии: 1"),
+                    ("Oldalszám: 3", "Номер страницы: 3")])
+    assert mem.get("Azonosító: 3SZ23 Verziószám: 1") == "Идентификатор: 3SZ23 Номер версии: 1"
+    assert mem.get("Azonosító: 3SZ23") == "Идентификатор: 3SZ23"
+    assert mem.get("Azonosító: 3SZ23 Verziószám: 2") is None and mem.get("Elsőszám: 3SZ23") is None
+
