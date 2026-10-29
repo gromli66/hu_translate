@@ -889,3 +889,136 @@ def test_column_of_values_against_codes_is_one_paragraph_per_row():
     prose = [fr(250, 300 + 10 * k, 380, t) for k, t in enumerate(
         ["Ha a nyomás a megengedett", "érték fölé emelkedik, akkor", "a védelem működésbe lép."])]
     assert len(LY.group(prose, [], [])) == 1
+
+
+def test_word_split_by_hyphen_stays_in_one_paragraph():
+    """Слово, разорванное переносом строки, не уходит в разные абзацы («KI-» / «KAPCSOLVA» → «ЧЕНА»», 3SZ17; аудит 29.10):
+    рамки строк выше шага (17 pt при кегле 9 и шаге 10), центрированный блок схемы (3FI18 «ol-» / «tóberendezés»), висячий
+    отступ пункта («tani» под маркером), жирный остаток слова («TANI,»). Линейка между строками и дефис-«–» не склеивают."""
+    import layout as LY
+    fr = lambda t, bb, bold=False, size=9.0: {"t": t, "bbox": bb, "size": size, "bold": bold, "family": "mono"}
+    pars = LY.group([fr("A 30UY05 táblára az érintett kapcsolóra KI-", [71, 322.4, 303, 339.8]),
+                     fr("KAPCSOLVA feliratú táblát kell kihelyezni.", [71, 332.5, 298, 349.8])], [], [])
+    assert [p["text"] for p in pars] == ["A 30UY05 táblára az érintett kapcsolóra KIKAPCSOLVA feliratú táblát kell kihelyezni."]
+    # блок схемы: слова по центру фигуры, рядом — чужие фигуры на тех же строках
+    blocks = [fr("Távindítás", [217.6, 521.9, 290.2, 540.7], size=11), fr("Beépített ol-", [358.3, 521.0, 444.2, 539.8], size=11),
+              fr("Armatúra kézi", [492.2, 525.1, 584.7, 543.9], size=11), fr("működik?", [224.2, 534.4, 277.0, 553.1], size=11),
+              fr("tóberendezés", [361.7, 533.5, 447.5, 552.3], size=11), fr("nyitása", [512.0, 537.6, 558.3, 556.4], size=11),
+              fr("működőképes?", [361.7, 546.0, 440.9, 564.8], size=11)]
+    texts = [p["text"] for p in LY.group(blocks, [], [])]
+    assert "Beépített oltóberendezés" in texts and not any(t.endswith("ol-") or t.startswith("tóberendezés") for t in texts)
+    # висячий отступ: продолжение под маркером «-», выше — чужой абзац с перекрытием по x
+    hang = [fr("érték túllépés azonosítható, akkor:", [74.4, 129.8, 263.4, 147.2]), fr("-", [79.7, 141.8, 85.1, 157.1]),
+            dict(fr("a turbina fordulatra hozását megállí-", [109.8, 141.8, 319.1, 157.1]), item=True),
+            fr("tani", [74.4, 152.0, 101.4, 167.3]),
+            fr("VAGY", [74.4, 160.4, 96.0, 177.7], bold=True)]
+    assert sorted(p["text"] for p in LY.group(hang, [], [])) == [
+        "-", "VAGY", "a turbina fordulatra hozását megállítani", "érték túllépés azonosítható, akkor:"]
+    # остаток слова жирный, номер таблицы против второй строки
+    bold = [fr("A 1SZ22KU vonatkozó fejezete alapján LEÁLLÍ-", [74.4, 476.3, 319.0, 493.6]),
+            fr("TANI, és KISZAKASZOLNI.", [74.4, 486.5, 204.0, 503.8], bold=True), fr("4.2.", [40, 490, 60, 500])]
+    assert [p["text"] for p in LY.group(bold, [], []) if p["text"] != "4.2."] == [
+        "A 1SZ22KU vonatkozó fejezete alapján LEÁLLÍTANI, és KISZAKASZOLNI."]
+    # линейка между строками слово пополам не режет только мягкая; чёрная линия — граница
+    two = [fr("Tűzjel-", [100, 100, 160, 111]), fr("zés érkezik", [100, 112, 190, 123])]
+    assert len(LY.group(two, [(90, 200, 111.5)], [])) == 2 and len(LY.group(two, [], [])) == 1
+    # длинное тире — не перенос; другой столбец («Sor-» / «Elvégzendő») — не продолжение
+    assert not LY.hyphen_break("a próba –", "folytatás") and LY.hyphen_break("Sor-", "szám")
+    cols = [fr("Sor-", [60, 100, 90, 111]), fr("Elvégzendő feladat", [300, 112, 420, 123])]
+    assert len(LY.group(cols, [], [])) == 2
+    # заголовок раздела и шапка таблицы под ним (тоже жирные, рамки выше шага) остаются отдельными
+    head = [fr("5. FOT GOT Olajtartályok tárolótereinek ellenőrzése, karbantartása", [70.9, 73.0, 472.9, 92.3], True, 10.0),
+            fr("Tevékenység", [70.9, 84.9, 142.9, 104.2], True, 10.0), fr("Állapot", [322.6, 84.9, 370.5, 104.2], True, 10.0)]
+    assert len(LY.group(head, [], [])) == 3
+
+
+def test_join_lines_caps_word_broken_by_hyphen():
+    """«KI-» + «KAPCSOLVA», «REND-» + «BEN.»: слово из прописных, разорванное переносом, — без дефиса; составные («ÜFK-s»,
+    пара коротких аббревиатур «RO-ROP») остаются как есть."""
+    import layout as LY
+    assert LY.join_lines(["A tábla KI-", "KAPCSOLVA feliratú"]) == "A tábla KIKAPCSOLVA feliratú"
+    assert LY.join_lines(["Az eredmény REND-", "BEN."]) == "Az eredmény RENDBEN."
+    assert LY.join_lines(["ÜFK-", "s rendszer"]) == "ÜFK-s rendszer"
+    assert LY.join_lines(["fűtő-", "és hűtőrendszer"]) == "fűtő- és hűtőrendszer"
+    assert LY.join_lines(["végre-", "hajtani"]) == "végrehajtani"
+    assert LY.join_lines(["RO-", "ROP"]) == "RO- ROP"
+
+
+def test_white_plate_under_text_is_soft_rule_not_cell_border():
+    """Белая плашка без обводки на белом листе — подложка под текст (30RL2126GT, 30RR0102, 30TKBSZ36BIGT, 30GF(135)51GT), а
+    не рамка ячейки. Стороны — мягкие линейки (soft): хвост фразы на следующей строке («…folytasd» / «a próbát … pontnál.»)
+    и слово, вставленное в строку («… a 30RT61S002 kismértékű befojtása»), абзац и строку не рвут; поля шапки и пункты
+    списка, разделённые подложками, — по-прежнему порознь; белая ячейка на цветной подложке остаётся рамкой."""
+    import layout as LY
+    white = {"color": None, "fill": (1, 1, 1)}
+
+    def plates(page, *rects):
+        for r in rects:
+            page.draw_rect(fitz.Rect(*r), **white)
+    doc = fitz.open()
+    pg = doc.new_page(width=595, height=842)
+    pg.insert_text((94, 620), 'Ebben az esetben válaszd a ZÁRVA opciót, nyomd meg az "OK" gombot és folytasd', fontsize=10)
+    pg.insert_text((94, 633), "a próbát a 4.1.0.26. pontnál.", fontsize=10)
+    pg.insert_text((94, 660), "Ha p>5 bar, akkor nyomd meg a gombot.", fontsize=10)
+    pg.insert_text((94, 674), "Kovetkezo pont kovetkezik.", fontsize=10)
+    plates(pg, (94, 611, 480, 623.5), (94, 623.5, 230, 636), (94, 649, 300, 663.1), (94, 663.1, 230, 677))
+    hs, vs = LY.rules(pg)
+    assert hs and all(getattr(r, "soft", False) for r in hs + vs)
+    texts = [p["text"] for p in LY.group(LY.frags_from_text(pg, vs), hs, vs)]
+    assert texts == ['Ebben az esetben válaszd a ZÁRVA opciót, nyomd meg az "OK" gombot és folytasd a próbát a 4.1.0.26. pontnál.',
+                     "Ha p>5 bar, akkor nyomd meg a gombot.", "Kovetkezo pont kovetkezik."]
+    # те же строки, но между ними чёрная линейка — граница ячейки, абзац не склеивается
+    pg2 = doc.new_page(width=595, height=842)
+    pg2.insert_text((94, 620), 'Ebben az esetben válaszd a ZÁRVA opciót, nyomd meg az "OK" gombot és folytasd', fontsize=10)
+    pg2.insert_text((94, 633), "a próbát a 4.1.0.26. pontnál.", fontsize=10)
+    pg2.draw_line((90, 622.6), (480, 622.6), color=(0, 0, 0), width=0.6)
+    hs2, vs2 = LY.rules(pg2)
+    assert len(LY.group(LY.frags_from_text(pg2, vs2), hs2, vs2)) == 2
+    # слово в строке на плашке: одна строка, а не три куска; та же рамка чёрной обводкой режет, как прежде
+    head = "teljes nyitasa nem elegendo, akkor megengedett a "
+    code = "30RT61S002"
+    x_a = 100 + fitz.get_text_length(head, fontsize=10)
+    x_b = x_a + fitz.get_text_length(code, fontsize=10)
+    for color, fill, parts in (((None), (1, 1, 1), 1), ((0, 0, 0), None, 3)):
+        pg3 = doc.new_page(width=595, height=842)
+        pg3.insert_text((100, 340), head + code + " kismertek befojtasa.", fontsize=10)
+        pg3.draw_rect(fitz.Rect(x_a, 330, x_b, 342), color=color, fill=fill)
+        hs3, vs3 = LY.rules(pg3)
+        assert len(LY.frags_from_text(pg3, vs3)) == parts
+    # поля шапки на подложках («Megnevezés:» ⇥ значение) — два куска, не «Megnevezés: GF ELŐTTI…»
+    pg4 = doc.new_page(width=595, height=842)
+    pg4.insert_text((54.5, 65), "Megnevezés:", fontsize=10)
+    pg4.insert_text((136.8, 65), "GF ELOTTI TAPVIZ", fontsize=10)
+    plates(pg4, (54.5, 54, 111.7, 67), (136.8, 54, 250, 67))
+    hs4, vs4 = LY.rules(pg4)
+    assert [f["t"] for f in LY.frags_from_text(pg4, vs4)] == ["Megnevezés:", "GF ELOTTI TAPVIZ"]
+    # белая ячейка на серой подложке — видимая рамка
+    pg5 = doc.new_page(width=595, height=842)
+    pg5.draw_rect(fitz.Rect(50, 50, 400, 120), color=None, fill=(0.8, 0.8, 0.8))
+    pg5.draw_rect(fitz.Rect(60, 60, 200, 80), color=None, fill=(1, 1, 1))
+    hs5, vs5 = LY.rules(pg5)
+    assert hs5 and vs5 and not any(getattr(r, "soft", False) for r in hs5 + vs5)
+
+
+def test_orphan_tail_after_section_number_joins_previous_line():
+    """«…KU 4.11.» / «szerint.», «…a 4.4.0.8.» / «pontban.»: хвост фразы на своей строке (моноширинный шрифт, рамки выше
+    шага: правый столбец не перекрывает строку, и «короткая строка» закрывала абзац) — продолжение; значение столбика
+    («rendben») после строки без номера пункта — по-прежнему отдельный кусок (1SZ01, 30GF118GT, аудит 29.10)."""
+    import layout as LY
+    assert LY.orphan_tail("A 1*RN15D001-et INDÍTANI az 1SZ03 KU 4.11.", "szerint.")
+    assert LY.orphan_tail("folytasd a próbát a 4.4.0.8.", "pontban.")
+    assert not LY.orphan_tail("Állapot", "rendben") and not LY.orphan_tail("Ez egy mondat vége.", "szerint.")
+    assert not LY.orphan_tail("a próbát a 4.4.0.8.", "Következő pont.")
+    fr = lambda t, bb: {"t": t, "bbox": bb, "size": 9.0, "bold": False, "family": "mono"}
+    frags = [fr("A 1*RN06D001 INDÍTANI az 1SZ03 KU 4.10. sze-", [74.4, 200.0, 318.8, 217.3]),
+             fr("rint.", [74.4, 212.0, 101.4, 227.3]),
+             fr("Az 1*RN06D001 elindítva, RENDBEN üzemel.", [326.0, 222.2, 542.0, 237.5]),
+             fr("A 1*RN15D001-et INDÍTANI az 1SZ03 KU 4.11.", [74.4, 230.6, 324.4, 247.9]),
+             fr("szerint.", [74.4, 242.6, 117.6, 257.9]),
+             fr("Az 1*RN15D001 elindítva, RENDBEN üzemel.", [326.0, 242.6, 542.0, 257.9]),
+             fr("A 1*CSTH I fokozat csapadéka táptartályra", [326.0, 283.4, 565.4, 298.7])]
+    assert sorted(p["text"] for p in LY.group(frags, [], [])) == [
+        "A 1*CSTH I fokozat csapadéka táptartályra",
+        "A 1*RN06D001 INDÍTANI az 1SZ03 KU 4.10. szerint.",
+        "A 1*RN15D001-et INDÍTANI az 1SZ03 KU 4.11. szerint.",
+        "Az 1*RN06D001 elindítva, RENDBEN üzemel. Az 1*RN15D001 elindítva, RENDBEN üzemel."]

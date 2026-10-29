@@ -48,8 +48,14 @@ def _ink_x1(f):
     return bb[2] - k * (bb[2] - bb[0]) / len(t) if t and k else bb[2]
 
 
+SPACE = 5.0         # пробел между словами строки (подложка под вставленным словом: 2,7–4,1 pt; поля шапки: от 7 pt)
+
+
 def _vrule_in(vs, xa, xb, y0, y1):
-    return any(xa - 1 <= x <= xb + 1 and min(y1, ry1) - max(y0, ry0) > 0.5 * (y1 - y0) for ry0, ry1, x in vs)
+    """Вертикальная линейка в промежутке xa..xb на высоте y0..y1. Сторона белой подложки (soft, см. rules) в промежутке
+    не шире пробела линейкой не считается: подложка под вставленным в строку словом не делит строку."""
+    return any(xa - 1 <= r[2] <= xb + 1 and min(y1, r[1]) - max(y0, r[0]) > 0.5 * (y1 - y0)
+               and not (getattr(r, "soft", False) and xb - xa <= SPACE) for r in vs)
 
 
 BULLET = re.compile(r"^[•▪◦·o\-–]$")
@@ -109,8 +115,8 @@ def _cut_spans(spans, vs, rot):
     for s in spans:
         chars = s.get("chars") or []
         bb = fitz.Rect(s["bbox"]) * rot
-        xs = sorted(x for y0, y1, x in vs if bb.x0 + 1 < x < bb.x1 - 1
-                    and min(bb.y1, y1) - max(bb.y0, y0) > 0.5 * (bb.y1 - bb.y0)) if chars else []
+        xs = sorted(r[2] for r in vs if bb.x0 + 1 < r[2] < bb.x1 - 1 and not getattr(r, "soft", False)
+                    and min(bb.y1, r[1]) - max(bb.y0, r[0]) > 0.5 * (bb.y1 - bb.y0)) if chars else []
         groups, cur, k = [], [], 0
         for c in chars:
             r = fitz.Rect(c["bbox"]) * rot
@@ -257,37 +263,68 @@ def frags_from_text(page, vs=()):
 
 
 
+class Rule(tuple):
+    """Линейка (x0, x1, y) / (y0, y1, x) — обычный кортеж. soft — сторона белой подложки под текст: см. rules()."""
+    soft = False
+
+
+def _white_fill(dr):
+    """Белая заливка без обводки."""
+    f = dr.get("fill")
+    return dr.get("color") is None and f is not None and len(f) == 3 and min(f) >= 0.99
+
+
+def _mark(t, soft):
+    if not soft:
+        return t
+    r = Rule(t)
+    r.soft = True
+    return r
+
+
 def rules(page):
-    """Горизонтальные и вертикальные линейки (тонкие залитые прямоугольники и отрезки); координаты — как страница видна."""
+    """Горизонтальные и вертикальные линейки (тонкие залитые прямоугольники и отрезки); координаты — как страница видна.
+    Белый прямоугольник без обводки на белом листе ничего не рисует: это подложка под текст (30RL2126GT, 30RR0102,
+    30TKBSZ36BIGT, 30GF(135)51GT: белая плашка под каждым куском строки и под вставленным в строку словом), а не
+    рамка ячейки. Его стороны остаются в списках, но помечены soft: они по-прежнему делят поля шапки («Megnevezés:» ⇥
+    значение) и пункты списка, но не режут текст в пределах пробела и не мешают продолжить фразу на следующей строке
+    (хвост «alapján.», «A269/3 helyiségbe és» уходил отдельным сегментом). Белая ячейка на цветной подложке — граница
+    видимая, такие плашки остаются обычными рамками."""
     hs, vs = [], []
     rot = page.rotation_matrix
-    for dr in page.get_drawings():
+    drs = page.get_drawings()
+    back = [dr["rect"] * rot for dr in drs if dr.get("fill") and not _white_fill(dr)
+            and dr["rect"].width > 6 and dr["rect"].height > 6]
+    for dr in drs:
         r = dr["rect"] * rot
+        soft = _white_fill(dr) and not any(b.contains(r) and b.get_area() > r.get_area() * 1.05 for b in back)
         if r.height <= 2.5 and r.width >= 15:
-            hs.append((r.x0, r.x1, (r.y0 + r.y1) / 2))
+            hs.append(_mark((r.x0, r.x1, (r.y0 + r.y1) / 2), soft))
         elif r.width <= 2.5 and r.height >= 8:
-            vs.append((r.y0, r.y1, (r.x0 + r.x1) / 2))
+            vs.append(_mark((r.y0, r.y1, (r.x0 + r.x1) / 2), soft))
         else:
             for it in dr["items"]:
                 if it[0] == "l":
                     p, q = it[1] * rot, it[2] * rot
                     if abs(p.y - q.y) < 1 and abs(p.x - q.x) >= 15:
-                        hs.append((min(p.x, q.x), max(p.x, q.x), p.y))
+                        hs.append(_mark((min(p.x, q.x), max(p.x, q.x), p.y), soft))
                     elif abs(p.x - q.x) < 1 and abs(p.y - q.y) >= 8:
-                        vs.append((min(p.y, q.y), max(p.y, q.y), p.x))
+                        vs.append(_mark((min(p.y, q.y), max(p.y, q.y), p.x), soft))
                 elif it[0] == "re":
                     # залитый прямоугольник тоже даёт рамку: в формах 30RDGT заливка ячеек — единственный разделитель
                     # («<= 2400» / «mm»); цена — шапка с заливкой по строкам рвётся («Fejlesztő / környezet», UTS)
                     rr = it[1] * rot
                     if rr.width >= 15 and rr.height > 2.5:     # рамка ячейки: четыре стороны
-                        hs += [(rr.x0, rr.x1, rr.y0), (rr.x0, rr.x1, rr.y1)]
-                        vs += [(rr.y0, rr.y1, rr.x0), (rr.y0, rr.y1, rr.x1)]
+                        hs += [_mark((rr.x0, rr.x1, rr.y0), soft), _mark((rr.x0, rr.x1, rr.y1), soft)]
+                        vs += [_mark((rr.y0, rr.y1, rr.x0), soft), _mark((rr.y0, rr.y1, rr.x1), soft)]
     return hs, vs
 
 
-def _rule_between(hs, x0, x1, ya, yb):
-    for rx0, rx1, y in hs:
-        if ya - 0.5 <= y <= yb + 0.5 and min(x1, rx1) - max(x0, rx0) > 5:
+def _rule_between(hs, x0, x1, ya, yb, soft=True):
+    """Горизонтальная линейка между строками; soft=False — стороны белой подложки (rules) не считаются."""
+    for r in hs:
+        rx0, rx1, y = r
+        if ya - 0.5 <= y <= yb + 0.5 and min(x1, rx1) - max(x0, rx0) > 5 and (soft or not getattr(r, "soft", False)):
             return True
     return False
 
@@ -350,6 +387,27 @@ def mid_phrase(prev, nxt):
     return len(prev.split()) >= 3 and bool(re.search(r"[^\W\d_]$|,$", prev)) and nxt[:1].isalpha() and nxt[:1].islower()
 
 
+HYPHEN = re.compile(r"[^\W\d_]-$")
+
+
+def hyphen_break(prev, nxt):
+    """Слово разорвано переносом строки: строка кончается буквой и дефисом (не «–»), следующая начинается буквой.
+    Обе строки — одна фраза, что бы ни стояло между ними («oltó-» / «berendezés» в блоке схемы, «KI-» / «KAPCSOLVA»,
+    «pa-» / «lacknyomás»): иначе слово переводилось двумя кусками."""
+    return bool(HYPHEN.search(prev.rstrip())) and nxt.lstrip()[:1].isalpha()
+
+
+ORDINAL = re.compile(r"\b\d+(?:\.\d+)*\.$")
+
+
+def orphan_tail(prev, nxt):
+    """«Сирота»: хвост фразы в одном-трёх словах на своей строке («…KU 4.11.» / «szerint.», «…a 4.4.0.8.» / «pontban.»):
+    строка выше кончается номером пункта с точкой и содержит от трёх слов, хвост начинается строчным словом."""
+    prev, nxt = prev.rstrip(), nxt.lstrip()
+    return len(prev.split()) >= 3 and bool(ORDINAL.search(prev)) and len(nxt.split()) <= 3 \
+        and bool(re.match(r"[^\W\d_]{4,}", nxt)) and nxt[:1].islower()
+
+
 def group(frags, hs, vs=(), form=False):
     """form=True (скан формы): строка, кончающаяся двоеточием, — подпись поля, к ней не приклеивается следующая."""
     page_right = max((f["bbox"][2] for f in frags), default=0)
@@ -363,6 +421,30 @@ def group(frags, hs, vs=(), form=False):
     def labeled(bb):
         return any(n[2] < bb[0] and bb[0] - n[2] < 120 and min(n[3], bb[3]) - max(n[1], bb[1]) > 0.5 * (bb[3] - bb[1])
                    for n in nums)
+
+    def aligned(q, f):
+        """Строка f начинается там же, где последняя строка абзаца q, левее неё на висячий отступ пункта («- » ⇥ текст,
+        продолжение — под маркером), стоит по центру под ней (блоки схемы) или целиком под её текстом (заголовок
+        «2.6 … működte-» / «tése», продолжение — после номера)."""
+        last, x0, x1 = q["frags"][-1]["bbox"], f["bbox"][0], f["bbox"][2]
+        return -40 <= x0 - last[0] <= 3 or abs((x0 + x1) / 2 - (last[0] + last[2]) / 2) < 6 \
+            or (x0 >= last[0] - 3 and x1 <= last[2] + 3)
+
+    def hyphen_cont(q, f):
+        """Строка f — вторая половина слова, разорванного переносом в последней строке абзаца q. Перенос — сильнее
+        прочих признаков: другое начертание (жирный остаток «TANI,»), короткая строка, номер пункта против второй
+        строки и выше рамки (17 pt при кегле 9 и шаге 10, 3SZ17) слово пополам не режут; не пускают только линейка
+        между строками и якорь другой строки таблицы."""
+        last = q["frags"][-1]["bbox"]
+        x0, y0, x1, y1 = f["bbox"]
+        size = max(q["size"], f["size"])
+        gap = y0 - last[3]
+        if not (hyphen_break(q["frags"][-1]["t"], f["t"]) and aligned(q, f) and abs(q["size"] - f["size"]) <= 1.5
+                and (-0.35 * size <= gap <= 0.6 * size
+                     or (gap < 0 and 0.85 * size <= (y0 + y1 - last[1] - last[3]) / 2 <= 1.8 * size))):
+            return False
+        a1, a2 = _row_anchor(frags, last), _row_anchor(frags, f["bbox"])
+        return not _rule_between(hs, x0, x1, last[3], y0, soft=False) and not (a1 is not None and a2 is not None and a1 != a2)
 
     def continues(f):
         """Предыдущая строка этого же столбца оборвана на середине фразы, начинается без номера и выровнена с этой."""
@@ -397,7 +479,9 @@ def group(frags, hs, vs=(), form=False):
         # строки абзаца своего номера нет — продолжение фразы, а не новый пункт (30TH50, 28.10)
         if starts and continues(f):
             starts = False
-        if plain and not starts:
+        if plain:
+            best = next((p for p in reversed(pars[-12:]) if hyphen_cont(p, f)), None)
+        if plain and not starts and best is None:
             for p in reversed(pars[-12:]):
                 if len(p["frags"]) == 1 and BULLET.match(p["frags"][0]["t"].strip()):
                     continue
@@ -408,13 +492,20 @@ def group(frags, hs, vs=(), form=False):
                 # рамка строки выше шага строк (моноширинный шрифт 3SZ17: рамка 15 pt при шаге 10 pt) — рамки соседних
                 # строк перекрываются; строка ниже верха предыдущей на шаг — продолжение, а не та же строка
                 tall = gap < 0 and -0.7 * size <= gap and y0 - last[1] >= 0.85 * size
+                plast = p["frags"][-1]["t"]
+                tail = abs(x0 - last[0]) < 3 and orphan_tail(plast, f["t"])
+                cont = (abs(x0 - last[0]) < 3 and mid_phrase(plast, f["t"])) or tail
+                # рамки ещё выше (жирный моноширинный: 19 pt при кегле 10 и шаге 11, 3SZ23): середины строк — через шаг
+                # строк, а фраза явно продолжается; заголовок и шапка таблицы под ним (оба прописные) так не склеятся
+                tall = tall or (cont and gap < 0 and 0.85 * size <= (y0 + y1 - last[1] - last[3]) / 2 <= 1.8 * size)
                 if not (-0.35 * size <= gap <= 0.6 * size or tall):
                     continue
                 if min(x1, px1) - max(x0, px0) <= 0:
                     continue
                 if p["bold"] != f["bold"] or abs(p["size"] - f["size"]) > 1.5:
                     continue
-                if _rule_between(hs, x0, x1, last[3], y0):
+                # белая подложка под текстом (soft) продолжению фразы не помеха
+                if _rule_between(hs, x0, x1, last[3], y0, soft=not cont):
                     continue
                 if form and p["frags"][-1]["t"].rstrip().endswith(":"):
                     continue
@@ -458,7 +549,7 @@ def group(frags, hs, vs=(), form=False):
                            default=None)
                 if left is not None and room > 3 and abs((last[0] - left) - room) < 4:
                     room += last[0] - left
-                if width > 0 and room > fits and lim - last[2] > 0.45 * width:
+                if width > 0 and room > fits and lim - last[2] > 0.45 * width and not tail:
                     continue
                 best = p
                 break
@@ -524,6 +615,17 @@ def column_order(pars, g):
     return out + sorted(zone, key=lambda p: (side(p), p["bbox"][1]))
 
 
+CAPS_WRAP = re.compile(r"(?:^|[^\w-])([A-ZÁÉÍÓÖŐÚÜŰ]{2,})-$")     # слово из двух и более прописных, дефис в конце строки
+CAPS_HEAD = re.compile(r"([A-ZÁÉÍÓÖŐÚÜŰ]{2,})(?![\w-])")           # строка начинается словом из прописных
+
+
+def caps_wrap(out, ln):
+    """«KI-» + «KAPCSOLVA», «REND-» + «BEN.»: слово из прописных, разорванное переносом. Обе части от двух букв и одна из
+    них не короче четырёх; пара коротких аббревиатур («RO-ROP», «ÜBO-ÜBO», «RP-UL») — составная, дефис остаётся."""
+    a, b = CAPS_WRAP.search(out), CAPS_HEAD.match(ln)
+    return bool(a and b) and (len(a.group(1)) >= 4 or len(b.group(1)) >= 4)
+
+
 def join_lines(lines):
     out = ""
     for ln in lines:
@@ -538,6 +640,8 @@ def join_lines(lines):
             # дефис — часть слова: после прописной или цифры, и в составном через дефис («loss-of-» + «coolant», Eskom)
             keep = re.search(r"[A-ZÁÉÍÓÖŐÚÜŰ0-9]-$", out) or re.search(r"\w-\w+-$", out)
             out = (out if keep else out[:-1]) + ln
+        elif caps_wrap(out, ln):
+            out = out[:-1] + ln                             # слово из прописных, разорванное переносом: «KI-» + «KAPCSOLVA»
         else:
             out += " " + ln
     return out
