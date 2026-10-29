@@ -118,3 +118,25 @@ def test_sheets_with_other_version_get_own_header_section(tmp_path):
     assert len(heads) >= 3 and any("Verziószám: 1" in h for h in heads) and "Verziószám: 0" in heads[0]
     assert all("PAGE" in sec.header._element.xml for sec in doc.sections)       # номер листа — полем в каждой шапке
 
+
+def test_text_lost_in_docx_is_reported_with_its_count(tmp_path):
+    """Инвариант сборки (аудит 29.10): перевод сегмента есть в DOCX. Потерян целиком — в списке; вошёл на одном листе из
+    двух — в списке с числом потерянных; колонтитул на пяти листах — один раз в колонтитуле, не потеря; листы-снимки и
+    надписи на картинках не считаются."""
+    import assemble as A
+    seg = lambda i, page, text, y=300.0, **loc: {"id": i, "page": page, "text": text,
+                                                 "loc": dict({"bbox": [60.0, y, 200.0, y + 10]}, **loc)}
+    segs = [seg(0, 0, "Állapot ellenőrzése"), seg(1, 1, "Állapot ellenőrzése"),         # две таблицы — один перевод
+            seg(2, 0, "Berendezés alfanumerika"),                                      # потерян
+            seg(3, 2, "Beépítés helye megjelölése"),                                   # лист-снимок
+            seg(4, 0, "Állapot ellenőrzése", shot={"xref": 7})]                        # надпись на картинке
+    segs += [seg(10 + k, k, "Azonosító: Próba azonosítója", y=30.0) for k in range(5)]  # колонтитул ×5
+    ru = {"Állapot ellenőrzése": "Проверка состояния", "Berendezés alfanumerika": "Буквенный код оборудования",
+          "Beépítés helye megjelölése": "Место установки обозначено", "Azonosító: Próba azonosítója": "Идентификатор пробы"}
+    doc = Document()
+    doc.sections[0].header.paragraphs[0].text = "Идентификатор пробы"
+    doc.add_paragraph("Проверка состояния")
+    out = tmp_path / "lost.docx"
+    doc.save(str(out))
+    got = A.lost_segments(str(out), segs, lambda s: ru[s["text"]], skip_pages={2})
+    assert sorted((s["id"], n) for s, _, n in got) == [(0, 1), (2, 1)]

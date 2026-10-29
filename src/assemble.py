@@ -513,6 +513,54 @@ def _p2d_child(pdf, out):
         print(" ".join(f"ERR {type(e).__name__}: {e}"[:200].split()), flush=True)
 
 
+def lost_segments(out, segs, expect, skip_pages=(), H=842):
+    """Инвариант сборки: перевод каждого сегмента листа есть в готовом DOCX (тело, таблицы, колонтитулы). Строки у верха
+    и низа листа повторяются на листах и идут в колонтитул один раз — их считаем по тексту (хоть раз), остальное — по
+    числу сегментов с тем же исходником (повтор «Állapot» на девяти листах — девять вхождений). Листы со снимком
+    (skip_pages, от 0) и надписи на картинках не считаются. Сравнивается начало текста (24 знака без знаков
+    препинания и регистра): сборка переносит слова и ставит метки начертания. → [(сегмент, перевод, сколько
+    вхождений не нашлось)]; сборка из-за потери не падает — потерю смотрит человек (лог и лист «нарушения»)."""
+    import docx_build as B
+    from segments import needs_translation
+    key = lambda t: re.sub(r"[\W_]+", "", B.TAGS.sub("", t or "")).lower()
+    blob = ""
+    with zipfile.ZipFile(out) as z:
+        for name in z.namelist():
+            if re.fullmatch(r"word/(?:document|header\d+|footer\d+|footnotes|endnotes)\.xml", name):
+                xml = z.read(name).decode("utf-8")
+                blob += key(html.unescape(re.sub(r"<[^>]+>", "", xml.replace("</w:p>", " "))))
+    groups = {}
+    for s in segs:
+        if "shot" in s["loc"] or s["page"] in skip_pages or not s["text"].strip() \
+                or not needs_translation(B.TAGS.sub("", s["text"])):
+            continue
+        ru = expect(s)
+        k = key(ru)[:24] if ru else ""
+        if len(k) < 4:
+            continue
+        bb = s["loc"].get("bbox")
+        zone = bool(bb) and (bb[3] < 0.14 * H or bb[1] > 0.86 * H)
+        g = groups.setdefault(k, [s, ru, 0, 0])
+        g[2] += 0 if zone else 1                            # вхождений в теле
+        g[3] += 1
+    lost = []
+    for k, (s, ru, n_body, n_all) in groups.items():
+        have = blob.count(k)
+        n = n_all if have == 0 else max(0, n_body - have)
+        if n:
+            lost.append((s, ru, n))
+    return lost
+
+
+def lost_rows(lost):
+    """Потерянные в DOCX тексты (lost_segments) — в лог сборки и строками листа «нарушения»."""
+    if lost:
+        print(f"DOCX: не попало в документ {len(lost)} текстов: " + "; ".join(
+            f"л.{s['page'] + 1} «{s['text'][:30]}» ×{n}" for s, _, n in lost[:8]), flush=True)
+    return [("", "потеря текста", f"в DOCX нет (×{n}), лист {s['page'] + 1}: {ru[:90]}", s["text"][:90])
+            for s, ru, n in lost]
+
+
 def build_struct_docx(src, out, segs, res, rules=None, progress=None, mode="struct", overlay=None, lang_check=True,
                       printer=None):
     """DOCX размеченного PDF (экспорт Word со StructTreeRoot, pipeline.extract → d["struct"]): блоки — по дереву
@@ -621,9 +669,15 @@ def build_struct_docx(src, out, segs, res, rules=None, progress=None, mode="stru
             lang += [(r, why, p.text[:90]) for r, why in C.check_text(p.text, rules or {})]
     rows = [("", v["rule"], f"оформление: {v['where']} — {v['was']} (нужно: {v['need']})", "") for v in viol] \
         + [("", r, f"в DOCX: {why}", t) for r, why, t in lang]
+    # потеря текста (аудит 29.10: подписи строк, пункты таблиц терялись молча). Только блоки по сегментам листа (text,
+    # layout): сегмент — абзац или ячейка; у размеченного PDF абзацы — по дереву разметки, строки листа поштучно не идут
+    lost = lost_segments(out, segs, lambda s: mem.get(s["text"]),
+                         {b["geom"]["page"] - 1 for b in blocks if b.get("figure") and b.get("geom")},
+                         doc[0].rect.height) if mode in ("text", "layout") else []
+    rows += lost_rows(lost)
     tick(1.0)
     info = {"converter": {"layout": "сегменты листа", "text": "текстовый слой"}.get(mode, "разметка PDF"),
-            "missed": len(set(mem.missing)), "format": len(viol), "lang": len(lang)}
+            "missed": len(set(mem.missing)), "format": len(viol), "lang": len(lang), "lost": len(lost)}
     if fit is not None:
         info["fit"] = fit
     return info, rows
@@ -777,6 +831,19 @@ def assemble_all(jf, d, out_dir=None, progress=None):
     outd, stem = Path(out_dir or Path(jf).parent), Path(jf).stem
     outd.mkdir(parents=True, exist_ok=True)
     rows = []
+
+    def from_pdf():
+        """DOCX из переведённого PDF конвертером; что в нём потерялось от перевода PDF — в лист «нарушения»."""
+        import fitz
+        docx = outd / f"{stem}{sfx}.docx"
+        r = docx_from_pdf(outd / f"{stem}{sfx}.pdf", docx, progress=lambda x: tick(0.4 + 0.6 * x))
+        ru = lambda s: pdf_text(d["res"][str(s["id"])]) if (d["res"].get(str(s["id"])) or {}).get("ru") else None
+        try:
+            with fitz.open(src) as pdf:
+                rows.extend(lost_rows(lost_segments(docx, d["segs"], ru, (), pdf[0].rect.height)))
+        except (OSError, zipfile.BadZipFile) as e:
+            print(f"DOCX: потери текста не проверены: {type(e).__name__}: {e}"[:200], flush=True)
+        return r
     if src.suffix.lower() == ".docx":
         info = build_docx(src, outd / f"{stem}{sfx}.docx", d["segs"], d["res"])
         # раздел перевода — не больше листов, чем в оригинале (docx_fit: «раздел = лист» 3PR04 расползался 514 → 651);
@@ -804,8 +871,7 @@ def assemble_all(jf, d, out_dir=None, progress=None):
                 except (OSError, RuntimeError, subprocess.SubprocessError) as e:
                     info["pdf"] = {"from": "вёрстка оригинала", "reason": f"{type(e).__name__}: {e}"[:200]}
             except Exception as e:                      # noqa: BLE001 — DOCX прежним путём, причина — в отчёт сборки
-                info["docx"] = docx_from_pdf(outd / f"{stem}{sfx}.pdf", outd / f"{stem}{sfx}.docx",
-                                             progress=lambda x: tick(0.4 + 0.6 * x))
+                info["docx"] = from_pdf()
                 info["docx"]["fallback"] = f"{type(e).__name__}: {e}"[:200]
         elif d.get("docx"):
             # PDF с текстовым слоем: DOCX — из оригинала с переведёнными скриншотами, перевод — в абзацы Word
@@ -817,8 +883,7 @@ def assemble_all(jf, d, out_dir=None, progress=None):
                 try:
                     info["docx"] = docx_src.build(shots_pdf, outd / f"{stem}{sfx}.docx", d["segs"], d["res"], d["docx"])
                 except Exception as e:                  # noqa: BLE001 — DOCX прежним путём, причина — в отчёт сборки
-                    info["docx"] = docx_from_pdf(outd / f"{stem}{sfx}.pdf", outd / f"{stem}{sfx}.docx",
-                                                 progress=lambda x: tick(0.4 + 0.6 * x))
+                    info["docx"] = from_pdf()
                     info["docx"]["fallback"] = f"{type(e).__name__}: {e}"[:200]
             finally:
                 shots_pdf.unlink(missing_ok=True)
@@ -840,8 +905,7 @@ def assemble_all(jf, d, out_dir=None, progress=None):
                 except (OSError, RuntimeError, subprocess.SubprocessError) as e:
                     info["pdf"] = {"from": "вёрстка оригинала", "reason": f"{type(e).__name__}: {e}"[:200]}
             except Exception as e:                      # noqa: BLE001 — DOCX прежним путём, причина — в отчёт сборки
-                info["docx"] = docx_from_pdf(outd / f"{stem}{sfx}.pdf", outd / f"{stem}{sfx}.docx",
-                                             progress=lambda x: tick(0.4 + 0.6 * x))
+                info["docx"] = from_pdf()
                 if not isinstance(e, ValueError):
                     info["docx"]["fallback"] = f"{type(e).__name__}: {e}"[:200]
     review_xlsx(outd / f"{stem}_вычитка.xlsx", d["segs"], d["res"], stem, polish=d.get("polish"), extra_rows=rows,
