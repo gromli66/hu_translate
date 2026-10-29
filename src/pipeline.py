@@ -374,10 +374,11 @@ def translate(work, prj, workers=4, redo=False, progress=_quiet):
     def run_stream(job):
         stem, secs = job
         res, ctx = {}, ""
+        code_words = S.code_words(s["text"] for sec in secs for s in sec)
         for sec in secs:
             units, by_text = [], {}
             for s in sec:
-                if not S.needs_translation(s["text"]) or keep_abbr(s["text"]):
+                if not S.needs_translation(s["text"]) or keep_abbr(s["text"]) or (s["text"].strip() not in known and S.is_code_word(s["text"], code_words)):
                     # значение без слов («1,7 kW», «6 t/h»): портал не зовётся, но единица — по глоссарию («1,7 кВт»);
                     # сборка берёт это из res (docx_build.Memory.get), иначе в таблицах оставалась латиница (аудит 29.10, C6)
                     res[s["id"]] = {"ru": fix_units(s["text"]) if tr.tgt == "ru" else s["text"],

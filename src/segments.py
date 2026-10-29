@@ -29,9 +29,35 @@ CODE = re.compile(r"\w+(?:[./-]\w+){2,}")
 # имя из программы одним словом или перечнем: «get_ stat_name», «Char16», «MarkTrigger», «real*4», «mf_load(loa, meas)» — не текст к
 # переводу: модель делала из них «реал*4», «цел.*4», «Рутин Check_clients», «Промышленность» (ПО тренажёра IS_reko_09, 29.10)
 _ID = (r"(?:[A-Za-z]\w*_\w*|[A-Za-z]+\d+\w*|\w*[a-z][A-Z]\w*|(?i:int|integer|real|float|char|character)(?:\*\d+)?"
-       r"|[A-Za-z]\w*\.(?:dat|txt|inc|lis|doc|sql|exe|bmp|log|cfg|ini|xls|c|h)|(?:\w+\\)+\w+)"
+       r"|BYTE|DOUBLE|BOOLEAN|DWORD|byte|double|boolean|dword|[A-Za-z]\w*\.(?:dat|txt|inc|lis|doc|sql|exe|bmp|log|cfg|ini|xls|c|h)|(?:\w+\\)+\w+)"
        r"(?:\[\d*\])?(?:\([^)]*\))?;?")
 IDENT_ONLY = re.compile(rf"[\s{{}}]*\*?{_ID}(?:[\s,;/]+\*?{_ID})*[\s,;:{{}}]*")
+
+# слово из прописных, которым документ сам строит имена из кода (RUN в RUN_XSTEP, TRIGGER в TRIGGER03, NAME в get_stat_name):
+# одно такое слово в ячейке (RUN, MODE, END) — тоже имя из программы, а не текст; перевод вперемешку («BYTE» → «БАЙТ»
+# рядом с оставленными INT*4, CHAR) ломал спецификацию ПО (IS_reko_09, аудит 29.10). Венгерские слова прописными (KIESETT,
+# SZINT) частями имён не бывают — не затронуты
+CAPS_WORD = re.compile(r"[A-Z]{3,12}")
+_PART = re.compile(r"[A-Z]{3,}|[A-Z][a-z]{2,}|[a-z]{3,}")
+
+
+def code_words(texts):
+    """Слова, входящие в имена из кода документа (сегмент целиком — имя, но не одно слово прописными) → frozenset
+    прописных."""
+    out = set()
+    for t in texts:
+        t = re.sub(r"<\/?f\d+>", "", t).strip()
+        # только имена из слов и «_» (RUN_XSTEP, get_stat_name): сигналы с кодом KKS (TH21S801_NYIT) — другое дело,
+        # NYIT в таблице сигналов — венгерское «открывается»
+        if t and not CAPS_WORD.fullmatch(t) and re.fullmatch(r"[A-Za-z]+(?:_[A-Za-z]+)*", t) and IDENT_ONLY.fullmatch(t):
+            out.update(w.upper() for w in _PART.findall(t))
+    return frozenset(out)
+
+
+def is_code_word(text, words):
+    """Сегмент — одно слово прописными из `words` (code_words документа): имя из кода, не переводится."""
+    t = re.sub(r"<\/?f\d+>", "", text).strip()
+    return bool(CAPS_WORD.fullmatch(t)) and t in words
 
 
 # значки символьных шрифтов (Wingdings: ведущий символ строки легенды, отметка списка) — в Юникод: в абзацах и легендах символ

@@ -25,3 +25,20 @@ def test_copied_segment_gets_units():
     from translate import fix_units
     assert fix_units("1,7 kW") == "1,7 кВт" and fix_units("36 m3/h") == "36 м³/ч" and fix_units("40÷42 t/h") == "40÷42 т/ч"
     assert fix_units("30TK62P101") == "30TK62P101"
+
+
+def test_caps_word_from_code_names_is_identifier():
+    """RUN рядом с RUN_XSTEP, MODE рядом с get_mode: слово, из которого документ строит имена, — не текст (IS_reko_09)."""
+    texts = ["RUN_XSTEP", "REPLAY_ON", "Char400", "RUN", "MODE", "get_mode_val", "END", "KIESETT", "Állapot", "BYTE"]
+    cw = S.code_words(texts)
+    assert S.is_code_word("RUN", cw) and S.is_code_word("MODE", cw)
+    assert not S.is_code_word("END", cw) and not S.is_code_word("KIESETT", cw)    # END нет среди имён — слово как слово
+    assert not S.is_code_word("Run", cw)                                          # только прописными
+    assert not S.needs_translation("BYTE") and S.needs_translation("Byte")        # тип данных кода
+
+
+def test_kks_signal_suffix_is_not_a_code_name():
+    """TH21S801_NYIT — сигнал с кодом KKS; NYIT в таблице сигналов остаётся венгерским словом (30RVR..VT)."""
+    cw = S.code_words(["TH21S801_NYIT", "TJ23S803_NYIT", "NYIT"])
+    assert not S.is_code_word("NYIT", cw)
+    assert S.code_words(["Zárva", "NYITVA", "A szivattyú"]) == frozenset()
