@@ -91,3 +91,30 @@ def test_row_labels_at_sheet_top_stay_in_table_on_every_sheet(tmp_path):
     cells = " ".join("".join(r.get("t", "") for r in x["runs"]) for b in blocks if b["k"] == "table"
                      for row in b["rows"] for c in row for x in c["blocks"])
     assert cells.count("Berendezés alfanumerika") == 5 and cells.count("Beépítés helye") == 5
+
+
+def test_sheets_with_other_version_get_own_header_section(tmp_path):
+    """Версия «1» на одних листах и «0» на других (3PR10, 3SZ17, 30PR25GT, 30RVR*: шапка одна с образца) — серия листов
+    со своей шапкой и подвалом, номер листа — полем и в шапке серии; шапка тела — с самого частого листа."""
+    src = tmp_path / "versions.pdf"
+    ver = {0: 0, 1: 0, 2: 0, 3: 1, 4: 1, 5: 0, 6: 0}
+    segs = _sheets_pdf(src, pages=7, head=lambda pno: (ver[pno], pno + 1))
+    blocks, info = DL.load(str(src), segs, text=True)
+    L = D.layout(str(src), blocks, content=info.get("content_boxes"))
+    blocks = D.split_at_zones(blocks, L["variants"])                    # таблица через лист режется по сериям
+    assert [(v["from"], v["to"]) for v in L["variants"]] == [(4, 5)]
+    tabs = [b for b in blocks if b["k"] == "table"]
+    assert [b["geom"]["page"] for b in tabs] == [1, 4, 6]
+    v = L["variants"][0]
+    assert v["page_marked"] and "Verziószám: 1" in str(v["head_grid"]).replace("", "")
+    assert "Verziószám: 0" in str(L["head_grid"]).replace("", "") and L["page_marked"]
+    out = tmp_path / "versions.docx"
+    B.Builder(B.Memory([(s["text"], s["text"]) for s in segs]), lambda img: png(), PROFILE).build(
+        blocks, str(out), dict(LAYOUT, **{k: v for k, v in L.items() if k in (
+            "head_grid", "variants", "page_marked", "page_tok", "stamp", "stamp_widths", "stamp_box", "stamp_inner",
+            "stamp_paras", "stamp_aligns", "stamp_merge", "head_rule", "head_imgs", "head_lines", "first_is_body")}))
+    doc = Document(str(out))
+    heads = ["".join(t.text for t in s.header._element.iter(qn("w:t"))) for s in doc.sections]
+    assert len(heads) >= 3 and any("Verziószám: 1" in h for h in heads) and "Verziószám: 0" in heads[0]
+    assert all("PAGE" in sec.header._element.xml for sec in doc.sections)       # номер листа — полем в каждой шапке
+

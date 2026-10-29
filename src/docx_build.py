@@ -2267,15 +2267,19 @@ class Builder:
         # начала разделов тела: (номер раздела, лист оригинала, альбомный) — сколько листов оригинала у альбомного
         # раздела (fit_want, для docx_fit)
         starts, last = [], 1                # первый лист — уже первый раздел
+        # листы тела со своими колонтитулами (версия «1» вместо «0», «3PR10/INFO» вместо «3PR10» — docx_struct.layout,
+        # variants): серия листов — свой раздел со своей шапкой и подвалом; None — колонтитулы тела
+        zones, zcur, placed = L.get("variants") or [], None, False
         for b in blocks:
             g = b.get("geom") or {}
             page = g.get("page")
+            made = None                     # раздел, начатый на этом блоке
             # лист другой ориентации, чем раздел (альбомные листы посреди книжного документа) — свой раздел; и каждый
             # альбомный лист — своим разделом: таблица во весь альбомный лист оригинала переливалась 2–3 строками на
             # следующий (HAKSER: 74 листа → 94), а раздел в один лист оригинала docx_fit ужимает кеглем (22.10)
             if not in_title and page and sizes and (land(page) != cur_land or cur_land and page > last):
                 cur_land = land(page)
-                sec = self.doc.add_section(WD_SECTION.NEW_PAGE)
+                sec = made = self.doc.add_section(WD_SECTION.NEW_PAGE)
                 self.fresh = True
                 self._page(sec, L, L["left"], L["right"], L["top"], L["bottom"], sizes[page - 1])
                 starts.append((len(self.doc.sections) - 1, page, cur_land))
@@ -2283,7 +2287,7 @@ class Builder:
                 last = max(last, page)
             if in_title and page is not None and page >= 2:
                 in_title = False
-                sec = self.doc.add_section(WD_SECTION.NEW_PAGE)
+                sec = made = self.doc.add_section(WD_SECTION.NEW_PAGE)
                 self.fresh = True
                 self._page(sec, L, L["left"], L["right"], L["top"], L["bottom"])
                 self.left = L["left"]
@@ -2295,7 +2299,7 @@ class Builder:
                     restart = True
             if in_front and page is not None and page > front["to"]:
                 in_front = False
-                sec = self.doc.add_section(WD_SECTION.NEW_PAGE)
+                sec = made = self.doc.add_section(WD_SECTION.NEW_PAGE)
                 self.fresh = True
                 self._page(sec, L, L["left"], L["right"], L["top"], L["bottom"])
                 self._header(sec, L)
@@ -2303,6 +2307,17 @@ class Builder:
                 if ns:
                     self._num_start(sec, ns["value"])
                     restart = True
+            if zones and page and not in_title and not in_front:
+                zk = next((i for i, z in enumerate(zones) if z["from"] <= page <= z["to"]), None)
+                if zk != zcur:
+                    zcur = zk
+                    Lz = dict(L, **zones[zk]) if zk is not None else L
+                    if made is None and placed:
+                        made = self.doc.add_section(WD_SECTION.NEW_PAGE)
+                        self.fresh = True
+                    sec = made if made is not None else self.doc.sections[-1]
+                    self._header(sec, Lz)
+                    self._footer(sec, Lz)
             # логотипы обложки — те же, что в шапке тела, или стоящие в полосе шапки (выше поля тела; «atom erőmű» UTS
             # уезжал за правый край), — шапкой титула из логотипов тела. Картинка без xref (снимок скана титула) — не
             # логотип, хоть у векторного логотипа шапки xref тоже нет: скан титула пропадал, лист 1 пустой (ред-тим 20.10)
@@ -2330,6 +2345,7 @@ class Builder:
                 sp.line_spacing, sp.line_spacing_rule = Pt(1), WD_LINE_SPACING.EXACTLY
             restart = False
             self.block(b)
+            placed = placed or not in_title
             pg = g.get("page")
             if not in_title and pg in sparse and b["k"] in ("p", "h") and g.get("top") and self.doc.paragraphs:
                 gap = g["top"] - sparse_bottom.get(pg, L["top"])
@@ -2504,6 +2520,7 @@ def blocks_layout(pdf, segs, mode):
         blocks, info = docx_layout.load(str(pdf), segs, text=mode == "text")
         if mode == "text":
             L = dict(docx_struct.layout(str(pdf), blocks, content=info.get("content_boxes")), sizes=True)
+            blocks = docx_struct.split_at_zones(blocks, L.get("variants"))   # раздел с другой шапкой — не внутри таблицы
             # логотип своей шапки первого листа (L["first"]) — уже в колонтитуле; рисунком тела он шёл второй копией
             # (E42 корпуса: логотип OAH дважды, 22.10)
             first = L.get("first") or {}
