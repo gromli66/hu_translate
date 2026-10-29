@@ -2324,14 +2324,15 @@ def _page_sizes(path):
 def _zone_keys(texts):
     """Тексты колонтитулов листов без счётчика листов: число, что у большинства листов своё («Oldalszám:» 3, 4, 5 …), —
     «#»; число с немногими значениями (версия 0 или 1, идентификатор) остаётся — листы с разной версией различимы.
-    Число — по тексту перед ним (до 10 знаков). {лист: текст} → ({лист: ключ}, {тексты перед счётчиками})."""
+    Число — по тексту перед ним (до 10 знаков). Ключ — набор знаков без порядка: строки шапки на соседних листах
+    читаются в разном порядке (разница в долю pt по высоте). {лист: текст} → ({лист: ключ}, {тексты перед счётчиками})."""
     parts = {pn: re.split(r"(\d+)", t) for pn, t in texts.items()}
     vals = {}
     for ps in parts.values():
         for i in range(1, len(ps), 2):
             vals.setdefault(ps[i - 1][-10:], []).append(ps[i])
     counter = {c for c, v in vals.items() if len(set(v)) >= max(3, 0.5 * len(v))}
-    return {pn: "".join("#" if i % 2 and ps[i - 1][-10:] in counter else x for i, x in enumerate(ps))
+    return {pn: "".join(sorted("".join("#" if i % 2 and ps[i - 1][-10:] in counter else x for i, x in enumerate(ps))))
             for pn, ps in parts.items()}, counter
 
 
