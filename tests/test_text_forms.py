@@ -874,3 +874,18 @@ def test_columns_move_so_that_the_word_fits(tmp_path):
     assert grid[0] > grid[1] and sum(grid) > 0                                          # столбец со словом шире соседних
     assert not tb._tbl.xpath(".//w:softHyphen")
     assert not tb.rows[0].cells[0].paragraphs[0].style.name.endswith("pt")
+
+
+def test_column_of_values_against_codes_is_one_paragraph_per_row():
+    """Таблица без горизонтальных линий: слева коды (якоря строк), справа значения — каждая строка своим абзацем, а не
+    «GÉPHÁZ "A" sor 28KÁ» ×38 одним (3SZ23 «Kézi armatúrák», аудит 29.10). Многострочный абзац без якорей — по-прежнему один."""
+    import layout as LY
+    fr = lambda x0, y0, x1, t: {"bbox": (x0, y0, x1, y0 + 9), "t": t, "size": 9, "bold": False}
+    codes = ["31UJ21S001", "31UJ21S002", "31UJ21S003"]
+    frags = [fr(100, 200 + 12 * k, 160, c) for k, c in enumerate(codes)] + \
+        [fr(250, 200 + 12 * k, 380, 'GÉPHÁZ "A" sor 28KÁ') for k in range(3)]
+    pars = LY.group(frags, [], [(190, 300, 200), (190, 300, 240)])
+    assert [p["text"] for p in pars].count('GÉPHÁZ "A" sor 28KÁ') == 3
+    prose = [fr(250, 300 + 10 * k, 380, t) for k, t in enumerate(
+        ["Ha a nyomás a megengedett", "érték fölé emelkedik, akkor", "a védelem működésbe lép."])]
+    assert len(LY.group(prose, [], [])) == 1

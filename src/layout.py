@@ -324,6 +324,25 @@ def _partner(frags, vs, bb, left=False):
     return any(f["bbox"][0] >= x1 + 5 and same(f) and not _vrule_in(vs, x1, f["bbox"][0], y0, y1) for f in frags)
 
 
+ANCHOR = re.compile(r"^\(?\d+(?:\.\d+)*\.?\)?$")
+
+
+def _row_anchor(frags, bb):
+    """Якорь строки таблицы без горизонтальных линий: ближайший слева на той же линии кусок — код оборудования или номер
+    пункта (через вертикальные линейки колонок — они делят колонки, а не строки). Возвращает его рамку или None."""
+    x0, y0, x1, y1 = bb
+    best = None
+    for f in frags:
+        fb = f["bbox"]
+        if fb[2] <= x0 - 5 and min(y1, fb[3]) - max(y0, fb[1]) > 0.5 * (y1 - y0) and (best is None or fb[2] > best[2]):
+            best = fb
+            best_t = f["t"].strip()
+    if best is None:
+        return None
+    ok = bool(ANCHOR.match(best_t)) or (code_line(best_t) and len(best_t.split()) <= 3 and bool(re.search(r"\d", best_t)))
+    return tuple(best) if ok else None
+
+
 def mid_phrase(prev, nxt):
     """Строка оборвалась на середине фразы: в ней ≥ 3 слов, она кончается буквой или запятой, следующая начинается
     строчной буквой. Одиночные значения столбика («rendben» ×4) и пункты с точкой не подходят."""
@@ -401,6 +420,12 @@ def group(frags, hs, vs=(), form=False):
                     continue
                 if code_line(p["frags"][-1]["t"]) and code_line(f["t"]):
                     continue                                # строки перечня кодов — каждая своим куском
+                # у каждой из двух строк слева на своей линии свой якорь (код, номер пункта) — это строки таблицы, а не
+                # строки абзаца: колонка «GÉPHÁZ "A" sor 28KÁ» ×38 против колонки кодов шла одним абзацем и переводилась
+                # повтором (3SZ23, ещё 3PR10, 3SZ17, 30HU, 30PR, 30RVR: аудит 29.10)
+                a1, a2 = _row_anchor(frags, last), _row_anchor(frags, f["bbox"])
+                if a1 is not None and a2 is not None and a1 != a2:
+                    continue
                 # фраза оборвана на середине: длинная строка без знака конца, следующая — со строчной (центрированный
                 # текст в ячейке: «…A hidroakkumulátorok megengedett» / «szintváltozásának módosítása…» шли порознь, и
                 # перевод выходил «Допустимые гидроемкостей САОЗ изменение изменения уровня», 30TH50, 28.10)
