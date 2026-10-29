@@ -172,7 +172,7 @@ def code_present(c, nru, gloss_abbr):
     давало замечание, а неверное «400KV» проходило чисто, и повтор перевода выбирал неверное (редтим 05.10)."""
     if _norm_code(c) in nru:
         return True
-    if re.fullmatch(r"\d+\.\d+", c) and c.replace(".", ",") in nru:       # «0.2 mp.» → «0,2 с»: десятичная запятая
+    if re.fullmatch(r"\d[\d.±]*\d", c) and c.replace(".", ",") in nru:   # «0.2 mp.» → «0,2 с», «262.5±2.5» → «262,5±2,5»: десятичная запятая
         return True
     low = c.lower()
     umap = {u.lower(): r for u, r in UNITS}
@@ -183,6 +183,9 @@ def code_present(c, nru, gloss_abbr):
     if mu and mu.group(2) in umap:
         return _norm_code(mu.group(1)) in nru
     m = re.match(r"^([A-ZÁÉÍÓÖŐÚÜŰ]{2,})-?(\d[\w.\-/]*)$", c)
+    if m and m.group(1) in gloss_abbr and _norm_code(m.group(2)) in nru:
+        return True
+    m = re.match(r"^([A-ZÁÉÍÓÖŐÚÜŰ]{2,})/(\w[\w.\-/]*)$", c)         # «BSZG/30GA01» → «ИВС/30GA01»: аббревиатура переводится
     if m and m.group(1) in gloss_abbr and _norm_code(m.group(2)) in nru:
         return True
     m = re.match(r"^(\d+)\.\s?([A-ZÁÉÍÓÖŐÚÜŰ]{2,})$", c)        # «1.VT» → «СВО-1»: номер впереди, аббревиатура переводится
@@ -476,6 +479,7 @@ def fix_units(ru):
     ru = UNIT_RE.sub(lambda x: " " + m[x.group(1)], ru)
     ru = re.sub(r"(?<=\d)\s?o\s?C(?![\w])", " °C", ru)       # «50oC» — градус буквой «o»
     ru = re.sub(r"(?<=\d)/min(?![\w])", "/мин", ru)                              # «1500/min» → «1500/мин»
+    ru = re.sub(r"(?<![\w])liter\s*/\s*h(?![\w])", "л/ч", ru)                    # «ΔF = FTK – FTX = ……liter /h» (30HU, 12 строк)
     ru = re.sub(r"(?<![\wА-Яа-я])к\s+(\d+(?:\.\d+)*)\.?\s?fejezetre(?![\wÀ-ɏ])", r"к разделу \1", ru)   # «ugrás a(z) 4.1.0.26.fejezetre» (21 строка 30RL2126GT)
     return fix_nonwords(PER_MIN.sub("1/мин", ru))
 

@@ -1539,20 +1539,33 @@ class Builder:
                         used = True
                     else:
                         self.paragraph(x, style, tgt=dc)
-                room = self._room.get(starts[ci])
-                if spans[ci][1] == spans[ci][0] and room:
+                room = self._room.get(starts[ci]) if spans[ci][1] == spans[ci][0] else None
+
+                def widest(par, eff):
+                    """Самый длинный слог слов абзаца при кегле eff (с поправкой на полужирный)."""
+                    st, sb = par.style, None
+                    while st is not None and sb is None:
+                        sb, st = st.font.bold, st.base_style
+                    txt = par.text
+                    return max((_text_w(pc, eff, True) for wd in txt.split() for pc in _pieces(wd, txt)),
+                               default=0) * (1.1 if sb or any(r.bold for r in par.runs) else 1.0)
+                if room is None and dc.width:
+                    # строка не попала в _fit_words (сетка строки не совпала с сеткой таблицы, 30BOXFELTEL л. 21: «Наимен / ование»,
+                    # «ЗАКРЫ / ТО» в столбцах по 40 pt) — мерим саму ячейку: ширина после слияния — сумма столбцов; только
+                    # там, где слог не влезает: остальные ячейки — как были
+                    side = (self.P.get("table") or {}).get("pad_left") or 5.4
+                    own = (dc.width.pt, 2 * min(side, max(1.0, (dc.width.pt - 12) / 2)) + 1)
+                    if any((w := widest(par, _style_pt(par.style) or fit_size)) and w + own[1] > own[0] + 0.5
+                           for par in dc.paragraphs):
+                        room = own
+                if room:
                     # узкий столбец без запаса (_fit_words): мягкие переносы; абзац, где не влезает и слог, — кегль
                     # меньше, до 60 % (стилем: прямой кегль — нарушение профиля), только он: соседние ячейки столбца —
                     # своим кеглем («p ≥ 5» и «–» под длинной шапкой ÜFK I л. 9 мельчали вместе с ней, 20.10)
                     cw, pad_fit = room
                     for par in dc.paragraphs:
                         eff = _style_pt(par.style) or fit_size
-                        st, sb = par.style, None
-                        while st is not None and sb is None:
-                            sb, st = st.font.bold, st.base_style
-                        txt = par.text
-                        wh = max((_text_w(pc, eff, True) for wd in txt.split() for pc in _pieces(wd, txt)),
-                                 default=0) * (1.1 if sb or any(r.bold for r in par.runs) else 1.0)
+                        wh = widest(par, eff)
                         if wh and wh + pad_fit > cw + 0.5:
                             k = max(0.6, (cw - pad_fit) / wh)
                             if eff * k < eff - 0.25:

@@ -302,3 +302,12 @@ def test_it_doc_decimal_dot_and_single_are_not_false_issues():
     assert T.check("amely 0.2 mp.-ként adatot küld", "которая каждые 0,2 с отправляет данные") == []
     assert T.check("Egyetlen szimulációs ciklus alatt", "В рамках одного цикла") == []
     assert not S.needs_translation("int *icon_adr") and not S.needs_translation("IS_reko_09.doc")
+
+
+def test_abbreviation_slash_code_and_liter_per_hour():
+    """30HU (29.10): «BSZG/30GA01» → «ИВС/30GA01» — аббревиатура переводится, код на месте (по замечанию на 50 строк);
+    «……liter /h» → «л/ч»."""
+    ga = frozenset({"BSZG"})
+    assert T.check("30TK61P101 BSZG/30GA01", "30TK61P101 ИВС/30GA01", gloss_abbr=ga) == []
+    assert T.check("30TK61P101 BSZG/30GA01", "30TK61P101 ИВС", gloss_abbr=ga) == ["нет кодов/чисел: BSZG/30GA01"]
+    assert T.fix_units("ΔF = FTK – FTX = ……………liter /h") == "ΔF = FTK – FTX = ……………л/ч"
