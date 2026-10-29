@@ -369,6 +369,8 @@ def _sim(a, b):
     return difflib.SequenceMatcher(None, a, b).ratio() if a and b else 0.0
 
 
+COL_GAP = 12        # пустое место перед словом, от которого его левый край может быть границей столбца, pt
+UNSURE = 50         # короткий знак (до 3 знаков) с уверенностью ниже и без подтверждения портала — значок, не слово
 INK_HAND = 0.08     # плотность краски ниже — штрих ручки (0,03–0,05), а не печать (0,11–0,25 даже у кода в скобках)
 # подпись поля «Aláírás:», «Dátum:» — всегда печать: пунктир рядом снижает плотность краски, а рукопись двоеточием
 # не кончается
@@ -407,9 +409,10 @@ def _split_glued(words):
     return out
 
 
-def ocr_words(words, portal_text):
+def ocr_words(words, portal_text, pix=None):
     """Печатные слова OCR-страницы с текстом, уточнённым чтением портала. Рукописное (подписи, даты, фамилии
-    от руки) и шум пунктира отбрасываются — их не переводят и не закрывают плашкой.
+    от руки) и шум пунктира отбрасываются — их не переводят и не закрывают плашкой. pix — список для рамок того, что
+    остаётся на странице картинкой (флажки, рукопись, значки): перевод не должен вставать на их место (pdf_segments).
     Рукописное слово: уверенность Tesseract < 60 и мало краски (INK_HAND). Подтверждение порталом рукопись
     не отличает: портал переписывает и рукописные фамилии с датами (титул 30RDGT, 06.10).
     Зона рукописи — рамки рукописных слов; неуверенное (< 90) бледное слово внутри зоны тоже рукописное.
@@ -435,6 +438,8 @@ def ocr_words(words, portal_text):
         w["box_like"] |= len(w["raw"]) == 1 and w["h"] < 0.7 * hs_[(len(hs_) - 1) // 2] and ink > 0.55
     # флажки и буллеты — картинки: в сверку с порталом не идут ни у Tesseract, ни у портала — иначе кусок
     # «• RD 3.1.;» портала доставался буллету «e» и пропадал вместе с ним (32RDGT, 07.10)
+    if pix is not None:
+        pix += [w["box"] for w in ws if w["box_like"]]
     ws = [w for w in ws if not w["box_like"]]
     ptoks, pline = [], []
     for li, ln in enumerate(_unmark(portal_text).splitlines()):
@@ -472,9 +477,12 @@ def ocr_words(words, portal_text):
                     wline[i1 + k] = pline[j1 + k]
             elif op == "replace" and i2 - i1 <= 3 and j2 - j1 <= 3 and not any(w["hand"] for w in ws[i1:i2]) \
                     and len({w["line"] for w in ws[i1:i2]}) == 1 and len(set(pline[j1:j2])) == 1 \
+                    and all(b["box"][0] - a["box"][2] <= max(a["h"], b["h"]) for a, b in zip(ws[i1:i2], ws[i1 + 1:i2])) \
                     and (any(_codeish(w["t"]) for w in ws[i1:i2]) or any(_codeish(t) for t in ptoks[j1:j2])):
                 # код разбит по-разному («5090-nál» у Tesseract, «50%-nál» у портала): текст портала целиком —
-                # в первое слово, рамка — на все слова куска
+                # в первое слово, рамка — на все слова куска. Только соседние слова: через пустое место слова куска —
+                # разные подписи (лист регистрации 30GF(135): «30GF(135)51GT», пустота, «Verziószám: 2» — подпись и
+                # номер версии стирались вместе с кодом)
                 from layout import _union
                 ws[i1]["t"] = " ".join(ptoks[j1:j2])
                 ws[i1]["box"] = _union([w["box"] for w in ws[i1:i2]])
@@ -502,8 +510,12 @@ def ocr_words(words, portal_text):
     # включая плохо прочитанные печатные коды «NRc19», «260€C» — замер 06.10)
     # очень неуверенное (< 30) слово, которое портал не подтвердил, — рукопись или шум: рукописная дата
     # «2017.04.21.» у Tesseract — «LJOMT-DÁL», «242. 74. 09» (формы 30RDGT, 06.10); печатные коды с низкой
-    # уверенностью («NRc19» → «NR<1%») портал подтверждает
-    hand = [w["hand"] or (w.get("c", 100) < 30 and not c and not LABEL.match(w["raw"])) for w, c in zip(ws, conf)]
+    # уверенностью («NRc19» → «NR<1%») портал подтверждает. Короткий знак (до 3 знаков) неувереннее UNSURE — значок:
+    # флажок ☒ читается «G4» (30GF(135), титул). Длинное слово с уверенностью 30–50 — печать с ошибкой чтения
+    # («Főkerinagtető», 3PR10): портал мог не подтвердить его из-за сдвига сверки, слово не отбрасывается
+    short = lambda w: len(re.sub(r"\W", "", w["raw"])) <= 3
+    hand = [w["hand"] or (w.get("c", 100) < (UNSURE if short(w) else 30) and not c and not LABEL.match(w["raw"]))
+            for w, c in zip(ws, conf)]
     zones = [w["box"] for w, h in zip(ws, hand) if h and len(_norm(w["t"])) >= 2]
     near = lambda bx: any(bx[0] < z[2] + 3 and bx[2] > z[0] - 3 and bx[1] < z[3] + 3 and bx[3] > z[1] - 3 for z in zones)
     out = []
@@ -511,6 +523,8 @@ def ocr_words(words, portal_text):
         # знаки сравнения и единиц — смысл («v > 1,0 мм»: Tesseract читает «>» как «5», портал правит на «>»);
         # одиночные точки и запятые пунктира — нет
         if not SYMBOL.search(w["t"]) or h or CHECKBOX.match(w["t"]) or w["box_like"]:
+            if pix is not None and (h or CHECKBOX.match(w["t"])):
+                pix.append(w["box"])
             continue
         if w.get("c", 100) < 90 and w.get("ink", 1) < INK_HAND and near(w["box"]) and not LABEL.match(w["raw"]):
             continue                                   # рядом с рукописью и сам похож на неё («TÓ» в фамилии от руки)
@@ -550,10 +564,11 @@ def _split_at_rules(words, vs):
     return out
 
 
-def ocr_frags(words, vs=()):
+def ocr_frags(words, vs=(), pix=None):
     """Фрагменты OCR-страницы: слова одной строки Tesseract подряд, без большого разрыва и без линейки между ними.
     Кегль — по высоте слов без выносных вниз и без прописных с диакритикой (высота такого слова ≈ 0,72 кегля),
-    жирность — по плотности краски относительно слов той же высоты."""
+    жирность — по плотности краски относительно слов той же высоты. pix — список для рамок значений после подписи, которые
+    остаются пикселями (число, дата, штамп: PF.value_tail)."""
     from layout import GAP, CODE_GAP, _vrule_in, _union, code_line
     words = _split_at_rules(words, vs)
     inks = sorted(w["ink"] for w in words if "ink" in w)
@@ -571,9 +586,22 @@ def ocr_frags(words, vs=()):
             w["box"][1] = sorted(m["box"][1] for m in normal)[len(normal) // 2]
             w["box"][3] = sorted(m["box"][3] for m in normal)[len(normal) // 2]
             w["h"] = w["box"][3] - w["box"][1]
+    # столбцы без линеек (шапка листа: «Verziószám: 2» и «Oldalszám: 1» над «Megnevezés: …» через 25 pt): левый край, с
+    # которого слово начинается после пустого места от COL_GAP на своей строке (слева на той же высоте — другое слово),
+    # у двух и более строк один (±3 pt) — граница столбца, фрагмент через неё не продолжается
+    starts = []
+    for w in words:
+        b = w["box"]
+        left = [v["box"][2] for v in words if v is not w and v["box"][2] <= b[0] + 1
+                and min(v["box"][3], b[3]) - max(v["box"][1], b[1]) > 0.5 * min(v["h"], w["h"])]
+        if left and b[0] - max(left) >= COL_GAP:
+            starts.append((b[0], (b[1] + b[3]) / 2, w["h"]))
+    edges = [x for x, y, h in starts if any(abs(x2 - x) <= 3 and abs(y2 - y) > 0.8 * h for x2, y2, _ in starts)]
     out, cur = [], None
     for w in words:
-        if cur is not None and cur["line"] == w["line"] and w["box"][0] - cur["bbox"][2] <= GAP \
+        # слово левее правого края куска — не продолжение: Tesseract держит «Verziószám: 2» и «Megnevezés: …» одной строкой
+        # блока, и подписи двух столбцов шапки склеивались в один фрагмент (титул и лист регистрации, N1 аудита 29.10)
+        if cur is not None and cur["line"] == w["line"] and -w["h"] <= w["box"][0] - cur["bbox"][2] <= GAP                 and not (w["box"][0] - cur["bbox"][2] >= COL_GAP and any(abs(w["box"][0] - e) <= 3 for e in edges)) \
                 and not _vrule_in(vs, cur["bbox"][2], w["box"][0], w["box"][1], w["box"][3]) \
                 and not (w["box"][0] - cur["bbox"][2] >= CODE_GAP and code_line(cur["t"]) and code_line(w["t"])):
             cur["t"] += " " + w["t"]; cur["bbox"] = _union([cur["bbox"], w["box"]]); cur["ws"].append(w)
@@ -583,8 +611,17 @@ def ocr_frags(words, vs=()):
             cur = {"t": w["t"], "bbox": list(w["box"]), "line": w["line"], "ws": [w]}
     if cur is not None:
         out.append(cur)
+    import pagefit as PF
     for f in out:
         ws = f.pop("ws"); f.pop("line")
+        # значение после подписи («Dátum: 2025 JAN 31», «Verziószám: 2») — пиксели оригинала, не текст (PF.value_tail)
+        k = PF.value_tail(ws)
+        if k < len(ws):
+            if pix is not None:
+                pix.append(_union([w["box"] for w in ws[k:]]))
+            ws = ws[:k]
+            f["t"] = " ".join(w["t"] for w in ws)
+            f["bbox"] = _union([w["box"] for w in ws])
         # кегль — по уверенно прочитанным словам: рукописная дата, исправленная порталом («2025.ot,» → «2025.04.07.»),
         # раздувала кегль строки «Dátum: …» до 15 pt (32RDGT, 07.10)
         sure = [w for w in ws if w.get("c", 100) >= 80] or ws
@@ -817,6 +854,7 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
     import fitz
     from concurrent.futures import ThreadPoolExecutor
     from layout import frags_from_text, rules, rules_from_image, group, avail_rects, aligns
+    import pagefit as PF
     doc = fitz.open(path)
     work = Path(OCR_DIR) / Path(path).stem; work.mkdir(parents=True, exist_ok=True)
     rng = list(pages if pages is not None else range(len(doc)))
@@ -887,7 +925,7 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
     with ThreadPoolExecutor(4) as ex:
         pr = dict(zip(ocr_pages, ex.map(counted(portal, "p", 0.5, len(ocr_pages) or 1), ocr_pages)))
 
-    labels, pre = {}, {}
+    labels, pre, pixs = {}, {}, {}                    # pixs: рамки того, что на скане остаётся картинкой (ocr_words)
     if roles:
         import roles as R
         text_pg = [p for p in rng if not plan[p]]
@@ -896,8 +934,8 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
         for pno in [p for p in rng if plan[p]]:
             hs_, vs_ = rules(doc[pno])
             hs_, vs_ = hs_ + [tuple(x) for x in tpage[pno]["hs"]], vs_ + [tuple(x) for x in tpage[pno]["vs"]]
-            words_, lost_ = ocr_words(_dehyphen(tw[pno]), pr[pno].get("text") or "")
-            pre[pno] = (hs_, vs_, lost_, ocr_frags(words_, vs_))
+            words_, lost_ = ocr_words(_dehyphen(tw[pno]), pr[pno].get("text") or "", pixs.setdefault(pno, []))
+            pre[pno] = (hs_, vs_, lost_, ocr_frags(words_, vs_, pixs[pno]))
         if pre:
             labels.update(R.frag_labels({p: v[3] for p, v in pre.items()},
                                         {p: (doc[p].rect.width, doc[p].rect.height) for p in pre}))
@@ -914,8 +952,8 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
             if pno in pre:
                 hs, vs, lost[pno], frags = pre[pno]
             else:
-                words, lost[pno] = ocr_words(_dehyphen(tw[pno]), r.get("text") or "")
-                frags = ocr_frags(words, vs)
+                words, lost[pno] = ocr_words(_dehyphen(tw[pno]), r.get("text") or "", pixs.setdefault(pno, []))
+                frags = ocr_frags(words, vs, pixs[pno])
             pars = group(frags, hs, vs, form=True)
             if labels.get(pno) and labels[pno][1]:
                 from layout import join_lines
@@ -936,6 +974,14 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
                 pars = column_order(pars, g)
         avail_rects(pars, hs, vs, page.rect)
         aligns(pars, vs)
+        if plan[pno]:
+            # скан формы: перевод не встаёт на флажки и рукопись справа от абзаца (G8: ☒ стоял над соседним словом);
+            # абзац из фамилий, чисел, дат и неизвестных сокращений остаётся пикселями оригинала (pagefit.pixels_only)
+            for p in pars:
+                right = [b[0] for b in pixs.get(pno, []) if b[0] >= p["bbox"][2] - 1
+                         and min(b[3], p["bbox"][3]) - max(b[1], p["bbox"][1]) > 0.3 * min(b[3] - b[1], p["bbox"][3] - p["bbox"][1])]
+                if right:
+                    p["avail"] = [*p["avail"][:2], max(min(p["avail"][2], min(right) - 1), p["bbox"][2]), p["avail"][3]]
         for p in pars:
             segs.append({"id": len(segs), "text": p["text"], "src": p["text"], "page": pno,
                          "loc": {"bbox": [round(v, 2) for v in p["bbox"]], "avail": [round(v, 2) for v in p["avail"]],
@@ -943,6 +989,21 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
                                  "frags": [[round(v, 2) for v in f["bbox"]] for f in p["frags"]],
                                  "size": p["size"], "bold": p["bold"], "family": p.get("family", "serif"),
                                  "ocr": plan[pno]}})
+            if plan[pno] and PF.pixels_only(p["text"]):
+                segs[-1]["loc"]["pix"] = True               # не перерисовывается (assemble.build_pdf)
+        if not plan[pno]:
+            # повёрнутые подписи (стрелки схем: «sikeres/sikertelen»): строки текстового слоя с вертикальным направлением
+            # в группировку не идут; каждая — своим сегментом, перевод рисуется в том же повороте (loc.rot)
+            hid = hidden_text(page)
+            rl = PF.rotated_lines(page, lambda bb: bool(hid) and _covered(hid, bb))
+            shapes = PF.shape_rects(page) if rl else []
+            for ln in rl:
+                bb = ln["bbox"]
+                segs.append({"id": len(segs), "text": ln["t"], "src": ln["t"], "page": pno,
+                             "loc": {"bbox": bb, "avail": [round(v, 2) for v in PF.rotated_avail(bb, ln["rot"], page.rect, shapes)],
+                                     "align": "left", "cell": [page.rect.x0, page.rect.x1], "frags": [bb],
+                                     "size": ln["size"], "bold": ln["bold"], "family": ln["family"], "ocr": False,
+                                     "rot": ln["rot"]}})
             if labels.get(pno) and labels[pno][1]:
                 segs[-1]["loc"]["roles"] = True             # абзацы листа — по меткам портала
                 if p.get("role"):

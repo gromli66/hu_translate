@@ -266,6 +266,7 @@ def _toc_line(page, s, r, rect, fam, sz, busy):
 def build_pdf(src, out, segs, res, progress=None, shots_out=None):
     """shots_out — куда сохранить оригинал с переведёнными скриншотами (без правки текста): из него собирается DOCX."""
     import fitz
+    import pagefit as PF
     import shots as SH
     doc = fitz.open(src)
     pages = sorted({s["page"] for s in segs if s["page"] is not None and 0 <= s["page"] < len(doc)})
@@ -283,9 +284,23 @@ def build_pdf(src, out, segs, res, progress=None, shots_out=None):
         # координаты сегментов — как страница видна; заливка и вставка — в системе неповёрнутой страницы,
         # текст — с поворотом страницы (32RDGT: листы с /Rotate 270 получали перевод поперёк листа, 07.10)
         der = page.derotation_matrix
+        # pix — абзац скана формы из фамилий, чисел и дат: остаётся пикселями оригинала (pagefit.pixels_only)
         todo = [(s, res[str(s["id"])]) for s in segs if s["page"] == pno
-                and not res[str(s["id"])].get("copied") and res[str(s["id"])]["ru"]]
+                and not res[str(s["id"])].get("copied") and res[str(s["id"])]["ru"] and not s["loc"].get("pix")]
         ocr = any(s["loc"].get("ocr") for s, _ in todo)
+        if not ocr:
+            # блок схемы пишется одним текстом: непереводимые надписи того же блока («P↓») входят в него как есть — иначе
+            # остаются на месте и перекрываются переводом (30GF(135), лист 19)
+            shapes = PF.shape_rects(page)
+            blocks = {tuple(c) for s, _ in todo if not s["loc"].get("rot")
+                      for c in [PF.container(shapes, s["loc"]["bbox"])] if c is not None}
+            if sum(PF.container(shapes, s["loc"]["bbox"]) is not None for s, _ in todo
+                   if not s["loc"].get("rot")) < PF.SCHEME_MIN:
+                shapes, blocks = [], set()                # не схема: заливка ячейки или плашка — место задаёт сама строка
+            used = {id(s) for s, _ in todo}
+            todo += [(s, {"ru": s["text"]}) for s in segs if s["page"] == pno and id(s) not in used
+                     and not s["loc"].get("pix") and not s["loc"].get("rot") and s["text"].strip()
+                     and (c := PF.container(shapes, s["loc"]["bbox"])) is not None and tuple(c) in blocks]
         # таблицы — до вычистки текста (find_tables смотрит и на текст); на сканах и повёрнутых листах — нет
         # таблица больше половины листа — рамка формы (TU-документы): для неё прежний масштаб страницы, иначе
         # минимум по всей форме мельчил её целиком (30RDIT_TU: медиана 10 → 9 pt, красная команда 15.10)
@@ -332,6 +347,18 @@ def build_pdf(src, out, segs, res, progress=None, shots_out=None):
             if loc.get("bold"):
                 txt = f"<b>{txt}</b>"
             items.append((s, rect, txt, align, loc["size"], loc.get("family", "serif")))
+        # повёрнутые подписи (loc.rot) и надписи внутри блока схемы — после остального, по своему месту (ниже): блок
+        # вписывает перевод в себя, повёрнутая подпись рисуется в том же повороте
+        items_all, special = items, {}
+        if not ocr:
+            items = items_all = [(s, PF.clamp_right(rect, s["loc"]["bbox"], shapes), *rest)
+                                 for s, rect, *rest in items]
+            for i, it in enumerate(items):
+                loc = it[0]["loc"]
+                c = None if loc.get("rot") else PF.container(shapes, loc["bbox"])
+                if loc.get("rot") or c is not None:
+                    special.setdefault(None if c is None else tuple(c), []).append(i)
+            items = [it for i, it in enumerate(items) if not any(i in v for v in special.values())]
         # общий масштаб страницы: пробная вставка на пустой странице, медиана нужных масштабов
         trial = fitz.open(); tp = trial.new_page(width=page.rect.width, height=page.rect.height)
         need = []
@@ -370,6 +397,36 @@ def build_pdf(src, out, segs, res, progress=None, shots_out=None):
             busy.append(fitz.Rect(rect.x0, rect.y0, rect.x1, rect.y1 - max(spare, 0)))
             if scale * min(ki, 1.0) < 0.7:
                 shrink.append({"page": pno + 1, "id": s["id"], "scale": round(scale * min(ki, 1.0), 2)})
+        for c, idx in special.items():
+            if c is None:                         # повёрнутые подписи: то же место и поворот, запас вдоль чтения
+                # один кегль у всех подписей листа — по самой тесной (у стрелки между блоками перевод ужимается, соседние
+                # подписи того же размера не должны быть вдвое крупнее)
+                rots = []
+                for i in idx:
+                    s, rect, txt, align, size, fam = items_all[i]
+                    loc = s["loc"]
+                    css = lambda sz: f"* {{font-family: {fam}; font-size: {sz:.1f}pt; line-height: 1.15; text-align: center;}}"
+                    r = fitz.Rect(loc["avail"]) * der
+                    rt = (page.rotation + loc["rot"]) % 360
+                    rots.append((s, r, txt, css, rt, size * min(k, 1.0),
+                                 tp.insert_htmlbox(r, txt, css=css(size * min(k, 1.0)), scale_low=0, rotate=rt)[1]))
+                common = min(sc for *_, sc in rots)
+                for s, r, txt, css, rt, sz, _ in rots:
+                    page.insert_htmlbox(r, txt, css=css(sz * common), scale_low=0, rotate=rt)
+                    if common * min(k, 1.0) < 0.7:
+                        shrink.append({"page": pno + 1, "id": s["id"], "scale": round(common * min(k, 1.0), 2)})
+                continue
+            # блок схемы: перевод вписывается в блок (перенос по словам, кегль по месту), надписи блока — одним текстом;
+            # по центру, если оригинал стоял по центру блока (PF.fit_rect)
+            mem = sorted((items_all[i] for i in idx), key=lambda it: (it[0]["loc"]["bbox"][1], it[0]["loc"]["bbox"][0]))
+            size = sorted(it[4] for it in mem)[len(mem) // 2] * min(k, 1.0)
+            txt = " ".join(it[2] for it in mem)
+            css = f"* {{font-family: {mem[0][5]}; font-size: {size:.1f}pt; line-height: 1.15; text-align: center;}}"
+            rect = PF.fit_rect(fitz.Rect(c), [it[0]["loc"]["bbox"] for it in mem],
+                               lambda r: r.height - tp.insert_htmlbox(r, txt, css=css, scale_low=0)[0])
+            spare, scale = page.insert_htmlbox(rect * der, txt, css=css, scale_low=0)
+            if scale * min(k, 1.0) < 0.7:             # тесный блок — сокращение (pipeline.fit) по каждой надписи блока
+                shrink += [{"page": pno + 1, "id": it[0]["id"], "scale": round(scale * min(k, 1.0), 2)} for it in mem]
         sub.insert_pdf(doc, from_page=pno, to_page=pno)
     # отдаём только обработанные страницы: и для выборки, и для полного прогона это вся работа
     # каждая вставка абзаца встраивает свой экземпляр шрифта (5275 объектов на 157 стр. ÜFK I, 43,8 МБ);
