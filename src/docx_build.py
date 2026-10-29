@@ -8,6 +8,7 @@ import re
 from collections import Counter
 
 from docx_struct import text_of, insert_imgs, PAGE_MARK
+from segments import unpua
 
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 BULLETS = {"Disc": ("\uf0b7", "Symbol"), "Circle": ("o", "Courier New"), "Square": ("\uf0a7", "Wingdings"),
@@ -490,6 +491,7 @@ class Memory:
     def add(self, hu, ru):
         if not ru:
             return
+        ru = unpua(ru)                              # значки символьных шрифтов — знаком Юникода (аудит 29.10)
         # «Alfanumerika |» — вертикаль таблицы, прочитанная OCR; сборка (docx_layout) спрашивает текст без неё
         c = PIPE.sub("", hu)
         if c != hu and c.strip():
@@ -508,7 +510,7 @@ class Memory:
 
     def get(self, text):
         if not self.need(TAGS.sub("", text)):
-            return text
+            return unpua(text)
         if TAGS.search(text):
             return self.tagged.get(text.strip())
         r = self.m.get(KEY(text))

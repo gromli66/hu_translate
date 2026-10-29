@@ -321,3 +321,13 @@ def test_portfolio_shell_does_not_overwrite_translated_attachment(tmp_path):
     (tmp_path / "30ABC_RU.pdf").write_bytes(b"%PDF translated attachment")
     assert P.portfolio_target(tmp_path, "30ABC").name == "30ABC_RU_портфолио.pdf"
     assert (tmp_path / "30ABC_RU.pdf").read_bytes() == b"%PDF translated attachment"
+
+
+def test_symbol_font_glyphs_become_unicode_and_leading_glyph_is_kept():
+    """Значок Wingdings в начале легенды терялся при переводе, в абзацах оставался знаком шрифта (30KBFPRBIGT, 30KBFSZBIGT,
+    30YCGT, аудит 29.10): значок — в Юникод, ведущий значок оригинала возвращается."""
+    assert S.unpua(" критерий") == "□ критерий" and S.unpua("abc") == "abc"
+    assert S.keep_lead_glyph(" sikerességi kritérium", "критерий успешности") == "□ критерий успешности"
+    assert S.keep_lead_glyph(" sikerességi kritérium", "□ критерий успешности") == "□ критерий успешности"
+    assert S.keep_lead_glyph("<f1> nem</f1>", "<f1>не</f1>") == "<f1>○ не</f1>"
+    assert S.keep_lead_glyph("kritérium", "критерий") == "критерий"

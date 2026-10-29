@@ -622,9 +622,10 @@ class Translator:
     def post(self, src, out):
         """Постобработка перевода по паре: hu-ru — прописные и единицы (fix_caps, fix_units); перевод на русский —
         единицы; прочие пары — без изменений."""
+        from segments import keep_lead_glyph
         if self.hu_ru:
-            return fix_units(fix_caps(src, out, self.ru_caps))
-        return fix_units(out) if self.tgt == "ru" else out
+            return keep_lead_glyph(src, fix_units(fix_caps(src, out, self.ru_caps)))
+        return keep_lead_glyph(src, fix_units(out)) if self.tgt == "ru" else out
 
     def term_issues(self, src, ru):
         """Обязательные термины глоссария комплекта, которых нет в переводе (по основам).

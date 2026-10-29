@@ -34,6 +34,30 @@ _ID = (r"(?:[A-Za-z]\w*_\w*|[A-Za-z]+\d+\w*|\w*[a-z][A-Z]\w*|(?i:int|integer|rea
 IDENT_ONLY = re.compile(rf"[\s{{}}]*\*?{_ID}(?:[\s,;/]+\*?{_ID})*[\s,;:{{}}]*")
 
 
+# значки символьных шрифтов (Wingdings: ведущий символ строки легенды, отметка списка) — в Юникод: в абзацах и легендах символ
+# терялся, в таблицах заменялся по виду (docx_layout._pua_glyph); аудит 29.10 (30KBFPRBIGT, 30KBFSZBIGT, 30YCGT, IS/30PR)
+PUA_MAP = {"": "□", "": "○", "": "○", "": "▪", "": "△"}
+LEAD_GLYPH = re.compile(r"^((?:</?f\d+>|\s)*)([-□○●■▪◦☐△▲])")
+
+
+def unpua(text):
+    """Значки из частной области символьных шрифтов — известные — знаком Юникода; остальные как есть."""
+    return "".join(PUA_MAP.get(c, c) for c in text) if any(c in PUA_MAP for c in text) else text
+
+
+def keep_lead_glyph(src, ru):
+    """Строка оригинала начинается значком («☐ критерий успешности»): портал его не возвращает — ставим на место."""
+    m = LEAD_GLYPH.match(src)
+    if not m:
+        return ru
+    g = PUA_MAP.get(m.group(2), m.group(2))
+    r = unpua(ru)
+    if g in r[:len(m.group(1)) + 8]:
+        return r
+    k = re.match(r"(?:</?f\d+>)*", r).end()
+    return r[:k] + g + " " + r[k:].lstrip()
+
+
 def needs_translation(text):
     """Есть ли что переводить: строчное слово или аббревиатура из букв (не чистые коды/числа)."""
     t = re.sub(r"<\/?f\d+>", "", text)
