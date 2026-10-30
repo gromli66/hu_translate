@@ -1382,6 +1382,15 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
             # находился, подписи перемешивались между разделами, 19.10) — областью листа с переведённого PDF
             tabs = [fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1]) for t in _tables(hs, vs)]
             figs += _vector_figures(page, pno, draw[pno], segs, masks.get(pno, []), tabs, [f for f, _ in figs], per[pno])
+            # схема из блоков-рамок и ромбов (3FI18 «3.1 Kézi indítás»): рамки блоков — маленькие таблицы, фигуры, что их
+            # касаются, в схему не шли — ромбы и стрелки терялись, подписи рассыпались строками (аудит 30.10). Ромб —
+            # косые отрезки от 25 pt (у значков «△» и галочек короче): где их от четырёх, схема ищется и поверх таблиц
+            slant = [fitz.Rect(dr["rect"]) for dr in page.get_drawings() for it in dr["items"] if it[0] == "l"
+                     and abs(it[1].x - it[2].x) > 2 and abs(it[1].y - it[2].y) > 2 and abs(it[1] - it[2]) >= 25]
+            if len(slant) >= 4:
+                for R, img in _vector_figures(page, pno, draw[pno], segs, masks.get(pno, []), [], [], per[pno]):
+                    if sum(R.contains(q) for q in slant) >= 4:
+                        figs = [(f, i) for f, i in figs if not R.contains(f)] + [(R, img)]
         elif not scans[pno]:
             tabs = [fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1]) for t in _tables(hs, vs)]
             figs += _scheme_figures(page, pno, draw[pno], segs, tabs, [f for f, _ in figs])
