@@ -866,20 +866,25 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields
     # пересекаются по высоте, — одна полоса, полоса не рвёт абзац. Всё строкой шло в одну ячейку, и номера, текст и
     # отметки съезжали друг относительно друга (31RDGT л. 1, 20.10), «Tevékenység | Állapot» — столбцами-стопками,
     # значение уезжало от своего кода (3SZ23, 3PR10, аудит 30.10). Полоса с текстом одной ячейки, у которой текст был
-    # и в полосе выше, — продолжение той строки (рядом ничего, резать нечего); линий между подстроками нет
+    # и в полосе выше, — продолжение той строки (рядом ничего, резать нечего); линий между подстроками нет.
+    # Метка пункта или код оборудования в первом столбце («1.1.», «31UJ21S601») — всегда своя полоса, даже если её
+    # задел чужой абзац: значения столбца, слитые нарезкой в абзац на пять строк (3SZ23 INFO «-3,6 m … 9,6 m»),
+    # склеивали все строки таблицы в одну — коды и места разъезжались; такой абзац — в полосу своей середины
+    label = re.compile(r"\(?(?:\d+(?:\.\d+)*\.?|[a-zA-Z][.)])\)?|\d{2}[A-Z]{2}\d{2}[A-Z]\d{3}")     # номер пункта или код оборудования
     bands = []
     for r, cells in enumerate(grid):
-        spans = sorted((min(g["loc"]["bbox"][1] for g in group), max(g["loc"]["bbox"][3] for g in group), ci)
+        spans = sorted((min(g["loc"]["bbox"][1] for g in group), max(g["loc"]["bbox"][3] for g in group), ci,
+                        ci == 0 and bool(label.fullmatch(" ".join(g["text"] for g in group).strip())))
                        for ci in range(len(cells)) for group in _lines(sorted(
                            put.get((r, ci), []), key=lambda s: (round(s["loc"]["bbox"][1] / 3), s["loc"]["bbox"][0]))))
-        strips = []                                             # [верх, низ, {ячейки}]
-        for a, z, ci in spans:
-            if strips and a < strips[-1][1] - 2:
+        strips = []                                             # [верх, низ, {ячейки}, метка]
+        for a, z, ci, anchor in spans:
+            if strips and a < strips[-1][1] - 2 and not (anchor and a > strips[-1][0] + 2):
                 strips[-1][1] = max(strips[-1][1], z)
                 strips[-1][2].add(ci)
             else:
-                strips.append([a, z, {ci}])
-        strips = [s for k, s in enumerate(strips) if not (k and len(s[2]) == 1 and s[2] <= strips[k - 1][2])]
+                strips.append([a, z, {ci}, anchor])
+        strips = [s for k, s in enumerate(strips) if s[3] or not (k and len(s[2]) == 1 and s[2] <= strips[k - 1][2])]
         if len(cells) >= 2 and len(strips) >= 2:
             # низ последней строки сетки — по тексту: рамка листа тянет её до низа листа, и подстрока с такой
             # наименьшей высотой не делилась на листы LibreOffice — уходила на следующий, полстраницы пусто (3SZ23)
