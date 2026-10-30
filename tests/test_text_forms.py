@@ -1057,3 +1057,37 @@ def test_head_box_with_double_right_edge_splits_by_gap(tmp_path):
     p = pdfplumber.open(str(src)).pages[0]
     g = S._zone_grid(p.chars, S._drawn(p.rects + p.lines))
     assert [r["cells"] for r in g["rows"]] == [["Azonosító:3SZ17", "Verziószám: 0"], ["Megnevezés: Haboltó", "Oldalszám: 5"]]
+
+
+def test_flowchart_with_quad_diamonds_and_long_links_is_one_figure(tmp_path):
+    """Схема из рамок-блоков, где ромбы — четырёхугольники («qu»), а боковая рамка и петля «igen» соединены линиями
+    от 40 pt (3FI18 «3.2 Automatikus indítás», аудит 30.10): одним рисунком со всеми рамками, а не строками и таблицей."""
+    src = tmp_path / "s.pdf"
+    d = fitz.open()
+    pg = d.new_page(width=595, height=842)
+    pg.insert_text((72, 60), "Az alábbi lépések sorrendje kötelező a kezelő számára.", fontsize=11)
+    for x0, y0, x1, y1, t in [(200, 120, 380, 160, "Masodik tuzjelzes"), (200, 200, 380, 240, "Nyitas ellenorzese"),
+                              (200, 470, 380, 510, "Armatura kezi nyitasa"), (200, 560, 380, 600, "Oltas mukodtetese"),
+                              (420, 360, 540, 400, "Telefonon visszajelent")]:
+        pg.draw_rect(fitz.Rect(x0, y0, x1, y1), width=1)
+        pg.insert_text((x0 + 6, y0 + 24), t, fontsize=9)
+    for a, b in [((290, 160), (290, 200)), ((290, 240), (290, 290)), ((290, 350), (290, 410)), ((290, 440), (290, 470)),
+                 ((290, 510), (290, 560)), ((320, 320), (480, 320)), ((480, 320), (480, 360)), ((260, 380), (130, 380)),
+                 ((130, 380), (130, 580)), ((130, 580), (200, 580))]:
+        pg.draw_line(a, b, width=1)
+    for x, y, t in [(274, 324, "Tuz?"), (266, 384, "Megy?"), (390, 314, "nem"), (150, 374, "igen")]:
+        pg.insert_text((x, y), t, fontsize=8)
+    pg.wrap_contents()
+    x = pg.get_contents()[-1]
+    s = d.xref_stream(x)
+    for cy in (320, 380):                       # ромб — замкнутый путь из четырёх отрезков: PyMuPDF отдаёт его фигурой qu
+        y = 842 - cy
+        s += f"\n290 {y - 30} m 320 {y} l 290 {y + 30} l 260 {y} l 290 {y - 30} l S".encode()
+    d.update_stream(x, s)
+    d.save(str(src))
+    assert sum(it[0] == "qu" for dr in fitz.open(str(src))[0].get_drawings() for it in dr["items"]) == 2
+    blocks, info = DL.load(str(src), _segs(src), text=True)
+    figs = [r["img"]["clip"] for b in blocks for r in b.get("runs") or [] if "img" in r and r["img"].get("clip")]
+    assert len(figs) == 1 and not any(b["k"] == "table" for b in blocks)
+    x0, y0, x1, y1 = figs[0]
+    assert x0 <= 130 and x1 >= 540 and y0 <= 120 and y1 >= 600      # и петля слева, и рамка «Telefonon…» справа

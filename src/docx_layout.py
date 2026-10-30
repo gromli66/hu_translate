@@ -1384,11 +1384,20 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
             figs += _vector_figures(page, pno, draw[pno], segs, masks.get(pno, []), tabs, [f for f, _ in figs], per[pno])
             # схема из блоков-рамок и ромбов (3FI18 «3.1 Kézi indítás»): рамки блоков — маленькие таблицы, фигуры, что их
             # касаются, в схему не шли — ромбы и стрелки терялись, подписи рассыпались строками (аудит 30.10). Ромб —
-            # косые отрезки от 25 pt (у значков «△» и галочек короче): где их от четырёх, схема ищется и поверх таблиц
-            slant = [fitz.Rect(dr["rect"]) for dr in page.get_drawings() for it in dr["items"] if it[0] == "l"
-                     and abs(it[1].x - it[2].x) > 2 and abs(it[1].y - it[2].y) > 2 and abs(it[1] - it[2]) >= 25]
+            # косые отрезки от 25 pt (у значков «△» и галочек короче): где их от четырёх, схема ищется и поверх таблиц.
+            # Ромб и фигурой-четырёхугольником (стороны повёрнутого «qu»): «3.2 Automatikus indítás» 3FI18 — оба ромба
+            # такие, по одним линиям схема оставалась разобранной на строки (аудит 30.10)
+            pd = page.get_drawings()
+            slant = [fitz.Rect(dr["rect"]) for dr in pd for it in dr["items"] if it[0] == "l"
+                     and abs(it[1].x - it[2].x) > 2 and abs(it[1].y - it[2].y) > 2 and abs(it[1] - it[2]) >= 25] + \
+                    [fitz.Rect(a, a).include_point(b) for dr in pd for it in dr["items"]
+                     if it[0] == "qu"
+                     for a, b in ((it[1].ul, it[1].ur), (it[1].ur, it[1].lr), (it[1].lr, it[1].ll), (it[1].ll, it[1].ul))
+                     if abs(a.x - b.x) > 2 and abs(a.y - b.y) > 2 and abs(a - b) >= 25]
             if len(slant) >= 4:
-                for R, img in _vector_figures(page, pno, draw[pno], segs, masks.get(pno, []), [], [], per[pno]):
+                # длинные линии здесь — связки схемы, не линейки листа: боковая рамка «Telefonon visszajelent…» и петля
+                # «igen» схемы 3.2 соединены линиями от 40 pt, и снимок выходил без них (рамка — таблицей ниже схемы)
+                for R, img in _vector_figures(page, pno, draw[pno], segs, masks.get(pno, []), [], []):
                     if sum(R.contains(q) for q in slant) >= 4:
                         figs = [(f, i) for f, i in figs if not R.contains(f)] + [(R, img)]
         elif not scans[pno]:
