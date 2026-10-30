@@ -112,11 +112,17 @@ def test_sheets_with_other_version_get_own_header_section(tmp_path):
     B.Builder(B.Memory([(s["text"], s["text"]) for s in segs]), lambda img: png(), PROFILE).build(
         blocks, str(out), dict(LAYOUT, **{k: v for k, v in L.items() if k in (
             "head_grid", "variants", "page_marked", "page_tok", "stamp", "stamp_widths", "stamp_box", "stamp_inner",
-            "stamp_paras", "stamp_aligns", "stamp_merge", "head_rule", "head_imgs", "head_lines", "first_is_body")}))
+            "stamp_paras", "stamp_aligns", "stamp_merge", "head_rule", "head_imgs", "head_lines", "first_is_body",
+            "sheet_no")}))
     doc = Document(str(out))
     heads = ["".join(t.text for t in s.header._element.iter(qn("w:t"))) for s in doc.sections]
     assert len(heads) >= 3 and any("Verziószám: 1" in h for h in heads) and "Verziószám: 0" in heads[0]
     assert all("PAGE" in sec.header._element.xml for sec in doc.sections)       # номер листа — полем в каждой шапке
+    # раздел серии нумерует с номера своего листа оригинала, а не подряд по листам перевода (аудит 30.10)
+    assert L["sheet_no"][4] == 4 and L["sheet_no"][6] == 6
+    starts = [(s._sectPr.find(qn("w:pgNumType")) is not None and s._sectPr.find(qn("w:pgNumType")).get(qn("w:start")))
+              for s in doc.sections]
+    assert "4" in starts and "6" in starts
 
 
 def test_text_lost_in_docx_is_reported_with_its_count(tmp_path):

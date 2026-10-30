@@ -2339,6 +2339,7 @@ class Builder:
         # листы тела со своими колонтитулами (версия «1» вместо «0», «3PR10/INFO» вместо «3PR10» — docx_struct.layout,
         # variants): серия листов — свой раздел со своей шапкой и подвалом; None — колонтитулы тела
         zones, zcur, placed = L.get("variants") or [], None, False
+        sheet_no = L.get("sheet_no") or {}                  # лист оригинала → его номер (docx_struct.layout)
         for b in blocks:
             g = b.get("geom") or {}
             page = g.get("page")
@@ -2376,6 +2377,14 @@ class Builder:
                 if ns:
                     self._num_start(sec, ns["value"])
                     restart = True
+            # лист оригинала, закрытый подписью (docx_struct.closed_sheets), — свой раздел: номер листа — его, не
+            # подряд по листам перевода
+            if b.get("sheet") and page and not in_title and not in_front and made is None and sheet_no.get(page):
+                sec = made = self.doc.add_section(WD_SECTION.NEW_PAGE)
+                self.fresh = True
+                # раздел — листы оригинала до следующего раздела: перелившийся на лишний лист — мельче кеглем
+                # (docx_fit, как альбомный: 30KBFPRBIGT, строки «ПЛОМБИРОВАНИЕ, ВЫВЕШИВАНИЕ ПЛАКАТА» в две строки)
+                starts.append((len(self.doc.sections) - 1, page, True))
             if zones and page and not in_title and not in_front:
                 zk = next((i for i, z in enumerate(zones) if z["from"] <= page <= z["to"]), None)
                 if zk != zcur:
@@ -2387,6 +2396,12 @@ class Builder:
                     sec = made if made is not None else self.doc.sections[-1]
                     self._header(sec, Lz)
                     self._footer(sec, Lz)
+            # раздел тела, начатый на листе оригинала (серия, альбомный, закрытый лист), — нумерация с номера этого
+            # листа в колонтитуле оригинала: PAGE считал листы перевода подряд, и номера уезжали (3PR10 «14» на листе
+            # «10», 30PR132GT «41» на «35», аудит 30.10); копия sectPr несла начало прошлого раздела
+            if made is not None and not in_title and not in_front and sheet_no.get(page):
+                self._num_start(made, sheet_no[page])
+                restart = True
             # логотипы обложки — те же, что в шапке тела, или стоящие в полосе шапки (выше поля тела; «atom erőmű» UTS
             # уезжал за правый край), — шапкой титула из логотипов тела. Картинка без xref (снимок скана титула) — не
             # логотип, хоть у векторного логотипа шапки xref тоже нет: скан титула пропадал, лист 1 пустой (ред-тим 20.10)

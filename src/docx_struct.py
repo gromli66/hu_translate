@@ -2472,8 +2472,26 @@ def layout(path, blocks, content=None):
     zone_text = lambda pg: "".join(c["text"] for c in zone_chars(pg))
     zkeys, counter = {}, set()
     base_key = None
+    sheet_no = {}
     if content and len(pdf.pages) > 2:
-        zkeys, counter = _zone_keys({pg.page_number: zone_text(pg) for pg in pdf.pages})
+        texts = {pg.page_number: zone_text(pg) for pg in pdf.pages}
+        zkeys, counter = _zone_keys(texts)
+        # номер листа оригинала — число счётчика в его колонтитуле («Oldalszám: 13»): раздел перевода, начатый на этом
+        # листе, нумерует с него (docx_build), а не подряд по листам перевода (номера уезжали на +2…+5, аудит 30.10).
+        # По словам, не по знакам подряд: «08:28» и номер «2» рядом давали «282» (30RL2126GT); номера должны расти
+        # по листам — иначе счётчик не тот, нумерация как была
+        words = {pg.page_number: " ".join(w["text"] for w in sorted(_words(zone_chars(pg)) if zone_chars(pg) else [],
+                                                                   key=lambda w: (round(float(w["top"]) / 3), float(w["x0"]))))
+                 for pg in pdf.pages}
+        _, wcount = _zone_keys(words)
+        for pn, t in words.items():
+            ps = re.split(r"(\d+)", t)
+            n = next((int(ps[i]) for i in range(1, len(ps), 2) if ps[i - 1][-10:] in wcount), None)
+            if n is not None:
+                sheet_no[pn] = n
+        pairs = [(sheet_no[p], sheet_no[p + 1]) for p in sheet_no if p + 1 in sheet_no]
+        if not pairs or sum(b == a + 1 for a, b in pairs) < 0.6 * len(pairs):
+            sheet_no = {}
         common = Counter(zkeys[pn] for pn in range(2, len(pdf.pages) + 1)).most_common(1)[0]
         # разных текстов — не больше половины листов; иначе счётчик листов не нашёлся (у каждого листа свой текст), и
         # раздельных колонтитулов нет
@@ -2681,6 +2699,8 @@ def layout(path, blocks, content=None):
                 runs.append({"from": pg.page_number, "to": pg.page_number, "key": k})
         if runs:
             out["variants"] = [dict({"from": r["from"], "to": r["to"]}, **zones(pdf.pages[r["from"] - 1], own=True)[0]) for r in runs]
+    if page_tok is not None or base_key is not None:
+        out["sheet_no"] = sheet_no
     out["font_class"] = font_classes(path)
     return out
 
