@@ -1654,6 +1654,8 @@ class Builder:
                     dc._tc.get_or_add_tcPr().append(_el("w:shd", w__val="clear", w__color="auto", w__fill=fill))
                 if cell.get("valign"):                              # отметка против нижней строки (docx_layout)
                     dc._tc.get_or_add_tcPr().append(_el("w:vAlign", w__val=cell["valign"]))
+                if cell.get("pad") and dc.paragraphs:               # зазор до следующей полосы (docx_layout)
+                    dc.paragraphs[-1].paragraph_format.space_after = Pt(cell["pad"])
                 if tight is not None:                               # узкие поля ячейки — слово влезло целиком (см. выше)
                     tcpr = dc._tc.get_or_add_tcPr()
                     mar_el = _el("w:tcMar")

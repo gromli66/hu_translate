@@ -933,7 +933,13 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields
         if gs and not (first and last):
             g1 = min(gs, key=lambda g: g["top"])
             line = (g1["bottom"] - g1["top"]) / max(g1.get("lines") or 1, 1)
-            hts.append(min(hi - lo, (g1["top"] - lo) + line + (hi - max(g["bottom"] for g in gs))))
+            gap = max(0.0, hi - max(g["bottom"] for g in gs))
+            hts.append(min(hi - lo, (g1["top"] - lo) + line + gap))
+            # зазор до следующей полосы — отступом после текста ячейки: строка = текст + зазор оригинала, а не текст
+            # вплотную к следующему пункту (30HU375GT: пункты 1.1.7–1.1.15 «стеной», D10)
+            for c in row:
+                if c.get("geom") and gap >= 2:
+                    c["pad"] = round(gap, 1)
         else:
             hts.append(hi - lo)
     if bands:                                                       # линии строк — по подстрокам
