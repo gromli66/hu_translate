@@ -2517,14 +2517,20 @@ def layout(path, blocks, content=None):
     for x in list(_paras(blocks)) + [b for b in blocks if b["k"] == "h"]:
         if (x.get("geom") or {}).get("page"):
             est[x["geom"]["page"]] += len(text_of(x.get("runs") or []).strip())
-    # подвала нет — низ тела по последнему блоку листов (80-й процентиль): поле по умолчанию (100 pt) отнимало у
-    # каждого листа МТ-ЦАСУТП-14 три строки (60 листов → 69, 16.10)
+    # подвала нет — низ тела по самому низкому краю тела листов: поле по умолчанию (100 pt) отнимало у каждого листа
+    # МТ-ЦАСУТП-14 три строки (60 листов → 69, 16.10); 80-й процентиль — у пятой части листов оригинала тело ниже
+    # поля, а где раздел начинается с нового листа (3SZ17: листы кончаются на 240…735 pt), поле выходило 7 см (30.10)
     lasts = {}
     for g in body:
         lasts[g["page"]] = max(lasts.get(g["page"], 0), g.get("bottom") or g["top"])
-    bots_ = sorted(lasts.values())
+    if content:
+        # текстовый слой: низ текста тела каждого листа (cbots), кроме сканов (OCR — до края листа); таблица через
+        # лист — одним блоком с местом первого листа, и по блокам низ знали 2 листа из 13 (30RR2126GT); в документе
+        # из одного-двух листов (лист изменений) — по ним: поле по умолчанию уводило хвост таблицы на второй лист
+        own = {pn: v for pn, v in cbots.items() if v and not scanned(pdf.pages[pn - 1])}
+        lasts = {pn: v for pn, v in own.items() if pn > 2} or own or lasts
     foot_top = min([float(c["top"]) for c in foot_chars] + [i["top"] for i in foot_imgs],
-                   default=bots_[len(bots_) * 4 // 5] + 14 if bots_ else H - 100)
+                   default=max(lasts.values()) + 14 if lasts else H - 100)
     foot_bottom = max([float(c["bottom"]) for c in foot_chars] + [i["bottom"] for i in foot_imgs], default=H - 40)
     # шапки нет — пустой абзац шапки (её расстояние + строка) должен уместиться в верхнее поле: при поле 24 pt и
     # расстоянии 36 pt тело уезжало на каждом листе вниз на 2–3 строки (ТЭ357: 66 листов → 85, 16.10)
@@ -2829,16 +2835,16 @@ def _foot_top(arts, rects, H, cbot=None):
         # (32RDGT: верх подвала на 509 pt, нижнее поле 344 pt, 20.10). У размеченного — как было: у HSE без подвала
         # поле считалось по пробелу-артефакту, без него лист переполнялся (регрессия A/B)
         low = [float(c["top"]) for c in arts if float(c["top"]) > max(cbot, H * 0.6) and c["text"].strip()]
-        if low:
-            top = min(low)
-            border = [float(r["top"]) for r in rects if float(r["bottom"]) - float(r["top"]) < 3
-                      and max(cbot, H * 0.6) < float(r["top"]) <= top]
-            return round(min(border) if border else top) - 1
-    # текстовый слой без знаков ниже тела — и здесь пробел не краска: пробел в конце строки таблицы (443 pt при низе
-    # тела 470) становился «подвалом», нижнее поле — 165 pt вместо ~100, на листе 4–5 строк таблицы вместо 6
-    # (таблица решений OAH: 154 листа → 211, 23.10)
-    rows = sorted({round(float(c["top"])) for c in arts if float(c["top"]) > H * 0.7
-                   and (cbot is None or c["text"].strip())}, reverse=True)
+        if not low:
+            # знаков ниже тела нет — подвала нет: линии рядов таблицы у низа листа (шаг меньше 15 pt) склеивались в
+            # «подвал из одних линий» от 0,7 листа, пробелы в концах строк под ним — в его знаки, нижнее поле 9 см
+            # (3PR10, 3SZ17, 30TKBSZ36BIGT: тело кончалось на 70 % листа, аудит 30.10)
+            return H
+        top = min(low)
+        border = [float(r["top"]) for r in rects if float(r["bottom"]) - float(r["top"]) < 3
+                  and max(cbot, H * 0.6) < float(r["top"]) <= top]
+        return round(min(border) if border else top) - 1
+    rows = sorted({round(float(c["top"])) for c in arts if float(c["top"]) > H * 0.7}, reverse=True)
     rr = [r for r in rects if float(r["top"]) > H * 0.7]
     if not rows:                                # подвал из одних линий (рамка без текста)
         ys = sorted({round(float(r["top"])) for r in rr}, reverse=True)
