@@ -2467,7 +2467,12 @@ def layout(path, blocks, content=None):
         # иначе строка не шла ни в шапку, ни в тело, и «Наименование»/«Номер страницы» пропадали (аудит 30.10)
         if head and ctops.get(pg.page_number, 0) > body_top:
             bot = max(float(c["bottom"]) for c in head)
-            for c in sorted((c for c in art if body_top <= c["top"] < ctops[pg.page_number]), key=lambda c: c["top"]):
+            # и только внутри рамки шапки — выше её нижней линии: «10/6. Melléklet» под рамкой (1SZ01) — не шапка
+            # (в шапке «10/6» становилось полем «номер/всего»: «Приложение 42/115»)
+            frame = min((float(r["top"]) for r in _drawn(pg.rects + pg.lines) if float(r["bottom"]) - float(r["top"]) < 3
+                         and float(r["x1"]) - float(r["x0"]) > 0.5 * W and float(r["top"]) > bot - 1), default=body_top)
+            for c in sorted((c for c in art if body_top <= c["top"] < min(ctops[pg.page_number], frame)),
+                            key=lambda c: c["top"]):
                 if float(c["top"]) - bot <= float(c["bottom"]) - float(c["top"]) + 2:
                     head.append(c)
                     bot = max(bot, float(c["bottom"]))
