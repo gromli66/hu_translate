@@ -861,18 +861,29 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields
             continue
         ci = next(k for k, (a, z, _) in enumerate(grid[r]) if a <= c < z)
         put.setdefault((r, ci), []).append(s)
-    # строка сетки без внутренних горизонталей, где в первом столбце — несколько меток пунктов («1.1.», «1.2.» … формы
-    # RDGT: номер, условие и графа отметки — каждый против своего), — подстроками по верху меток: всё строкой шло
-    # в одну ячейку, и номера, текст и отметки съезжали друг относительно друга (31RDGT л. 1, 20.10). Над первой
-    # меткой — своя подстрока (легенда, заголовок раздела); линий между подстроками нет
-    label = re.compile(r"\(?(?:\d+(?:\.\d+)*\.?|[a-zA-Z][.)])\)?|\d{2}[A-Z]{2}\d{2}[A-Z]\d{3}")     # номер пункта или код оборудования
+    # строка сетки без внутренних горизонталей — подстроками по горизонтальным полосам: абзацы разных ячеек, что
+    # пересекаются по высоте, — одна полоса, полоса не рвёт абзац. Всё строкой шло в одну ячейку, и номера, текст и
+    # отметки съезжали друг относительно друга (31RDGT л. 1, 20.10), «Tevékenység | Állapot» — столбцами-стопками,
+    # значение уезжало от своего кода (3SZ23, 3PR10, аудит 30.10). Полоса с текстом одной ячейки, у которой текст был
+    # и в полосе выше, — продолжение той строки (рядом ничего, резать нечего); линий между подстроками нет
     bands = []
     for r, cells in enumerate(grid):
-        tops = sorted({round(s["loc"]["bbox"][1], 1) for s in put.get((r, 0), [])
-                       if label.fullmatch(s["text"].strip())})
-        if len(cells) >= 2 and len(tops) >= 2:
-            above = any(s["loc"]["bbox"][3] <= tops[0] for ci in range(len(cells)) for s in put.get((r, ci), []))
-            cuts = [ys[r]] + [t - 2 for t in (tops if above else tops[1:]) if t - 2 > ys[r] + 1] + [ys[r + 1]]
+        spans = sorted((min(g["loc"]["bbox"][1] for g in group), max(g["loc"]["bbox"][3] for g in group), ci)
+                       for ci in range(len(cells)) for group in _lines(sorted(
+                           put.get((r, ci), []), key=lambda s: (round(s["loc"]["bbox"][1] / 3), s["loc"]["bbox"][0]))))
+        strips = []                                             # [верх, низ, {ячейки}]
+        for a, z, ci in spans:
+            if strips and a < strips[-1][1] - 2:
+                strips[-1][1] = max(strips[-1][1], z)
+                strips[-1][2].add(ci)
+            else:
+                strips.append([a, z, {ci}])
+        strips = [s for k, s in enumerate(strips) if not (k and len(s[2]) == 1 and s[2] <= strips[k - 1][2])]
+        if len(cells) >= 2 and len(strips) >= 2:
+            # низ последней строки сетки — по тексту: рамка листа тянет её до низа листа, и подстрока с такой
+            # наименьшей высотой не делилась на листы LibreOffice — уходила на следующий, полстраницы пусто (3SZ23)
+            end = min(ys[r + 1], max(s[1] for s in strips) + 4) if r == len(grid) - 1 else ys[r + 1]
+            cuts = [ys[r]] + [s[0] - 2 for s in strips[1:] if s[0] - 2 > ys[r] + 1] + [end]
             for k in range(len(cuts) - 1):
                 bands.append((r, cuts[k], cuts[k + 1], k == 0, k == len(cuts) - 2))
         else:

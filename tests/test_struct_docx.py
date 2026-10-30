@@ -1786,7 +1786,8 @@ def test_scan_scheme_of_arrows_and_short_labels_is_figure(tmp_path):
 
 def test_label_column_splits_table_row_into_sub_rows():
     """Таблица-бланк без внутренних горизонталей (31RDGT): номер, текст и отметка — каждый против своего; строка сетки
-    режется по верху меток первого столбца, линий между подстроками нет."""
+    режется по горизонтальным полосам абзацев (отметка «O» — против своего кода, не против метки), линий между
+    подстроками нет."""
     import docx_layout as DL
     gh = [(90, 60, 560), (300, 60, 560)]
     gv = [(60, 90, 300), (110, 90, 300), (430, 90, 300), (560, 90, 300)]
@@ -1800,11 +1801,34 @@ def test_label_column_splits_table_row_into_sub_rows():
             seg("O", 490, 160, 498)]
     b = DL._table_block(t, segs, 0, None, "Times New Roman", 10, False)
     text = lambda c: [ "".join(r.get("t", "") for r in p["runs"]) for p in c["blocks"]]
-    assert len(b["rows"]) == 2
-    assert [text(c) for c in b["rows"][0]] == [["1.1."], ["Az alábbi armatúrák", "31RA31S401"], ["O"]]
-    assert [text(c) for c in b["rows"][1]] == [["1.2."], ["A 31RD31P702 kör"], ["O"]]
+    assert len(b["rows"]) == 3
+    assert [text(c) for c in b["rows"][0]] == [["1.1."], ["Az alábbi armatúrák"], []]
+    assert [text(c) for c in b["rows"][1]] == [[], ["31RA31S401"], ["O"]]
+    assert [text(c) for c in b["rows"][2]] == [["1.2."], ["A 31RD31P702 kör"], ["O"]]
     assert not b["rows"][0][1]["edges"]["bottom"] and not b["rows"][1][1]["edges"]["top"]
-    assert len(b["frame"]["ys"]) == 3
+    assert len(b["frame"]["ys"]) == 4
+
+
+def test_table_row_cut_by_horizontal_strips_of_paragraphs():
+    """«Tevékenység | Állapot» (3SZ23, 3PR10): действия слева и состояния справа без горизонталей между ними — подстроки
+    по полосам: абзацы ячеек, пересекающиеся по высоте, — одна подстрока; строки одной ячейки, рядом с которыми ничего
+    нет, — продолжение подстроки выше."""
+    import docx_layout as DL
+    gh = [(90, 60, 560), (400, 60, 560)]
+    gv = [(60, 90, 400), (300, 90, 400), (560, 90, 400)]
+    t = (DL._cluster([v[0] for v in gv]), [90, 400], gh, gv)
+
+    def seg(text, x0, y0, y1):
+        return {"id": 0, "page": 0, "text": text, "loc": {"bbox": [x0, y0, x0 + 200, y1], "frags": [[x0, y0, x0 + 200, y1]],
+                                                          "size": 10, "bold": False, "align": "left"}}
+    segs = [seg("A 30UJ04S001 nyitása", 70, 100, 124), seg("Feltöltés", 310, 104, 116),
+            seg("Ellenőrizni", 70, 150, 162), seg("ZÁRNI:", 70, 170, 182),
+            seg("Zárva", 310, 200, 212), seg("NYITNI", 70, 200, 212)]
+    b = DL._table_block(t, segs, 0, None, "Times New Roman", 10, False)
+    text = lambda c: ["".join(r.get("t", "") for r in p["runs"]) for p in c["blocks"]]
+    assert [[text(c) for c in r] for r in b["rows"]] == [
+        [["A 30UJ04S001 nyitása", "Ellenőrizni", "ZÁRNI:"], ["Feltöltés"]], [["NYITNI"], ["Zárva"]]]
+    assert not b["rows"][0][0]["edges"]["bottom"] and not b["rows"][1][1]["edges"]["top"]
 
 
 def test_case_suffix_and_dotted_abbreviation_are_not_codes():
