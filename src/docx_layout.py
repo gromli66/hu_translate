@@ -1394,7 +1394,7 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
         elif not scans[pno]:
             tabs = [fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1]) for t in _tables(hs, vs)]
             figs += _scheme_figures(page, pno, draw[pno], segs, tabs, [f for f, _ in figs])
-        regs, used = [], set()
+        regs, used, fills = [], set(), None                 # fills — заливки листа (по первой таблице)
         for t in _tables(hs, vs):
             r = fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1])
             if any((f & r).get_area() > 0.8 * r.get_area() for f, _ in figs):
@@ -1422,9 +1422,17 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
             fields = [f for f in marks[pno][1] if _in_cell(f, xs_, ys_, whole=True)]
             if inside:
                 used |= set(mine)
-                regs.append({"rect": r, "ids": {s["id"] for s in inside},
-                             "block": _table_block(t, inside + glyphs, pno, bold, font, size, mono,
-                                                   [figs[i] for i in mine], pua, fields)})
+                blk = _table_block(t, inside + glyphs, pno, bold, font, size, mono, [figs[i] for i in mine], pua, fields)
+                # заливка ячейки — как у размеченного PDF (docx_struct.cell_fills): серый фон заголовков разделов и шапок
+                # таблиц текстового слоя терялся (3PR10, 3SZ23 «2. Üzemmódok», D2 аудита 30.10); тонкие линии — не фон
+                if fills is None:
+                    # рамка текста сегмента выше строки заливки (3SZ23: текст 68–88 pt в заливке 72–84) — запас 4 pt
+                    fills = [(q.x0, q.y0 - 4, q.x1, q.y1 + 4, "%02X%02X%02X" % tuple(round(255 * v) for v in dr["fill"][:3]))
+                             for dr in page.get_drawings() for q in [fitz.Rect(dr["rect"])]
+                             if dr.get("fill") and len(dr["fill"]) >= 3 and 0.3 < min(dr["fill"]) < 0.97
+                             and q.width >= 3 and q.height >= 3]
+                __import__("docx_struct").cell_fills(blk["rows"], lambda pg: fills)
+                regs.append({"rect": r, "ids": {s["id"] for s in inside}, "block": blk})
         for i, (r, img) in enumerate(figs):
             if i in used or any(r.intersects(g["rect"]) for g in regs):
                 continue
