@@ -2001,14 +2001,18 @@ class Builder:
                             if ci < len(widths):
                                 w = min(w, widths[ci] - 12)
                             p.add_run().add_picture(io.BytesIO(data), width=Pt(w))
-                    for li, (line, bold) in enumerate(txt["lines"]):
+                    ls = txt["lines"]
+                    wr = self._wrapped([line for line, _ in ls])
+                    if len(wr) < len(ls):
+                        ls = [(wr[0], ls[0][1])]
+                    for li, (line, bold) in enumerate(ls):
                         q = p if li == 0 and not p.runs else cell.add_paragraph(style=self.doc.styles[style])
                         q.alignment = al_of.get(txt.get("align"), AL.LEFT)
                         self._zone_text(q, line, bold, page_tok, page_marked)
                     if not txt["lines"]:
                         p.alignment = al_of.get(txt.get("align"), AL.LEFT)
                     continue
-                for li, line in enumerate(txt.split("\n")):     # перенос в ячейке (docx_struct._zone_grid)
+                for li, line in enumerate(self._wrapped(txt.split("\n"))):     # перенос в ячейке (docx_struct._zone_grid)
                     q = p if li == 0 else cell.add_paragraph(style=self.doc.styles[style])
                     if ci < len(aligns) and aligns[ci] in al_of:
                         q.alignment = al_of[aligns[ci]]
@@ -2024,6 +2028,15 @@ class Builder:
                         t.cell(ri, ci).merge(t.cell(z, ci))
                     ri = z + 1
         return t
+
+    def _wrapped(self, lines):
+        """Строки одной фразы, перенесённые узкой ячейкой колонтитула («A lapot kitöltötte» / «(név, dátum, aláírás):»), —
+        одной строкой, если вся фраза есть в памяти, а первой строки в ней нет: по строкам фраза не переводилась."""
+        get = getattr(self.tr, "get", None)
+        whole = " ".join(lines)
+        if len(lines) > 1 and get and PAGE_MARK not in whole and get(whole) and not get(lines[0]):
+            return [whole]
+        return lines
 
     def _zone_text(self, p, txt, bold, page_tok, page_marked=False):
         """Текст ячейки колонтитула: «N/NN» → PAGE/NUMPAGES (штамп UTS), число листа из колонтитула оригинала

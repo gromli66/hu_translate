@@ -189,3 +189,13 @@ def test_repeated_table_header_row_is_not_lost():
             got = A.lost_segments(tmp + "/h.docx", segs, lambda s: "Условие, операция, проверка")
         assert (not got) if header else [n for _, _, n in got] == [2]
 
+
+
+def test_footer_phrase_wrapped_by_narrow_cell_is_translated_whole():
+    """«A lapot kitöltötte» / «(név, dátum, aláírás):» — одна фраза в узкой ячейке штампа: по строкам её в памяти нет
+    (30HU375GT: подвал листов оставался по-венгерски), целиком — есть; строки, известные по отдельности, не склеиваются."""
+    mem = B.Memory([("A lapot kitöltötte (név, dátum, aláírás):", "Лист заполнил (Ф. И. О., дата, подпись):"),
+                    ("Azonosító: 3SZ23", "Идентификатор: 3SZ23"), ("Verziószám: 1", "Номер версии: 1")])
+    b = B.Builder(mem, lambda img: None, PROFILE)
+    assert b._wrapped(["A lapot kitöltötte", "(név, dátum, aláírás):"]) == ["A lapot kitöltötte (név, dátum, aláírás):"]
+    assert b._wrapped(["Azonosító: 3SZ23", "Verziószám: 1"]) == ["Azonosító: 3SZ23", "Verziószám: 1"]
