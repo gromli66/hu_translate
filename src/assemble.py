@@ -291,12 +291,12 @@ def build_pdf(src, out, segs, res, progress=None, shots_out=None):
         if not ocr:
             # блок схемы пишется одним текстом: непереводимые надписи того же блока («P↓») входят в него как есть — иначе
             # остаются на месте и перекрываются переводом (30GF(135), лист 19)
-            shapes = PF.shape_rects(page)
+            shapes, diamonds = PF.shape_rects(page, kinds=True)
             blocks = {tuple(c) for s, _ in todo if not s["loc"].get("rot")
                       for c in [PF.container(shapes, s["loc"]["bbox"])] if c is not None}
-            if sum(PF.container(shapes, s["loc"]["bbox"]) is not None for s, _ in todo
-                   if not s["loc"].get("rot")) < PF.SCHEME_MIN:
-                shapes, blocks = [], set()                # не схема: заливка ячейки или плашка — место задаёт сама строка
+            flat = [s for s, _ in todo if not s["loc"].get("rot")]
+            if not PF.is_scheme(sum(PF.container(shapes, s["loc"]["bbox"]) is not None for s in flat), len(flat)):
+                shapes, blocks, diamonds = [], set(), set()   # не схема: заливка ячейки или плашка — место задаёт сама строка
             used = {id(s) for s, _ in todo}
             todo += [(s, {"ru": s["text"]}) for s in segs if s["page"] == pno and id(s) not in used
                      and not s["loc"].get("pix") and not s["loc"].get("rot") and s["text"].strip()
@@ -371,6 +371,13 @@ def build_pdf(src, out, segs, res, progress=None, shots_out=None):
         tab_of = [next((ti for ti, tb in enumerate(tabs) if tb.contains((rect.tl + rect.br) / 2)), None)
                   for _, rect, *_ in items]
         free = [n for n, t in zip(need, tab_of) if t is None]
+        # масштаб листа — как прежде, по всем надписям: подписи блоков схемы теперь вписываются в блок сами, но масштаб
+        # остального текста листа (шапка с узкой ячейкой номера листа) от этого не растёт — иначе «5» уходила на вторую строку
+        for i in (i for v in special.values() for i in v):
+            s, rect, txt, align, size, fam = items_all[i]
+            if not s["loc"].get("rot"):
+                css = f"* {{font-family: {fam}; font-size: {size:.1f}pt; line-height: 1.15; text-align: {align};}}"
+                free.append(tp.insert_htmlbox(rect, txt, css=css, scale_low=0)[1])
         k = sorted(free)[int(len(free) * 0.3)] if free else 1.0
         if ocr:
             # скан формы: тесные ячейки не должны ужимать всю страницу (подписи полей уходили в 3 pt) —
@@ -421,10 +428,11 @@ def build_pdf(src, out, segs, res, progress=None, shots_out=None):
             mem = sorted((items_all[i] for i in idx), key=lambda it: (it[0]["loc"]["bbox"][1], it[0]["loc"]["bbox"][0]))
             size = sorted(it[4] for it in mem)[len(mem) // 2] * min(k, 1.0)
             txt = " ".join(it[2] for it in mem)
-            css = f"* {{font-family: {mem[0][5]}; font-size: {size:.1f}pt; line-height: 1.15; text-align: center;}}"
-            rect = PF.fit_rect(fitz.Rect(c), [it[0]["loc"]["bbox"] for it in mem],
-                               lambda r: r.height - tp.insert_htmlbox(r, txt, css=css, scale_low=0)[0])
-            spare, scale = page.insert_htmlbox(rect * der, txt, css=css, scale_low=0)
+            css = lambda al: f"* {{font-family: {mem[0][5]}; font-size: {size:.1f}pt; line-height: 1.15; text-align: {al};}}"
+            rect, al = PF.fit_rect(fitz.Rect(c), [it[0]["loc"]["bbox"] for it in mem],
+                                   lambda r: r.height - tp.insert_htmlbox(r, txt, css=css("center"), scale_low=0)[0],
+                                   diamond=c in diamonds)
+            spare, scale = page.insert_htmlbox(rect * der, txt, css=css(al), scale_low=0)
             if scale * min(k, 1.0) < 0.7:             # тесный блок — сокращение (pipeline.fit) по каждой надписи блока
                 shrink += [{"page": pno + 1, "id": it[0]["id"], "scale": round(scale * min(k, 1.0), 2)} for it in mem]
         sub.insert_pdf(doc, from_page=pno, to_page=pno)
@@ -581,12 +589,15 @@ def lost_segments(out, segs, expect, skip_pages=(), H=842):
     import docx_build as B
     from segments import needs_translation
     key = lambda t: re.sub(r"[\W\d_]+", "", B.TAGS.sub("", t or "")).lower()
-    blob = ""
+    text = lambda x: key(html.unescape(re.sub(r"<[^>]+>", "", x.replace("</w:p>", " "))))
+    blob = rep = ""
     with zipfile.ZipFile(out) as z:
         for name in z.namelist():
             if re.fullmatch(r"word/(?:document|header\d+|footer\d+|footnotes|endnotes)\.xml", name):
                 xml = z.read(name).decode("utf-8")
-                blob += key(html.unescape(re.sub(r"<[^>]+>", "", xml.replace("</w:p>", " "))))
+                blob += text(xml)
+                # строка таблицы с w:tblHeader печатается на каждом листе таблицы: в файле она одна, на листах — сколько их
+                rep += "".join(text(tr) for tr in re.findall(r"<w:tr[ >].*?</w:tr>", xml, re.S) if "<w:tblHeader" in tr)
     groups = {}
     for s in segs:
         bb = s["loc"].get("bbox")
@@ -596,7 +607,7 @@ def lost_segments(out, segs, expect, skip_pages=(), H=842):
         k = key(ru)[:24] if ru else ""
         if len(k) >= 4:
             groups.setdefault(k, [s, ru, 0])[2] += 1
-    return [(s, ru, n - blob.count(k)) for k, (s, ru, n) in groups.items() if blob.count(k) < n]
+    return [(s, ru, n - blob.count(k)) for k, (s, ru, n) in groups.items() if blob.count(k) < n and k not in rep]
 
 
 def lost_rows(lost):

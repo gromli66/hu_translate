@@ -14,6 +14,7 @@ import fitz
 
 SHAPE_MIN, SHAPE_MAX = 400.0, 0.25        # блок схемы: от 400 pt² до четверти листа (фон и рамка листа — не блок)
 NEAR = 1.5                                # допуск «надпись внутри блока», pt
+SCHEME_SHARE = 0.4                       # и это не меньше 40 % надписей листа (поля бланка с рамками — не схема)
 SCHEME_MIN = 4                            # лист — схема из блоков, если в блоках стоят от 4 надписей (заливка шапки таблицы — не схема)
 ACR_MAX = 4                               # сокращение из заглавных: до 4 букв (ÜBO, ÜVFO, RTO, TO, ÁPR, JAN)
 
@@ -61,19 +62,45 @@ def rotated_avail(bbox, rot, page_rect, shapes=(), grow=0.4):
 
 
 # ------------------------------------------------------------------ блоки схемы
-def shape_rects(page):
-    """Блоки страницы: картинки и залитые фигуры — [Rect], без фона листа и мелочи (значки, линии, тени-стрелки)."""
+def _outline(dr):
+    """Замкнутая обводка (блок блок-схемы, ромб решения): (Rect, ромб?) или None. Контур — один прямоугольник,
+    четырёхугольник или четыре отрезка; ромб — вершины не в углах охватывающей рамки."""
+    kinds = "".join(i[0] for i in dr["items"])
+    if kinds not in ("re", "qu", "llll"):
+        return None
+    r = dr["rect"]
+    if kinds == "re":
+        return r, False
+    pts = [i[1] for i in dr["items"]] if kinds == "llll" else [getattr(dr["items"][0][1], k) for k in ("ul", "ur", "ll", "lr")]
+    corners = [fitz.Point(r.x0, r.y0), fitz.Point(r.x1, r.y0), fitz.Point(r.x0, r.y1), fitz.Point(r.x1, r.y1)]
+    far = min(r.width, r.height) * 0.25
+    return r, all(min(abs(p - c) for c in corners) > far for p in pts)
+
+
+def shape_rects(page, kinds=False):
+    """Блоки схемы страницы — [Rect]: картинки-блоки (плитки заливки: схема, собранная из картинок) и, если на листе есть
+    ромб решения (блок-схема линиями), залитые и обведённые фигуры. Без ромба заливки-векторы не блоки: так выглядят
+    ячейки таблиц и поля ввода бланков (30RL2126, 30BOXFELTEL) — их место определяет сама строка. kinds=True — ещё и
+    множество ромбов {tuple(Rect)}: текст ромба умещается в его середину."""
     area = page.rect.get_area()
-    out = []
+    rot = page.rotation_matrix
+    ok = lambda r: SHAPE_MIN <= r.get_area() <= SHAPE_MAX * area and min(r.width, r.height) > 12
+    out, vector, outlines = [], [], []
     for ii in page.get_image_info():
-        r = fitz.Rect(ii["bbox"]) * page.rotation_matrix
-        if SHAPE_MIN <= r.get_area() <= SHAPE_MAX * area and min(r.width, r.height) > 12:
+        r = fitz.Rect(ii["bbox"]) * rot
+        if ok(r):
             out.append(r)
     for dr in page.get_drawings():
-        r = dr["rect"] * page.rotation_matrix
-        if dr.get("fill") is not None and SHAPE_MIN <= r.get_area() <= SHAPE_MAX * area and min(r.width, r.height) > 12:
-            out.append(r)
-    return out
+        r = dr["rect"] * rot
+        if dr.get("fill") is not None and ok(r):
+            vector.append(r)
+        o = _outline(dr)
+        if o is not None and ok(o[0] * rot):
+            outlines.append((o[0] * rot, o[1]))
+    diamonds = {tuple(r) for r, d in outlines if d}
+    if diamonds:
+        out += vector + [r for r, _ in outlines]
+    return (out, diamonds) if kinds else out
 
 
 def clamp_right(rect, bbox, shapes):
@@ -86,15 +113,22 @@ def clamp_right(rect, bbox, shapes):
     return fitz.Rect(rect.x0, rect.y0, max(min(xs) - 1, bb.x1), rect.y1)
 
 
-def container(shapes, bbox, ratio=25.0):
-    """Самый малый блок, внутри которого по центру стоит надпись bbox, или None. Блок не больше ratio площадей надписи:
-    рамка во весь столбец и заливка колонки — не «блок подписи»; надпись у края блока (подпись слева в заливке ячейки) —
-    не блок схемы, её место определяет сама строка."""
+def is_scheme(n_in_blocks, n_all):
+    """Лист — схема из блоков: в блоках стоят от SCHEME_MIN надписей и не меньше SCHEME_SHARE всех надписей листа
+    (заливка шапки таблицы, поля ввода бланка с рамками — единицы на листе текста; в схеме текст стоит в блоках)."""
+    return n_in_blocks >= SCHEME_MIN and n_in_blocks >= SCHEME_SHARE * max(n_all, 1)
+
+
+def container(shapes, bbox, ratio=25.0, floor=12000.0):
+    """Самый малый блок, в котором по центру стоит надпись bbox, или None. Надпись — в блоке, если её середина внутри и
+    внутри не меньше половины её площади (строка «és» на нижней кромке блока, подпись у края тени блока — тоже в блоке).
+    Блок не больше ratio площадей надписи (но не меньше floor pt²): рамка во весь столбец и заливка колонки — не «блок
+    подписи»; надпись у края блока (подпись слева в заливке ячейки) — не блок схемы, её место определяет сама строка."""
     bb = fitz.Rect(bbox)
-    big = fitz.Rect(bb.x0 - NEAR, bb.y0 - NEAR, bb.x1 + NEAR, bb.y1 + NEAR)
+    mid = fitz.Point((bb.x0 + bb.x1) / 2, (bb.y0 + bb.y1) / 2)
     best = None
     for r in shapes:
-        if r.contains(big) and r.get_area() <= ratio * max(bb.get_area(), 1.0)                 and abs((bb.x0 + bb.x1) / 2 - (r.x0 + r.x1) / 2) <= 0.2 * r.width                 and (best is None or r.get_area() < best.get_area()):
+        if r.contains(mid) and (r & bb).get_area() >= 0.5 * bb.get_area()                 and r.get_area() <= max(ratio * bb.get_area(), floor)                 and (best is None or r.get_area() < best.get_area()):
             best = r
     return best
 
@@ -110,18 +144,27 @@ def blocks_by_container(shapes, bboxes):
     return groups
 
 
-def fit_rect(box, labels, used, pad=1.5):
-    """Куда писать перевод блока: внутри блока box с полем pad; по высоте — по середине блока, если подписи (labels,
-    рамки оригинала) стояли по середине, иначе от верха подписей. used(rect) — высота перевода, вписанного в rect."""
-    inner = fitz.Rect(box.x0 + pad, box.y0 + pad, box.x1 - pad, box.y1 - pad)
+def fit_rect(box, labels, used, pad=1.5, diamond=False):
+    """Куда писать перевод блока: (рамка, выключка). Внутри блока box с полем pad; у ромба — в его середине (вписанный
+    прямоугольник половинного размера). Выключка по центру, если подписи (labels, рамки оригинала) стояли по центру блока,
+    иначе влево от левого края подписей; по высоте — по середине блока в том же случае, иначе от верха подписей.
+    used(rect) — высота перевода, вписанного в rect."""
+    if diamond:
+        inner = fitz.Rect(box.x0 + box.width / 4, box.y0 + box.height / 4, box.x1 - box.width / 4, box.y1 - box.height / 4)
+    else:
+        inner = fitz.Rect(box.x0 + pad, box.y0 + pad, box.x1 - pad, box.y1 - pad)
     u = fitz.Rect(labels[0])
     for b in labels[1:]:
         u |= fitz.Rect(b)
+    centered = diamond or abs((u.x0 + u.x1) / 2 - (box.x0 + box.x1) / 2) <= 0.2 * box.width
+    if not centered:
+        inner.x0 = max(inner.x0, u.x0 - 0.5)
     h = used(inner)
     cy = (box.y0 + box.y1) / 2
-    if abs((u.y0 + u.y1) / 2 - cy) < 0.25 * box.height:
-        return fitz.Rect(inner.x0, max(inner.y0, cy - h / 2 - 0.5), inner.x1, min(inner.y1, cy + h / 2 + 0.5))
-    return fitz.Rect(inner.x0, max(inner.y0, u.y0 - 0.5), inner.x1, inner.y1)
+    align = "center" if centered else "left"
+    if diamond or abs((u.y0 + u.y1) / 2 - cy) < 0.25 * box.height:
+        return fitz.Rect(inner.x0, max(inner.y0, cy - h / 2 - 0.5), inner.x1, min(inner.y1, cy + h / 2 + 0.5)), align
+    return fitz.Rect(inner.x0, max(inner.y0, u.y0 - 0.5), inner.x1, inner.y1), align
 
 
 # ------------------------------------------------------------------ скан формы: что остаётся пикселями

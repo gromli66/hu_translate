@@ -71,8 +71,10 @@ def test_rotated_avail_grows_both_ways_but_stops_at_blocks():
 
 def _scheme_pdf(tmp_path, label, rotated=None):
     doc = fitz.open(); pg = doc.new_page(width=700, height=200)
+    tile = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 40, 20), False)                          # плитка заливки блока
+    tile.set_rect(tile.irect, (100, 150, 230))
     for i in range(4):                                                                       # блоки схемы 80×40
-        pg.draw_rect(fitz.Rect(100 + 120 * i, 80, 180 + 120 * i, 120), color=(0, 0, 1), fill=(0.4, 0.6, 0.9))
+        pg.insert_image(fitz.Rect(100 + 120 * i, 80, 180 + 120 * i, 120), pixmap=tile)
     pg.insert_text((115, 98), label[0], fontsize=8)
     pg.insert_text((115, 108), label[1], fontsize=8)
     for i in range(1, 4):
@@ -126,3 +128,25 @@ def test_pix_paragraph_is_not_redrawn(tmp_path):
     out = tmp_path / "o.pdf"
     A.build_pdf(str(src), str(out), [seg], {"0": {"ru": "Бучи Габор"}})
     assert "Бучи" not in fitz.open(str(out))[0].get_text()
+
+
+def test_flowchart_diamond_and_outlined_blocks_hold_their_text(tmp_path):
+    # блок-схема линиями (3FI18: «Дистанционное отключение работает?» вылезало за ромб, заголовок — за рамку блока)
+    doc = fitz.open(); pg = doc.new_page(width=500, height=300)
+    pg.draw_polyline([(100, 60), (160, 100), (100, 140), (40, 100), (100, 60)], closePath=True)    # ромб 120×80
+    for i in range(3):
+        pg.draw_rect(fitz.Rect(220 + 90 * i, 70, 290 + 90 * i, 130))                              # обведённые блоки
+        pg.insert_text((232 + 90 * i, 100), "Nincs tűz", fontsize=8)
+    pg.insert_text((62, 96), "Távoli", fontsize=8)
+    pg.insert_text((62, 106), "kikapcsolás", fontsize=8)
+    src = tmp_path / "f.pdf"; doc.save(src)
+    shapes, dia = PF.shape_rects(fitz.open(str(src))[0], kinds=True)
+    assert len(dia) == 1 and len(shapes) >= 4
+    segs = [_seg(0, "Távoli", [62, 88, 95, 97]), _seg(1, "kikapcsolás", [62, 98, 110, 107])] \
+        + [_seg(2 + i, "Nincs tűz", [232 + 90 * i, 92, 285 + 90 * i, 101]) for i in range(3)]
+    res = {"0": {"ru": "Дистанционное отключение"}, "1": {"ru": "работает?"}, **{str(2 + i): {"ru": "Огня нет"} for i in range(3)}}
+    out = tmp_path / "o.pdf"
+    A.build_pdf(str(src), str(out), segs, res)
+    ru = [w for w in fitz.open(str(out))[0].get_text("words") if any("а" <= c.lower() <= "я" for c in w[4]) and w[0] < 200]
+    # внутри ромба: каждое слово — в вписанном прямоугольнике половинного размера (70..130 × 80..120)
+    assert len(ru) == 3 and all(70 <= w[0] and w[2] <= 130 and 80 <= w[1] and w[3] <= 120 for w in ru), ru
