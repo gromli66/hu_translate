@@ -2566,8 +2566,55 @@ class Builder:
                     and self.doc.sections[i].header.is_linked_to_previous:
                 self._header(self.doc.sections[i], zl(p))
                 self._footer(self.doc.sections[i], zl(p))
+        # фон листа оригинала (заливка во весь лист: жёлтые листы ÜTJ 30HU375GT, 01-02FMP0BIGT) — у раздела, все листы
+        # которого такого цвета: фон страницы DOCX (w:background) один на документ, и закрашены были только ячейки
+        bgs, first_of = L.get("page_bg") or [], {i: p for i, p, _ in starts}
+        painted = set()
+        for (i, p, _), n in zip(starts, nxt):
+            cols = set(bgs[p - 1:n - 1])
+            if len(cols) != 1 or None in cols or i >= len(self.doc.sections):
+                continue
+            sec, size = self.doc.sections[i], (sizes[p - 1] if p <= len(sizes) else (L["W"], L["H"]))
+            if sec.header.is_linked_to_previous:
+                self._header(sec, zl(p))
+            for hdr in [sec.header] + ([sec.first_page_header] if sec.different_first_page_header_footer else []):
+                self._page_bg(hdr, bgs[p - 1], *size)
+            painted.add(i)
+        for i in painted:                                   # следующий раздел без фона — своя шапка, не со ссылкой
+            j = i + 1
+            if j not in painted and j in first_of and j < len(self.doc.sections):
+                sec = self.doc.sections[j]
+                if sec.header.is_linked_to_previous:
+                    self._header(sec, zl(first_of[j]))
+                if sec.different_first_page_header_footer and sec.first_page_header.is_linked_to_previous:
+                    self._header(type("First", (), {"header": sec.first_page_header})(), zl(first_of[j]))
         self.doc.save(out)
         font_table(out, (L or {}).get("font_class") or {})
+
+    def _page_bg(self, hdr, color, w, h):
+        """Фон листа — картинка 1×1 цвета color во весь лист (w×h pt) за текстом, привязанная к листу, в шапке раздела:
+        шапка повторяется на каждом листе раздела."""
+        from docx.shared import Pt
+        from docx.oxml import parse_xml
+        from docx.oxml.ns import nsdecls, qn
+        from PIL import Image
+        buf = io.BytesIO()
+        Image.new("RGB", (1, 1), "#" + color).save(buf, "PNG")
+        buf.seek(0)
+        run = hdr.paragraphs[-1].add_run()
+        run.add_picture(buf, width=Pt(w), height=Pt(h))
+        inline = run._r.find(".//" + qn("wp:inline"))
+        anchor = parse_xml(
+            f'<wp:anchor {nsdecls("wp")} distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="0" '
+            'behindDoc="1" locked="1" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/>'
+            '<wp:positionH relativeFrom="page"><wp:posOffset>0</wp:posOffset></wp:positionH>'
+            '<wp:positionV relativeFrom="page"><wp:posOffset>0</wp:posOffset></wp:positionV></wp:anchor>')
+        anchor.append(inline.find(qn("wp:extent")))
+        anchor.append(parse_xml(f'<wp:effectExtent {nsdecls("wp")} l="0" t="0" r="0" b="0"/>'))
+        anchor.append(parse_xml(f'<wp:wrapNone {nsdecls("wp")}/>'))
+        for tag in ("wp:docPr", "wp:cNvGraphicFramePr", "a:graphic"):
+            anchor.append(inline.find(qn(tag)))
+        inline.getparent().replace(inline, anchor)
 
     def _tab_groups(self):
         """Пары «подпись ⇥ значение» подряд с одной табуляцией (титул: «Műszaki változás száma⇥10776»): позиция —

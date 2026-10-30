@@ -2384,6 +2384,20 @@ def _page_sizes(path):
         return [(round(pg.rect.width, 1), round(pg.rect.height, 1)) for pg in d]
 
 
+def _page_bgs(path):
+    """Фон листа — заливка во весь лист не белым и не тёмным (жёлтые листы ÜTJ 30HU375GT, 01-02FMP0BIGT): «RRGGBB» или
+    None по листам; docx_build кладёт его фоном раздела, все листы которого такого цвета."""
+    import fitz
+    out = []
+    with fitz.open(str(path)) as d:
+        for pg in d:
+            A = pg.rect.get_area()
+            out.append(next(("%02X%02X%02X" % tuple(round(255 * v) for v in dr["fill"][:3]) for dr in pg.get_drawings()
+                             if dr.get("fill") and len(dr["fill"]) >= 3 and 0.3 < min(dr["fill"]) < 0.97
+                             and fitz.Rect(dr["rect"]).get_area() >= 0.9 * A), None))
+    return out
+
+
 def _zone_keys(texts):
     """Тексты колонтитулов листов без счётчика листов: число, что у большинства листов своё («Oldalszám:» 3, 4, 5 …), —
     «#»; число с немногими значениями (версия 0 или 1, идентификатор) остаётся — листы с разной версией различимы.
@@ -2622,7 +2636,7 @@ def layout(path, blocks, content=None):
                    [max(6.0, min(36.0, body_top - 4 - 18))])
     sig = lambda chars: re.sub(r"\s+", " ", re.sub(r"\d+\.?", "", "".join(c["text"] for c in chars))).strip()
     body_sig = sig(foot_chars)
-    out = {"page_sizes": _page_sizes(path),
+    out = {"page_sizes": _page_sizes(path), "page_bg": _page_bgs(path),
            "W": W, "H": H, "left": left, "right": max(right, 20), "top": body_top - 4,
            "bottom": H - foot_top + 12, "header": head_top, "footer": max(H - foot_bottom - 6, 18),
            **fields,
