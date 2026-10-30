@@ -160,6 +160,9 @@ def test_page_label_of_other_sheet_is_translated_by_known_number():
     assert mem.renumbered("Verziószám: 1") == "Номер версии: 1"
     assert mem.renumbered("Oldalszám: 2.") == "Номер страницы: 2." and mem.renumbered("Oldalszám: 112.") == "Номер страницы: 112."
     assert mem.renumbered("Dátum: 2018-05-21") is None and mem.renumbered("Megjegyzés: 2.") is None
+    # «Oldalszám: 1 2» и «Oldalszám: 12» — один ключ без пробелов, а чисел разное число: не падать (30RL2126GT, 29.10)
+    mem = B.Memory([("Oldalszám: 1 2", "Номер страницы: 1 2")])
+    assert mem.renumbered("Oldalszám: 12") is None and mem.renumbered("Oldalszám: 3 4") is None
     # строка шапки — половина «подпись: значение» известного сегмента: подпись и значение в разных ячейках
     mem = B.Memory([("Azonosító: 30GF(246)51GT", "Идентификатор: 30GF(246)51GT"),
                     ("Megnevezés: tömörség ellenőrzése.", "Наименование: проверка плотности.")])

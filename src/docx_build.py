@@ -543,7 +543,7 @@ class Memory:
         в тексте «1 perc» и «5 perc» по-русски склоняются по-разному."""
         nums = re.findall(r"\d+", KEY(text))
         got = self.num.get(re.sub(r"\d+", "#", KEY(text))) if nums else None
-        if got is None:
+        if got is None or len(re.findall(r"\d+", got)) != len(nums):      # «1 2» и «12» — один ключ, чисел разное число
             return None
         it = iter(nums)
         return re.sub(r"\d+", lambda m: next(it), got)
