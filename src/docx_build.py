@@ -1963,15 +1963,22 @@ class Builder:
         if n < 2:
             return widths
         need = [0.0] * n
+        zone = getattr(self.tr, "zone", lambda t: None)
         for r in rows:
             # средняя ширина знака Times — около 0,55 кегля (полужирного — 0,6); поля ячейки LibreOffice — 2 × 5,4 pt
             k = (0.6 if r.get("bold") else 0.55) * (size or 10)
             for ci, txt in enumerate(r["cells"][:n]):
-                if isinstance(txt, dict) or "\n" in txt or not txt.strip() or len(txt) > 30:
-                    continue
-                ru = self.tr(txt.replace(PAGE_MARK, "00")) or txt
-                if len(ru) > len(txt) and widths[ci] < len(ru) * k + 12:
-                    need[ci] = max(need[ci], len(ru) * k + 12)
+                # и ячейка сетки по линиям (строки), и перевод запасным ходом памяти, как его печатает _zone_text:
+                # «Azonosító:» отдельной ячейкой — «Идентификатор:» из половины сегмента, «Oldalszám: 10.» в ячейке
+                # по линиям — «Номер страницы: 10.»; без них столбец не расширялся, «Иденти / фикато / р:»
+                # (GF(246) л. 13–14), «Номер / страницы» (30TKBSZ36BIGT, 01-02FMP0BIGT, аудит 30.10)
+                for line in ([ln for ln, _ in txt["lines"]] if isinstance(txt, dict) else [txt]):
+                    if "\n" in line or not line.strip() or len(line) > 30:
+                        continue
+                    src = line.replace(PAGE_MARK, "00")
+                    ru = self.tr(src) or zone(src) or line
+                    if len(ru) > len(line) and widths[ci] < len(ru) * k + 12:
+                        need[ci] = max(need[ci], len(ru) * k + 12)
         deficit = [max(0.0, need[i] - widths[i]) for i in range(n)]
         total = sum(deficit)
         if total < 1:
