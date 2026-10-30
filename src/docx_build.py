@@ -1989,7 +1989,16 @@ class Builder:
         al_of = {"right": AL.RIGHT, "center": AL.CENTER, "left": AL.LEFT}   # «влево» — явно: стиль шапки по центру
         merge = grid.get("merge")
         for ri, row in enumerate(rows):
-            for ci, txt in enumerate(row["cells"]):
+            cells = row["cells"]
+            # фраза одной строки, разорванная на ячейки зазором («A lapot kitöltötte» | «(név, dátum, aláírás):»), — одной
+            # ячейкой на их месте, если вся фраза есть в памяти, а частей по отдельности нет
+            full = [i for i, c in enumerate(cells) if isinstance(c, str) and c.strip()]
+            whole, get = " ".join(cells[i] for i in full), getattr(self.tr, "get", None)
+            if len(full) > 1 and len(full) == sum(isinstance(c, str) and bool(c.strip()) for c in cells) and get \
+                    and PAGE_MARK not in whole and get(whole) and not any(get(cells[i]) for i in full):
+                cells = [whole if i == full[0] else "" for i in range(len(cells))]
+                t.cell(ri, full[0]).merge(t.cell(ri, full[-1]))
+            for ci, txt in enumerate(cells):
                 cell = t.cell(ri, ci)
                 p = cell.paragraphs[0]
                 p.style = self.doc.styles[style]

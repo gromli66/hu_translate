@@ -199,3 +199,16 @@ def test_footer_phrase_wrapped_by_narrow_cell_is_translated_whole():
     b = B.Builder(mem, lambda img: None, PROFILE)
     assert b._wrapped(["A lapot kitöltötte", "(név, dátum, aláírás):"]) == ["A lapot kitöltötte (név, dátum, aláírás):"]
     assert b._wrapped(["Azonosító: 3SZ23", "Verziószám: 1"]) == ["Azonosító: 3SZ23", "Verziószám: 1"]
+
+
+def test_footer_phrase_split_into_cells_by_a_gap_is_one_translated_cell(tmp_path):
+    """Фраза одной строки штампа, разорванная зазором на ячейки, — одной ячейкой, если вся фраза есть в памяти (30HU375GT)."""
+    mem = B.Memory([("A lapot kitöltötte (név, dátum, aláírás):", "Лист заполнил (Ф. И. О., дата, подпись):")])
+    b = B.Builder(mem, lambda img: None, PROFILE)
+    L = dict(LAYOUT, stamp=[{"cells": ["A lapot kitöltötte", "(név, dátum, aláírás):", ""], "bold": False}],
+             stamp_widths=[100.0, 150.0, 60.0], stamp_aligns=["left"] * 3, stamp_box=True, stamp_inner=False,
+             stamp_paras=None, page_tok=None, page_marked=False)
+    b.L = L
+    b._footer(b.doc.sections[0], L)
+    xml = b.doc.sections[0].footer._element.xml
+    assert "Лист заполнил" in xml and "kitöltötte" not in xml and xml.count("<w:tc>") == 2
