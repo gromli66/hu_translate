@@ -925,6 +925,10 @@ class Builder:
             else:
                 plain = self.tr("".join(parts))
                 out = _restyle(plain if plain is not None else "".join(parts), groups, parts)
+        # верхний индекс оригинала («10» + приподнятое «-4», docx_layout: loc["sup"]) — индексом и в переводе
+        for base, up in {p for r in runs for p in r.get("sup") or ()}:
+            pat = re.compile(rf"(?<![\d.,]){re.escape(base)}\s?{re.escape(up)}(?![\d])")
+            out = [(k, pat.sub(f"{base}<sup>{up}</sup>", t) if t else t) for k, t in out]
         if lead_img:
             for im in imgs:
                 self._img_run(par, im["img"])

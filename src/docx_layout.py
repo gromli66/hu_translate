@@ -816,7 +816,8 @@ def _runs_of(group, bold, font, size, mono, right=None):
         for pc in pieces:                                   # цвет — четвёртым, у текстового слоя (_text_style)
             t, b, it = pc[:3]
             runs.append({"t": t, "font": font, "size": size, "b": b, "i": it, "color": pc[3] if len(pc) > 3 else "000000",
-                         "body_mono": mono, **({"box": f"b{g['id']}"} if g["loc"].get("box") else {})})
+                         "body_mono": mono, **({"box": f"b{g['id']}"} if g["loc"].get("box") else {}),
+                         **({"sup": g["loc"]["sup"]} if g["loc"].get("sup") else {})})
         last = runs[-1]
         if i + 1 < len(group):
             last["t"] += "\t"
@@ -1477,6 +1478,26 @@ def load(src, segs, text=False):
         y > s["loc"]["bbox"][3] and t == norm(s["text"]) for y, t in lower.get(s["page"], ())))]
     if not content:
         return [], {"width": W, "height": H, "pages": len(doc), "artifacts": {"chars": [], "imgs": []}}
+    if text:
+        # верхний индекс оригинала — знаки тем же кеглем, приподнятые над строкой («10⁻⁴»: «-4» на 3,9 pt выше,
+        # 01-02FMP0BIGT): в сегменте он плоский («10-4»), в переводе — индексом (docx_build._put_runs, loc["sup"])
+        sup = {}
+        for pno in {s["page"] for s in content}:
+            for bl in doc[pno].get_text("dict")["blocks"]:
+                for ln in bl.get("lines", []):
+                    sp = [x for x in ln["spans"] if x["text"].strip()]
+                    if len(sp) < 2:
+                        continue
+                    base = Counter(round(x["origin"][1], 1) for x in sp).most_common(1)[0][0]
+                    for a, x in zip(sp, sp[1:]):
+                        m, t = re.search(r"(\d+)\s*$", a["text"]), x["text"].strip()
+                        if m and len(t) <= 4 and abs(a["origin"][1] - base) < 0.5 \
+                                and base - x["origin"][1] > 0.25 * x["size"]:
+                            mid = (fitz.Rect(x["bbox"]).tl + fitz.Rect(x["bbox"]).br) / 2
+                            seg = next((s for s in content if s["page"] == pno and fitz.Rect(s["loc"]["bbox"]).contains(mid)), None)
+                            if seg:
+                                sup.setdefault(seg["id"], []).append((m.group(1), t))
+        content = [dict(s, loc=dict(s["loc"], sup=sup[s["id"]])) if s["id"] in sup else s for s in content]
     size = round(median(s["loc"].get("size") or 10 for s in content) * 2) / 2
     font = FAMILY.get(Counter(s["loc"].get("family") for s in content).most_common(1)[0][0], "Arial")
     left = sorted(s["loc"]["bbox"][0] for s in content)[len(content) // 10]
