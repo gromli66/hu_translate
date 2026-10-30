@@ -1852,7 +1852,9 @@ class Builder:
 
     def _shrink_tail(self):
         """Перед разрывом листа: пустой абзац Word после таблицы — в 1 pt. Таблица кончалась у низа листа, этот абзац
-        уходил на следующий лист один, а за ним текст «с новой страницы» — пустой лист (ÜFK I л. 75, 18.10)."""
+        уходил на следующий лист один, а за ним текст «с новой страницы» — пустой лист (ÜFK I л. 75, 18.10). И в 1 pt
+        он уходил, если таблица кончалась вплотную к низу (30RL2126GT, листы-формы, 30.10), — поэтому разрыв ставится
+        на него самого (_block). → этот абзац или None."""
         from docx.shared import Pt
         body = self.doc.element.body
         last = next((e for e in reversed(body) if e.tag != W + "sectPr"), None)
@@ -1862,6 +1864,8 @@ class Builder:
             if par._p is last:
                 par.paragraph_format.space_before = par.paragraph_format.space_after = Pt(0)
                 par.paragraph_format.line_spacing = Pt(1)
+                return par
+        return None
 
     def block(self, b):
         k = b["k"]
@@ -1873,8 +1877,11 @@ class Builder:
     def _block(self, b):
         k = b["k"]
         fresh, self.fresh = getattr(self, "fresh", False), False
+        tail = None                                         # пустой абзац после таблицы — он и несёт разрыв
         if b.get("break") and not fresh:
-            self._shrink_tail()
+            tail = self._shrink_tail()
+            if tail is not None and k != "table":           # абзац «с новой страницы» отделяет таблицу и сам
+                tail._p.getparent().remove(tail._p)
         if k == "h":
             self.heading(b)
         elif k == "p":
@@ -1883,12 +1890,15 @@ class Builder:
             if b.get("break") and par is not None and not fresh:
                 par.paragraph_format.page_break_before = True
         elif k == "list":
+            n0 = len(self.doc.paragraphs)
             self.list_(b, b.get("level", 0))                # уровень по отступу оригинала (docx_layout)
+            if b.get("break") and not fresh and len(self.doc.paragraphs) > n0:     # лист после закрытого — список
+                self.doc.paragraphs[n0].paragraph_format.page_break_before = True
         elif k == "table":
             if b.get("break") and not fresh:
                 # разрыв перед таблицей — пустым абзацем в 1 pt «с новой страницы»: у таблицы своего разрыва нет
                 from docx.shared import Pt
-                par = self.doc.add_paragraph(style="Table Text")
+                par = tail or self.doc.add_paragraph(style="Table Text")
                 par.paragraph_format.page_break_before = True
                 par.paragraph_format.space_before = par.paragraph_format.space_after = Pt(0)
                 par.paragraph_format.line_spacing = Pt(1)
@@ -2579,7 +2589,8 @@ def blocks_layout(pdf, segs, mode):
         blocks, info = docx_layout.load(str(pdf), segs, text=mode == "text")
         if mode == "text":
             L = dict(docx_struct.layout(str(pdf), blocks, content=info.get("content_boxes")), sizes=True)
-            blocks = docx_struct.split_at_zones(blocks, L.get("variants"))   # раздел с другой шапкой — не внутри таблицы
+            # раздел с другой шапкой — не внутри таблицы; лист, закрытый подписью, — до конца страницы
+            blocks = docx_struct.split_at_zones(blocks, L.get("variants"), docx_struct.closed_sheets(blocks))
             # логотип своей шапки первого листа (L["first"]) — уже в колонтитуле; рисунком тела он шёл второй копией
             # (E42 корпуса: логотип OAH дважды, 22.10)
             first = L.get("first") or {}

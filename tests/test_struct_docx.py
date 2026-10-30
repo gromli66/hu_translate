@@ -276,6 +276,25 @@ def test_table_cut_by_pages_is_joined():
     assert [len(t["rows"]) for t in got] == [5, 2]
 
 
+def test_sheet_closed_by_its_signature_starts_next_sheet_on_new_page():
+    """Лист формы кончается своей подписью «A lapot kitöltötte …» (30PR132GT, 30BOXFELTEL): склеенная через листы
+    таблица режется после неё, следующий лист — с нового листа перевода; строка с кодом, случайно последняя на двух
+    листах, листа не закрывает."""
+    cell = lambda t, pg, top: {"blocks": [p(t, pg, top)] if t else [], "th": False}
+    sig = "A lapot kitöltötte (dátum, aláírás): ........"
+    rows = [[cell(f"{pg}.1", pg, 100), cell(f"30TK5{pg}S001", pg, 100)] for pg in (3, 4, 5)]
+    rows = [r for pg, r in zip((3, 4, 5), rows) for r in (r, [cell(sig, pg, 760), cell("", pg, 760)])]
+    t = {"k": "table", "rows": rows, "split": True, "geom": {"page": 3}}
+    after = p("Megjegyzés", 6, 90)
+    closed = D.closed_sheets([t, after])
+    assert closed == {3, 4, 5}
+    got = D.split_at_zones([t, after], None, closed)
+    assert [len(b.get("rows") or []) for b in got] == [2, 2, 2, 0]
+    assert [bool(b.get("break")) for b in got] == [False, True, True, True]
+    code = lambda pg: p("02TD81S203 ZÁR", pg, 700)
+    assert D.closed_sheets([p("a", 3), code(3), p("b", 4), code(4), p("c", 5), p("d", 6), p("e", 7), p("f", 8)]) == set()
+
+
 def test_label_tab_kept_and_column_alignment_from_original():
     assert B._keep_tab("Műszaki változás száma\t10776", "Номер технического изменения 10776") == \
         "Номер технического изменения\t10776"

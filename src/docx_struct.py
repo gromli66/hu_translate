@@ -521,14 +521,43 @@ def join_tables(bs):
     return out
 
 
-def split_at_zones(blocks, runs):
+def closed_sheets(blocks):
+    """Листы, которые оригинал закрывает своей строкой: последний текст листа, одинаковый (без знаков и пробелов) у
+    четверти листов документа и не меньше трёх, — подпись листа формы «A lapot kitöltötte (dátum, aláírás): ……»,
+    «Megjegyzés:»; строка с кодом («02TD81S203 ZÁR», 02VE25) последней на двух-трёх листах — случай, не подпись. Такой
+    лист — единица вёрстки:
+    следующий лист оригинала начинается с нового листа перевода (split_at_zones), а не под подписью посреди страницы
+    (30PR132GT, 30BOXFELTEL, 30KBFPRBIGT: два листа на одной странице, аудит 30.10). → {лист от 1}."""
+    last = {}
+
+    def walk(bs):
+        for b in bs:
+            if b["k"] == "list":
+                for it in b["items"]:
+                    walk(it)
+            elif b["k"] == "table":
+                for r in b["rows"]:
+                    for c in r:
+                        walk(c.get("blocks") or [])
+            elif b.get("runs"):
+                g, t = b.get("geom") or {}, text_of(b["runs"]).strip()
+                if t and g.get("page") and g.get("top") is not None and g["top"] >= last.get(g["page"], (-1.0, ""))[0]:
+                    last[g["page"]] = (g["top"], t)
+    walk(blocks)
+    key = lambda t: re.sub(r"[\W_]+", "", t).lower()
+    n = Counter(key(t) for _, t in last.values())
+    return {pn for pn, (_, t) in last.items() if len(key(t)) >= 6 and n[key(t)] >= max(3, 0.25 * len(last))}
+
+
+def split_at_zones(blocks, runs, closed=()):
     """Раздел с другой шапкой (серия листов со своим колонтитулом, layout → variants) начинается между блоками, а таблица
     через лист (join_tables) — один блок: её режет там, где у листа другая серия; у следующей части — копия строк, что
-    оригинал повторял на каждом листе (шапка таблицы)."""
+    оригинал повторял на каждом листе (шапка таблицы). closed — листы, закрытые подписью (closed_sheets): таблицу
+    режет и после них, а следующий лист — с нового листа (break)."""
     zone = lambda pn: next((i for i, z in enumerate(runs or []) if z["from"] <= pn <= z["to"]), None)
     out = []
     for b in blocks:
-        if not runs or b["k"] != "table" or not b.get("split"):
+        if not (runs or closed) or b["k"] != "table" or not b.get("split"):
             out.append(b)
             continue
         rows = b["rows"]
@@ -539,14 +568,28 @@ def split_at_zones(blocks, runs):
             last = min((x["geom"]["page"] for c in r for x in c["blocks"] if (x.get("geom") or {}).get("page")),
                        default=last)
             pages.append(last)
-        cuts = [i for i in range(max(rep, 1), len(rows)) if zone(pages[i]) != zone(pages[i - 1])]
+        cuts = [i for i in range(max(rep, 1), len(rows)) if zone(pages[i]) != zone(pages[i - 1])
+                or pages[i] != pages[i - 1] and pages[i - 1] in closed]
         for a, z in zip([0] + cuts, cuts + [len(rows)]):
             head = rows[:rep] if a else []
             part = dict(b, rows=head + rows[a:z], geom=dict(b["geom"], page=pages[a]) if b.get("geom") else b.get("geom"))
             if len(ys) == len(rows) + 1:                    # линии строк — своей части; у повтора шапки — свои
                 part["frame"] = dict(b["frame"], ys=ys[:z + 1] if not a else ys[:rep + 1] + [
                     round(ys[rep] + y - ys[a], 1) for y in ys[a + 1:z + 1]] if rep else ys[a:z + 1])
+            if a and pages[a - 1] in closed:
+                part.update({"break": True, "sheet": pages[a]})
             out.append(part)
+    # первый блок листа после закрытого — с нового листа (sheet — лист оригинала, с которого он начат: свой раздел и
+    # номер листа, docx_build)
+    page = lambda b: (b.get("geom") or {}).get("page") if b["k"] != "list" else next(
+        ((p.get("geom") or {}).get("page") for it in b["items"] for p in it if (p.get("geom") or {}).get("page")), None)
+    top = 0
+    for b in out:
+        pn = page(b)
+        if pn and pn > top:
+            if pn - 1 in closed:
+                b.update({"break": True, "sheet": pn})
+            top = pn
     return out
 
 
