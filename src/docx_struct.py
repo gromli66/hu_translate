@@ -23,6 +23,9 @@ HEAD = {"H1": 1, "H2": 2, "H3": 3, "H4": 4, "H5": 5, "H6": 6}
 SKIP = {"Artifact"}
 PAGE_MARK = "\ue000"           # знаки номера листа в колонтитуле образцового листа (layout) — там ставится поле PAGE
 INLINE = {"Link", "Span", "Reference", "Annot", "Quote", "Code", "BibEntry"}
+# пометка о переносе листа оригинала — служебная строка его разрыва, в переводе её нет (join_tables, lost_segments)
+CONT_MARK = re.compile(r"[\s.…_-]*(?:folytat[aá]s\s+a\s+k[öo]vetkez[őo]\s+oldalon|continued\s+on\s+(?:the\s+)?next\s+page)"
+                       r"[\s.…_-]*", re.I)
 
 
 # начертание в имени шрифта PDF — и по-английски, и по-местному: Word 2016 с венгерским интерфейсом пишет
@@ -459,6 +462,10 @@ def join_tables(bs):
     for b in bs:
         if b["k"] == "list":
             b = dict(b, items=[join_tables(it) for it in b["items"]])
+        # пометка о переносе листа оригинала («… folytatás a következő oldalon …») — прочь и не между таблицами: в
+        # переводе листы рвутся в других местах, и она стояла посреди страницы, дальше шёл текст (3PR10, аудит 30.10)
+        if b["k"] == "p" and CONT_MARK.fullmatch(text_of(b.get("runs") or [])):
+            continue
         # пометка о переносе («Folytatás a következő oldalon.») между таблицей и её продолжением без шапки на следующем
         # листе — прочь: в DOCX таблица переносится сама (ÜFK, 16.10)
         if b["k"] == "table" and len(out) >= 2 and out[-1]["k"] == "p" and out[-2]["k"] == "table" \

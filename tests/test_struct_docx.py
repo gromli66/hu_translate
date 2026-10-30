@@ -522,6 +522,10 @@ def test_spans_autonum_text_labels_and_continuation_note():
     t2 = {"k": "table", "rows": [[cell(False)] * 2], "geom": {"page": 91}}
     got = D.join_tables([t1, note, t2])
     assert len(got) == 1 and len(got[0]["rows"]) == 3
+    # пометка о переносе листа и между абзацами — прочь (3PR10: стояла посреди страницы), прочий короткий текст — нет
+    mark = {"k": "p", "runs": [{"t": "… folytatás a következő oldalon …"}], "geom": {"page": 12}}
+    got = D.join_tables([p("Nyitni az alábbi armatúrákat"), mark, p("Folytatás a lap tetején")])
+    assert [D.text_of(b["runs"]) for b in got] == ["Nyitni az alábbi armatúrákat", "Folytatás a lap tetején"]
 
 
 def ocr_doc(tmp_path, pages=8):
