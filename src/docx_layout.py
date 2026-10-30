@@ -1015,12 +1015,16 @@ def _form_marks(drawings):
             out.append(((x0, y0, x1, y1), "○"))
         elif ks in (["re"], ["qu"]) or len(ks) == 4 and all(k == "l" for k in ks):
             out.append(((x0, y0, x1, y1), "□"))
+        elif ks == ["l", "l", "l"] and abs(dr["items"][0][1][0] - dr["items"][-1][2][0]) + abs(
+                dr["items"][0][1][1] - dr["items"][-1][2][1]) < 1:
+            # треугольник — три отрезка, замкнутые: «△» графы «Ok | HIBA» 30RL2126GT терялись целиком (аудит 30.10)
+            out.append(((x0, y0, x1, y1), "△"))
     if out:
         # внутри — другой путь (галочка, крестик, точка): отметка поставлена — пустой «□» говорил обратное (ред-тим 20.10)
         small = [o["rect"] for o in drawings if o["rect"][2] - o["rect"][0] <= 20 and o["rect"][3] - o["rect"][1] <= 20]
         inner = lambda b, r: (b[0] - 1 <= r[0] and r[2] <= b[2] + 1 and b[1] - 1 <= r[1] and r[3] <= b[3] + 1
                               and r[2] - r[0] < 0.9 * (b[2] - b[0]))
-        out = [(b, {"○": "◉", "□": "☒"}[ch] if any(inner(b, r) for r in small) else ch) for b, ch in out]
+        out = [(b, {"○": "◉", "□": "☒", "△": "▲"}[ch] if any(inner(b, r) for r in small) else ch) for b, ch in out]
     return out
 
 

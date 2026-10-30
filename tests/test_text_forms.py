@@ -25,6 +25,12 @@ def test_vector_marks_of_form():
     dot = {"rect": (486, 400, 494, 408), "type": "f", "fill": (0, 0, 0), "items": [("c",)] * 4}
     box = {"rect": (90, 300, 200, 314), "type": "s", "color": (0, 0, 0), "items": [("re", (90, 300, 200, 314))]}
     assert [ch for _, ch in DL._form_marks([circle, square, dot, box])] == ["○", "□"]
+    # треугольник «△» графы «Ok | HIBA» (30RL2126GT) — три замкнутых отрезка; ломаная из трёх — не отметка
+    P = lambda x, y: __import__("fitz").Point(x, y)
+    tri = {"rect": (486, 500, 502, 516), "type": "s", "color": (0, 0, 0),
+           "items": [("l", P(494, 500), P(502, 516)), ("l", P(502, 516), P(486, 516)), ("l", P(486, 516), P(494, 500))]}
+    zig = dict(tri, items=[("l", P(486, 500), P(502, 500)), ("l", P(502, 500), P(486, 516)), ("l", P(486, 516), P(502, 516))])
+    assert [ch for _, ch in DL._form_marks([tri, zig])] == ["△"]
 
 
 def _form_pdf(path, rows=None):
