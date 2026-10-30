@@ -160,4 +160,29 @@ def test_page_label_of_other_sheet_is_translated_by_known_number():
     assert mem.renumbered("Verziószám: 1") == "Номер версии: 1"
     assert mem.renumbered("Oldalszám: 2.") == "Номер страницы: 2." and mem.renumbered("Oldalszám: 112.") == "Номер страницы: 112."
     assert mem.renumbered("Dátum: 2018-05-21") is None and mem.renumbered("Megjegyzés: 2.") is None
+    # строка шапки — половина «подпись: значение» известного сегмента: подпись и значение в разных ячейках
+    mem = B.Memory([("Azonosító: 30GF(246)51GT", "Идентификатор: 30GF(246)51GT"),
+                    ("Megnevezés: tömörség ellenőrzése.", "Наименование: проверка плотности.")])
+    assert [mem.zone(x) for x in ("Azonosító:", "Megnevezés:", "tömörség ellenőrzése.", "30GF(246)51GT", "Dátum:")] == [
+        "Идентификатор:", "Наименование:", "проверка плотности.", "30GF(246)51GT", None]
+
+
+def test_repeated_table_header_row_is_not_lost():
+    """Строка таблицы с w:tblHeader печатается на каждом листе таблицы: в файле она одна, а сегментов шапки — по числу листов
+    (30GF(246)51GT: «Feltétel, művelet, ellenőrzés» ×9; 30PR132GT: легенда ×49) — не потеря; без tblHeader — потеря."""
+    import tempfile
+    from docx.oxml import OxmlElement
+    import assemble as A
+    segs = [{"id": k, "page": k, "text": "Feltétel, művelet, ellenőrzés", "loc": {"bbox": [60.0, 300.0, 200.0, 310.0]}}
+            for k in range(3)]
+    for header in (True, False):
+        doc = Document()
+        t = doc.add_table(rows=2, cols=1)
+        t.rows[0].cells[0].text = "Условие, операция, проверка"
+        if header:
+            t.rows[0]._tr.get_or_add_trPr().append(OxmlElement("w:tblHeader"))
+        with tempfile.TemporaryDirectory() as tmp:
+            doc.save(tmp + "/h.docx")
+            got = A.lost_segments(tmp + "/h.docx", segs, lambda s: "Условие, операция, проверка")
+        assert (not got) if header else [n for _, _, n in got] == [2]
 

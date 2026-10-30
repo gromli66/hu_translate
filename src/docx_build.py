@@ -484,7 +484,7 @@ class Memory:
     def __init__(self, pairs):
         from segments import needs_translation
         self.need = needs_translation
-        self.m, self.tagged, self.missing, self.num = {}, {}, [], {}
+        self.m, self.tagged, self.missing, self.num, self.half = {}, {}, [], {}, {}
         for hu, ru in pairs:
             self.add(hu, ru)
 
@@ -502,6 +502,11 @@ class Memory:
             self.m.setdefault(KEY(hu), TAGS.sub("", ru))
             if re.findall(r"\d+", hu) == re.findall(r"\d+", ru) and len(re.sub(r"[\W\d_]", "", hu)) >= 4:
                 self.num.setdefault(re.sub(r"\d+", "#", KEY(hu)), TAGS.sub("", ru))   # числа в переводе те же
+            # «подпись: значение» — и половинами (шапка с подписью и значением в разных ячейках: «Azonosító:» | «30GF…»)
+            a, b = re.match(r"([^:\d]{3,30}:)\s*(\S.*)$", hu, re.S), re.match(r"([^:]{3,40}:)\s*(\S.*)$", ru, re.S)
+            if a and b:
+                self.half.setdefault(KEY(a.group(1)), b.group(1))
+                self.half.setdefault(KEY(a.group(2)), b.group(2))
         # пункт списка: номер «a.» в памяти — частью текста, в сборке номер даёт автонумерация (docx_struct.relist);
         # в тексте с метками начертания номер — внутри первой метки: «<f1>a. az UTS …</f1><f2>ping x_pb</f2>»
         mh, mr = LABEL_T.match(hu), LABEL_RU_T.match(ru)
@@ -525,6 +530,11 @@ class Memory:
             if all(g is not None for g in got):
                 r = "\t".join(g.strip() if p.strip() else g for p, g in zip(parts, got))
         return r if r is not None else self._glued(text)
+
+    def zone(self, text):
+        """Строка колонтитула, которой нет в памяти целиком: перевод известной строки с другим числом (renumbered) или
+        половина «подпись: значение» известного сегмента."""
+        return self.renumbered(text) or self.half.get(KEY(text))
 
     def renumbered(self, text):
         """Тот же текст с другим числом — перевод известного текста с подставленным числом: «Oldalszám: 2.» по известному
@@ -2032,11 +2042,11 @@ class Builder:
         if PAGE_MARK in txt:                    # номер помечен на месте (docx_struct.layout): поле — он, k-й такой же
             k = len(num.findall(txt[:txt.index(PAGE_MARK)])) if num else 0
             txt = re.sub(PAGE_MARK + "+", tok, txt)
-            ru = self.tr(txt) or getattr(self.tr, "renumbered", lambda t: None)(txt) or txt
+            ru = self.tr(txt) or getattr(self.tr, "zone", lambda t: None)(txt) or txt
             ms = list(num.finditer(ru)) if num else []
             mm = (ms[k] if len(ms) == len(num.findall(txt)) else ms[-1]) if ms else None
         else:
-            ru = (self.tr(txt) or getattr(self.tr, "renumbered", lambda t: None)(txt) or txt) if txt else ""
+            ru = (self.tr(txt) or getattr(self.tr, "zone", lambda t: None)(txt) or txt) if txt else ""
             mm = num.search(ru) if num and num.search(txt) and not page_marked else None
         if mm:
             r = p.add_run(ru[:mm.start()]); r.bold = bold
