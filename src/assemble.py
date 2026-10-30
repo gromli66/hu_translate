@@ -263,6 +263,70 @@ def _toc_line(page, s, r, rect, fam, sz, busy):
     return True
 
 
+def _foreign_ink(page, plates, dpi=150):
+    """Краска скана, которую перевод не должен задеть: подписи, штампы, чужие надписи. Возвращает (поверх, место):
+    поверх — [(рамка, PNG с прозрачностью)]: цветные штрихи (не серые), что выходят за белые плашки строк, своими
+    пикселями поверх перевода — плашка по рамке строки стирала середину подписи, перевод ложился на обрывки («Bucsi
+    Gábor» 30YCGT nyilv, «Horváth László» PG, аудит 30.10); печатный текст строки — внутри своей плашки и стирается, как
+    прежде; чёрные штрихи не возвращаются — линейки бланка и задевшие их буквы проступили бы под переводом. Штрих
+    «выходит» — больше 40 его пикселей (≈ 3×3 pt при 150 dpi) вне плашек; бледная подпись в скане рвётся на точки —
+    цветное склеивается расширением на 2 px. место(рамка, своя, первая строка) — рамка текста, урезанная справа и снизу
+    до чужой краски вне плашек (подпись правее строки: «Подпись:» русской строки, длиннее венгерской, ложился на неё,
+    30RYBSZGT nyilv)."""
+    import fitz
+    import cv2
+    import numpy as np
+    pm = page.get_pixmap(dpi=dpi, annots=False)
+    a = np.frombuffer(pm.samples, np.uint8).reshape(pm.height, pm.width, pm.n)[:, :, :3]
+    ai = a.astype(np.int16)
+    color = ((ai.max(2) - ai.min(2) > 60) & (ai.min(2) < 200)).astype(np.uint8)
+    k = dpi / 72
+    box = lambda r: (max(int(r.x0 * k), 0), max(int(r.y0 * k), 0), int(np.ceil(r.x1 * k)), int(np.ceil(r.y1 * k)))
+    under = np.zeros(color.shape, bool)
+    for r in plates:
+        x0, y0, x1, y1 = box(r)
+        under[y0:y1, x0:x1] = True
+    # чужая краска для места: тёмное вне плашек без линеек бланка (от 20 pt; их места задаёт ячейка при извлечении —
+    # линия ряда под строкой ужимала «6./ Разработал:», линия в полосе строки — «Ф. И. О.:» в точку) и без пылинок
+    dark = ((ai.min(2) < 160) & ~under).astype(np.uint8)
+    L = int(20 * k)
+    op = lambda m, w, h: cv2.morphologyEx(m, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (w, h)))
+    for w, h in ((L, 1), (1, L)):                   # линия — длинная и тонкая (штамп шире 20 pt — не линия)
+        dark &= ~(op(dark, w, h) & ~op(dark, max(w, 5), max(h, 5)))
+    n, lab, st, _ = cv2.connectedComponentsWithStats(dark, connectivity=8)
+    dark = np.isin(lab, np.nonzero(st[:, cv2.CC_STAT_AREA] >= 20)[0][1:])
+
+    def room(rect, own, first):
+        X0, Y0, X1, Y1 = box(fitz.Rect(own))
+        # вправо — по полосе первой строки: рукопись у второй строки абзаца (дата в ряду ниже заголовка) не сужает его
+        F0, F1 = box(fitz.Rect(first))[1::2]
+        cols = np.nonzero(dark[F0:F1, X1:min(int(rect.x1 * k), dark.shape[1])].any(0))[0]
+        if len(cols):
+            rect = fitz.Rect(rect.x0, rect.y0, max((X1 + cols[0]) / k - 1, own[2]), rect.y1)
+        # вниз — от 3 pt под строкой: у самой строки место — как было (высота строки с интервалом)
+        Y = Y1 + int(3 * k)
+        rows = np.nonzero(dark[Y:min(int(rect.y1 * k), dark.shape[0]), X0:int(rect.x1 * k)].any(1))[0]
+        if len(rows):
+            rect = fitz.Rect(rect.x0, rect.y0, rect.x1, max((Y + rows[0]) / k - 1, own[3] + 2))
+        return rect
+    out = []
+    if (color.astype(bool) & under).any():
+        n, lab = cv2.connectedComponents(cv2.dilate(color, np.ones((5, 5), np.uint8)), connectivity=8)
+        lab = np.where(color.astype(bool), lab, 0)
+        lab_in, lab_out = lab[under & (lab > 0)], lab[~under & (lab > 0)]
+        keep = np.nonzero((np.bincount(lab_in, minlength=n) > 0) & (np.bincount(lab_out, minlength=n) > 40))[0]
+        m = np.isin(lab, keep) & under
+        from PIL import Image
+        for r in plates:
+            x0, y0, x1, y1 = box(r)
+            sub = m[y0:y1, x0:x1]
+            if sub.any():
+                buf = __import__("io").BytesIO()
+                Image.fromarray(np.dstack([a[y0:y1, x0:x1], sub.astype(np.uint8) * 255]), "RGBA").save(buf, "PNG")
+                out.append((fitz.Rect(x0 / k, y0 / k, x1 / k, y1 / k), buf.getvalue()))
+    return out, room
+
+
 def build_pdf(src, out, segs, res, progress=None, shots_out=None):
     """shots_out — куда сохранить оригинал с переведёнными скриншотами (без правки текста): из него собирается DOCX."""
     import fitz
@@ -306,6 +370,7 @@ def build_pdf(src, out, segs, res, progress=None, shots_out=None):
         # минимум по всей форме мельчил её целиком (30RDIT_TU: медиана 10 → 9 pt, красная команда 15.10)
         tabs = [] if ocr or page.rotation else [r for r in (fitz.Rect(t.bbox) for t in page.find_tables().tables)
                                                  if r.get_area() < 0.5 * page.rect.get_area()]
+        plates = []
         for s, r in todo:
             if ocr:
                 # OCR-страница: белая заливка по рамкам строк абзаца, а не по общей рамке — общая рамка формы
@@ -313,10 +378,13 @@ def build_pdf(src, out, segs, res, progress=None, shots_out=None):
                 # влево под тире/номер пункта, которые Tesseract мог не включить в рамку
                 for i, (x0, y0, x1, y1) in enumerate(s["loc"]["frags"]):
                     left = 16 if i == 0 and re.match(r"\s*[-–•]", s["text"]) else 2
-                    page.add_redact_annot(fitz.Rect(x0 - left, y0 - 1.5, x1 + 2, y1 + 1.5) * der, fill=(1, 1, 1))
+                    plates.append(fitz.Rect(x0 - left, y0 - 1.5, x1 + 2, y1 + 1.5))
+                    page.add_redact_annot(plates[-1] * der, fill=(1, 1, 1))
             else:
                 for bb in s["loc"]["frags"]:
                     page.add_redact_annot(fitz.Rect(bb) * der, fill=False)
+        # подписи и штампы, задетые плашками, — поверх перевода (лист без поворота: рамки сегментов = рамки листа)
+        ink, room = _foreign_ink(page, plates) if ocr and not page.rotation else ([], None)
         # скан: пиксели под белой плашкой стираются в самой картинке — иначе её вытаскивает конвертер в DOCX
         # и под русским текстом проступает венгерский (30RDGT nyilv, 06.10)
         page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS if ocr else fitz.PDF_REDACT_IMAGE_NONE,
@@ -394,6 +462,14 @@ def build_pdf(src, out, segs, res, progress=None, shots_out=None):
         for i in order:
             s, rect, txt, align, size, fam = items[i]
             rect = _free(rect, busy, s["loc"]["bbox"])
+            if room:
+                # скан: место — до чужой краски (подпись, штамп правее и ниже); тесная надпись ужимается сама, масштаб
+                # листа — как прежде, по месту без неё (иначе весь лист PG мельчал из-за подписи под фамилией)
+                rect = room(rect, s["loc"]["bbox"], s["loc"]["frags"][0])
+                if align == "center":               # по центру — урезанное справа место симметрично вокруг середины
+                    c = (s["loc"]["bbox"][0] + s["loc"]["bbox"][2]) / 2
+                    h = max(min(c - rect.x0, rect.x1 - c), (s["loc"]["bbox"][2] - s["loc"]["bbox"][0]) / 2)
+                    rect = fitz.Rect(c - h, rect.y0, c + h, rect.y1)
             ki = kt[tab_of[i]] if tab_of[i] is not None else k
             sz = size * min(ki, 1.0)
             if not ocr and not page.rotation and _toc_line(page, s, res[str(s["id"])], rect, fam, sz, busy):
@@ -435,6 +511,8 @@ def build_pdf(src, out, segs, res, progress=None, shots_out=None):
             spare, scale = page.insert_htmlbox(rect * der, txt, css=css(al), scale_low=0)
             if scale * min(k, 1.0) < 0.7:             # тесный блок — сокращение (pipeline.fit) по каждой надписи блока
                 shrink += [{"page": pno + 1, "id": it[0]["id"], "scale": round(scale * min(k, 1.0), 2)} for it in mem]
+        for r, png in ink:
+            page.insert_image(r, stream=png, overlay=True)
         sub.insert_pdf(doc, from_page=pno, to_page=pno)
     # отдаём только обработанные страницы: и для выборки, и для полного прогона это вся работа
     # каждая вставка абзаца встраивает свой экземпляр шрифта (5275 объектов на 157 стр. ÜFK I, 43,8 МБ);
