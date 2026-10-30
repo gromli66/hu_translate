@@ -2540,7 +2540,9 @@ class Builder:
         self.doc.settings.element.append(_el("w:updateFields", w__val="true"))
         # листов оригинала у альбомных разделов: {номер раздела: листов} (docx_fit ужимает разделы в один лист)
         nxt = [p for _, p, _ in starts[1:]] + [len(sizes) + 1]
-        self.fit_want = {i: n - p for (i, p, ld), n in zip(starts, nxt) if ld and ld != "zone"}
+        # и раздел-серия: перелившись за свои листы, он сдвигал номер следующего раздела, что начинает с номера своего
+        # листа оригинала, — номер повторялся («14, 14», «17, 17» 30TKBSZ36BIGT, «13, 13» GF(246), аудит 30.10)
+        self.fit_want = {i: n - p for (i, p, ld), n in zip(starts, nxt) if ld}
         # раздел ровно в один лист оригинала (закрытый подписью лист формы), перелившийся на вторую страницу: на ней —
         # «N … (прод.)», а не N+1 — номер следующего листа (30KBFPRBIGT, 30BOXFELTEL: два листа «4», аудит 30.10)
         zl = lambda pg: (lambda k: dict(L, **zones[k]) if k is not None else L)(
