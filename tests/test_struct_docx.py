@@ -1516,6 +1516,31 @@ def test_padded_labels_become_sub_rows():
     assert t["rows"][1][0]["edges"]["bottom"] and not t["rows"][0][0]["edges"]["bottom"]
 
 
+def test_list_in_label_pair_cell_survives_sub_rows():
+    """TU пп. 1.16–1.17: в ячейке-паре меток пункты «− 30YP15S101 zárva …» — список, а у списка своего верха нет
+    (geom — у абзацев пунктов). Отбор подстрок по верху блока его выбрасывал: текст пропадал из DOCX. Список — в
+    подстроку по верху первого пункта, блок вовсе без места — с предыдущим."""
+    def p(t, top):
+        return {"k": "p", "runs": [{"t": t}], "geom": {"top": top, "page": 3}}
+    def lst(*items):
+        return {"k": "list", "kind": "Disc", "items": [[p(t, top)] for t, top in items]}
+    blank = {"k": "p", "runs": []}
+    e = {"top": True, "bottom": True, "left": True, "right": True}
+    nogeom = {"k": "p", "runs": [{"t": "без места"}]}
+    row = [{"blocks": [p("1.16.", 247), blank, blank, p("1.17.", 309)], "th": False, "edges": e},
+           {"blocks": [p("Bekapcsolták", 247), lst(("− Primerköri", 257), ("− Térfogat", 268)), blank,
+                       p("Amennyiben", 310), lst(("− 30YP15S101 zárva", 363), ("− 30YP13S101 zárva", 374)), nogeom],
+            "th": False, "edges": e}]
+    t = {"k": "table", "rows": [row]}
+    D.sub_rows([t])
+    def txt(bs):
+        return [D.text_of(x["runs"]) if x["k"] == "p" else [D.text_of(y["runs"]) for it in x["items"] for y in it]
+                for x in bs]
+    assert len(t["rows"]) == 2
+    assert txt(t["rows"][0][1]["blocks"]) == ["Bekapcsolták", ["− Primerköri", "− Térfogat"]]
+    assert txt(t["rows"][1][1]["blocks"]) == ["Amennyiben", ["− 30YP15S101 zárva", "− 30YP13S101 zárva"], "без места"]
+
+
 def test_page_split_paragraph_joins_on_full_last_line():
     """Абзац, разрезанный листом, когда продолжение начато прописной (имя собственное: «…az Országos | Atomenergia
     Hivatal…», OAH 1.1): последняя строка на листе во всю ширину — склейка; короткая последняя строка — нет."""

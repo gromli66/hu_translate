@@ -388,8 +388,21 @@ def sub_rows(bs):
                 continue
             cut = labels + pair
             n = len(tops)
-            part = lambda c, k: [x for x in c["blocks"] if not blank(x) and top(x) is not None
-                                 and (k == 0 or top(x) >= tops[k] - 2) and (k == n - 1 or top(x) < tops[k + 1] - 2)]
+
+            def share(c):
+                """Блоки ячейки по подстрокам: по верху блока (у списка — по верху первого пункта), блок без места — с
+                предыдущим. Список («− 30YP15S101 zárva …» ячейки пп. 1.16–1.17 TU) своего верха не имеет, и отбор по
+                верху его выбрасывал: текст пропадал из DOCX (30RVRXTSBIGT_TU и ещё 3 документа, 30.10)."""
+                got, k = [[] for _ in range(n)], 0
+                for x in c["blocks"]:
+                    if blank(x):
+                        continue
+                    t = top(x) if x["k"] == "p" else (_pos(x) or (None, None))[1]
+                    if t is not None:
+                        k = max(i for i in range(n) if i == 0 or t >= tops[i] - 2)
+                    got[k].append(x)
+                return got
+            parts = {ci: share(r[ci]) for ci in cut}
             edge = lambda c, k: dict(c.get("edges") or {}, **({"top": False} if k else {}),
                                      **({"bottom": False} if k < n - 1 else {}))
             for k in range(n):
@@ -397,7 +410,7 @@ def sub_rows(bs):
                 for ci, c in enumerate(r):
                     if ci in cut:
                         g = dict(c.get("geom") or {}, top=tops[k]) if c.get("geom") else None
-                        row.append(dict(c, blocks=part(c, k), geom=g, **({"edges": edge(c, k)} if "edges" in c else {})))
+                        row.append(dict(c, blocks=parts[ci][k], geom=g, **({"edges": edge(c, k)} if "edges" in c else {})))
                     elif k == 0:
                         row.append(dict(c, **({"edges": edge(c, 0)} if "edges" in c else {})))
                     else:
