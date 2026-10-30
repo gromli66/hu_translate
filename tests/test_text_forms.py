@@ -736,6 +736,14 @@ def test_header_label_column_widens_for_longer_russian_label():
     w = b._fit_widths(rows, [55, 300, 70, 40], 11.0)
     assert w[0] > 55 and w[2] > 70 and abs(sum(w) - 465) < 1 and w[1] >= 0.6 * 300
     assert b._fit_widths(rows, [120, 200, 100, 45], 11.0) == [120, 200, 100, 45]
+    # шапка Courier: знак — 0,6 кегля; по средней Times «Номер страницы:» выходил ровно в ширину столбца и переносился
+    # (3FI18: 102,75 pt, «Номер / страницы:», 30.10)
+    rows = [{"cells": ["Azonosító: 3FI18", "Oldalszám:", "26"]}]
+    mem = B.Memory([("Azonosító: 3FI18", "Идентификатор: 3FI18"), ("Oldalszám:", "Номер страницы:"), ("26", "26")])
+    b = B.Builder(mem, lambda img: png(), PROFILE)
+    assert b._fit_widths(rows, [330, 102.75, 36], 11.0) == [330, 102.75, 36]
+    w = b._fit_widths(rows, [330, 102.75, 36], 11.0, mono=True)
+    assert w[1] >= 15 * 0.6 * 11 + 10.8 and abs(sum(w) - 468.75) < 1
 
 
 def test_header_words_keep_glyphs_of_fallback_font_raised_by_two_points():

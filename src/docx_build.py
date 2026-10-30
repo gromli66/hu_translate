@@ -1976,10 +1976,11 @@ class Builder:
             b.append(_el(f"w:{side}", w__val="nil"))
         _tblpr_put(table, b)
 
-    def _fit_widths(self, rows, widths, size):
+    def _fit_widths(self, rows, widths, size, mono=False):
         """Столбец подписи шапки по ширине венгерской («Azonosító:», 55 pt) не вмещает русскую («Идентифика / тор:»):
         столбцам, где перевод короткой ячейки длиннее оригинала и не помещается в строку, ширина добавляется за счёт
-        самого широкого столбца (он остаётся не меньше 60 % прежнего)."""
+        самого широкого столбца (он остаётся не меньше 60 % прежнего). mono — шрифт шапки моноширинный (Courier):
+        знак — ровно 0,6 кегля, по средней Times «Номер страницы:» выходил впритык и переносился (3FI18, 30.10)."""
         n = len(widths)
         if n < 2:
             return widths
@@ -1987,7 +1988,7 @@ class Builder:
         zone = getattr(self.tr, "zone", lambda t: None)
         for r in rows:
             # средняя ширина знака Times — около 0,55 кегля (полужирного — 0,6); поля ячейки LibreOffice — 2 × 5,4 pt
-            k = (0.6 if r.get("bold") else 0.55) * (size or 10)
+            k = (0.6 if r.get("bold") or mono else 0.55) * (size or 10)
             for ci, txt in enumerate(r["cells"][:n]):
                 # и ячейка сетки по линиям (строки), и перевод запасным ходом памяти, как его печатает _zone_text:
                 # «Azonosító:» отдельной ячейкой — «Идентификатор:» из половины сегмента, «Oldalszám: 10.» в ячейке
@@ -2017,7 +2018,8 @@ class Builder:
         from docx.shared import Pt
         from docx.enum.text import WD_ALIGN_PARAGRAPH as AL
         rows, widths, aligns = grid["rows"], grid.get("widths") or [], grid.get("aligns") or []
-        widths = self._fit_widths(rows, widths, grid.get("size"))
+        font = self.doc.styles[style].font.name or ""
+        widths = self._fit_widths(rows, widths, grid.get("size"), bool(re.search(r"(?i)courier|mono|consol", font)))
         ncol = max(len(r["cells"]) for r in rows)
         t = part.add_table(rows=len(rows), cols=ncol, width=Pt(sum(widths) or 400))
         if grid.get("inner", True):
