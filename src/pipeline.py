@@ -14,7 +14,7 @@
 
 Рабочая папка: <work>/ocr (кэш OCR), <work>/json/<док>.json (состояние), <work>/out (результаты).
 Ответы портала кэшируются (cache/), перезапуск после обрыва дешёвый."""
-import os, re, json, time, difflib, threading, collections
+import os, re, json, html, time, difflib, threading, collections
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
@@ -154,6 +154,39 @@ def portfolio_target(out, stem, sfx="_RU"):
     return t.with_name(f"{stem}{sfx}_портфолио.pdf") if t.exists() else t
 
 
+PORTFOLIO_COVER = {
+    "ru": "PDF-портфолио: переводы документов — во вложениях этого файла ({names}). Откройте панель вложений "
+          "или Adobe Acrobat / Adobe Reader X и новее.",
+    "en": "PDF portfolio: the translated documents are attached to this file ({names}). Open the attachments panel "
+          "or Adobe Acrobat / Adobe Reader X or later.",
+    "hu": "PDF-portfólió: a lefordított dokumentumok e fájl mellékletei ({names}). Nyissa meg a mellékletek panelt "
+          "vagy az Acrobat / Adobe Reader X-es vagy újabb verzióját."}
+
+
+def portfolio_cover(page, names, lang):
+    """Видимая страница переведённого портфолио: надпись заглушки Adobe («A legjobb eredmény érdekében a
+    PDF-portfóliót…», язык оригинала) — на языке перевода, с перечнем вложений. Заглушка без надписи выглядела
+    непереведённым «_RU.pdf» из одной венгерской фразы (9 портфолио ночи 29→30.10). Картинка папки и рамка — как были;
+    полоса надписи — объединение рамок текста страницы, кнопка «скачать Reader» внутри неё уходит вместе со ссылкой."""
+    import fitz
+    boxes = [fitz.Rect(b["bbox"]) for b in page.get_text("dict")["blocks"] if b["type"] == 0]
+    if not boxes or lang not in PORTFOLIO_COVER:
+        return False
+    band = fitz.Rect(boxes[0])
+    for r in boxes[1:]:
+        band |= r
+    for ln in page.get_links():
+        if fitz.Rect(ln["from"]).intersects(band):
+            band |= ln["from"]                  # кнопка — область ссылки, её рамка шире надписи
+            page.delete_link(ln)
+    page.add_redact_annot(band + (-1, -1, 1, 1), fill=(1, 1, 1))
+    page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE, graphics=fitz.PDF_REDACT_LINE_ART_REMOVE_IF_COVERED)
+    txt = html.escape(PORTFOLIO_COVER[lang].format(names=", ".join(names)))
+    page.insert_htmlbox(band, txt, css="* {font-family: sans-serif; font-size: 11pt; font-weight: bold; "
+                                        "text-align: center;}", scale_low=0)
+    return True
+
+
 def rebuild_portfolios(work, out, sfx="_RU"):
     """Переведённое портфолио: копия исходного, где каждое вложение заменено своим переводом (PDF — PDF «на месте»,
     DOCX — DOCX). Заказчик получает один файл той же структуры, что прислал; переводы по отдельности тоже остаются."""
@@ -162,17 +195,22 @@ def rebuild_portfolios(work, out, sfx="_RU"):
         m = json.loads(man.read_text(encoding="utf-8"))
         d = fitz.open(m["source"])
         keys = d.embfile_names()                 # по ключам, не по номерам: удаление сдвигает номера
-        done = 0
+        done = []
         for idx, name in m["map"].items():
             ru = Path(out) / f"{Path(name).stem}{sfx}{Path(name).suffix.lower()}"
             if ru.exists():
                 key = keys[int(idx)]
                 info = d.embfile_info(key)
+                # имя — исправленное (attachment_name): прочитанное как Latin-1 при повторной записи кодировалось
+                # ещё раз («30YCGT MÃ\x83Â\x93DJ.pdf» во вложениях переведённого портфолио, 29.10)
+                fname = attachment_name(info, key)
                 # embfile_upd в PyMuPDF 1.27 падает на bytes («no attribute m_internal») — заменяем удалением и добавлением
                 d.embfile_del(key)
-                d.embfile_add(key, ru.read_bytes(), filename=info.get("filename"), ufilename=info.get("ufilename"),
-                              desc=info.get("desc"))
-                done += 1
+                d.embfile_add(key, ru.read_bytes(), filename=fname, ufilename=fname, desc=info.get("desc"))
+                done.append(fname)
+        if done:
+            portfolio_cover(d[0], done, sfx.lstrip("_").lower())
+        done = len(done)
         target = portfolio_target(out, Path(m["source"]).stem, sfx)
         d.save(target, garbage=3, deflate=True)
         log(f"сборка: {target.name} — портфолио, переведённых вложений {done} из {len(m['map'])}")
