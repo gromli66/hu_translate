@@ -888,7 +888,7 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields
                 bands.append((r, cuts[k], cuts[k + 1], k == 0, k == len(cuts) - 2))
         else:
             bands.append((r, ys[r], ys[r + 1], True, True))
-    rows = []
+    rows, hts = [], []
     for r, lo, hi, first, last in bands:
         cells = grid[r]
         row = []
@@ -912,8 +912,28 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields
             for img in (pics.get((r, ci), []) if first else []):
                 paras.append({"k": "p", "runs": [{"img": img}], "seg": True})
             row.append({"blocks": paras, "th": False, "geom": geom, "edges": e, "span": z - a})
+        # отметка («O», «□») против нижней строки многострочного абзаца соседней ячейки (перечень кодов 4.1.1
+        # 30TKBSZ36BIGT): полоса абзац не рвёт — ячейка отметки по низу, как в оригинале, а не вверху (аудит 30.10)
+        span = [(c["geom"]["top"], c["geom"]["bottom"]) for c in row if c.get("geom")]
+        for c in row:
+            g, tx = c.get("geom"), "".join(ru.get("t", "") for p in c["blocks"] for ru in p.get("runs") or []).strip()
+            if g and span and len(tx) <= 2 and not re.search(r"[^\W\d_]{2}|\d", tx) \
+                    and (g["top"] + g["bottom"]) / 2 > (min(a for a, _ in span) + max(z for _, z in span)) / 2:
+                c["valign"] = "bottom"
         rows.append(row)
-    ys = [bands[0][1]] + [b[2] for b in bands] if bands else ys     # линии строк — по подстрокам
+        # высота подстроки «не ниже» — отступ над текстом, одна его строка и зазор до следующей полосы, а не вся полоса
+        # оригинала: перевод компактнее (коды строкой, а не столбиком, 30TKBSZ36BIGT 4.1.2) — дыры в полстраницы
+        gs = [p["geom"] for c in row for p in c["blocks"] if p.get("geom")]
+        if gs and not (first and last):
+            g1 = min(gs, key=lambda g: g["top"])
+            line = (g1["bottom"] - g1["top"]) / max(g1.get("lines") or 1, 1)
+            hts.append(min(hi - lo, (g1["top"] - lo) + line + (hi - max(g["bottom"] for g in gs))))
+        else:
+            hts.append(hi - lo)
+    if bands:                                                       # линии строк — по подстрокам
+        ys = [bands[0][1]]
+        for h in hts:
+            ys.append(round(ys[-1] + max(h, 0), 1))
     head = [p for c in rows[0] for p in c["blocks"]] if rows else []
     # картинка в ячейке шапки (значок, JPDS текстовым слоем) — не текст: KeyError 't' ронял сборку (18.10)
     if head and len(rows) > 1 and all(r.get("b") for p in head for r in p["runs"] if r.get("t", "").strip()):

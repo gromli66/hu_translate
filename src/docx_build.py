@@ -1648,6 +1648,8 @@ class Builder:
                 fill = fill or cell.get("fill")                     # заливка ячейки по оригиналу (docx_struct)
                 if fill:
                     dc._tc.get_or_add_tcPr().append(_el("w:shd", w__val="clear", w__color="auto", w__fill=fill))
+                if cell.get("valign"):                              # отметка против нижней строки (docx_layout)
+                    dc._tc.get_or_add_tcPr().append(_el("w:vAlign", w__val=cell["valign"]))
                 if tight is not None:                               # узкие поля ячейки — слово влезло целиком (см. выше)
                     tcpr = dc._tc.get_or_add_tcPr()
                     mar_el = _el("w:tcMar")

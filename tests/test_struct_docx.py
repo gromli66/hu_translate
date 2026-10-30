@@ -1852,6 +1852,10 @@ def test_table_row_cut_by_horizontal_strips_of_paragraphs():
     assert [[text(c) for c in r] for r in b["rows"]] == [
         [["A 30UJ04S001 nyitása", "Ellenőrizni", "ZÁRNI:"], ["Feltöltés"]], [["NYITNI"], ["Zárva"]]]
     assert not b["rows"][0][0]["edges"]["bottom"] and not b["rows"][1][1]["edges"]["top"]
+    # отметка «O» против последней строки перечня кодов (один абзац в пять строк, 30TKBSZ36BIGT 4.1.1) — ячейка по низу
+    segs = [seg("YP10T401, YP10T701, YP14T001XQ01, YP24T001XQ01, YP29T001XQ01.", 70, 100, 160), seg("O", 310, 150, 160)]
+    b = DL._table_block(t, segs, 0, None, "Times New Roman", 10, False)
+    assert [c.get("valign") for c in b["rows"][0]] == [None, "bottom"]
 
 
 def test_case_suffix_and_dotted_abbreviation_are_not_codes():
