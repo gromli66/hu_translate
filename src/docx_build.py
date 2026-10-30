@@ -1009,9 +1009,16 @@ class Builder:
         # него («A.1. ⇥ Helyre kell állítani…» ÜFK II — пропадало, 18.10)
         base = getattr(self, "_tab_base", None)
         base = self.left if base is None else base
-        for x in sorted({round(x) for r in runs for x in r.get("tabs", [])}):
-            if x - base > 6:
-                par.paragraph_format.tab_stops.add_tab_stop(Pt(x - base))
+        stops = [x for x in sorted({round(x) for r in runs for x in r.get("tabs", [])}) if x - base > 6]
+        for x in stops:
+            par.paragraph_format.tab_stops.add_tab_stop(Pt(x - base))
+        # маркер пункта и текст через табуляцию («• ⇥ Проверка сочленения …» в ячейке) — висячим отступом на табуляции:
+        # перенесённые строки шли под маркер, как сплошной текст (D8: 30PR132GT, 30TKBSZ36BIGT, 01-02FMP0BIGT, аудит 30.10)
+        head = "".join(r.get("t", "") for r in runs).split("\t", 1)
+        if stops and len(head) == 2 and re.fullmatch(r"\s*[•▪◦·●○■□–\-−]\s*", head[0]) \
+                and not par.paragraph_format.left_indent and not par.paragraph_format.first_line_indent:
+            par.paragraph_format.left_indent = Pt(stops[0] - base)
+            par.paragraph_format.first_line_indent = Pt(-(stops[0] - base))
         if self.L and any(r.get("rtab") for r in runs):
             # номер листа в конце строки оглавления — к правому полю: русское название длиннее, и номер
             # по позиции оригинала перескакивал на следующую строку (3SZ19, 16.10)
