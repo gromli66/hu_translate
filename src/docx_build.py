@@ -819,11 +819,16 @@ class Builder:
             w = float(img["x1"]) - float(img["x0"])
             if getattr(self, "L", None):                    # не шире поля набора
                 w0 = w
-                w = min(w, self.L["W"] - self.L["left"] - self.L["right"])
+                # поле — своего раздела: альбомный лист (схема GF(135)/(246)) — альбомное, а не книжное тела — схема
+                # вставала на 60 % ширины листа (аудит 30.10)
+                sec = self.doc.sections[-1]
+                pt = lambda v, d: v.pt if v is not None else d
+                PW, PH = pt(sec.page_width, self.L["W"]), pt(sec.page_height, self.L["H"])
+                w = min(w, PW - pt(sec.left_margin, self.L["left"]) - pt(sec.right_margin, self.L["right"]))
                 # и не выше поля набора без места под подпись: снимок во весь лист уводил «Рисунок 17» на следующий
                 # лист (ИН-1065, 18.10)
                 h = (float(img.get("bottom") or 0) - float(img.get("top") or 0)) * w / w0 if w0 > 0 else 0
-                room = self.L["H"] - self.L["top"] - self.L["bottom"] - 48
+                room = PH - pt(sec.top_margin, self.L["top"]) - pt(sec.bottom_margin, self.L["bottom"]) - 48
                 if h > room > 100:
                     w *= room / h
             par.add_run().add_picture(io.BytesIO(data), width=Pt(w))

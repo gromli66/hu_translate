@@ -1256,6 +1256,7 @@ def _chart_table(t, draw):
 def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
     """Таблицы и рисунки листов: {лист: [{"rect", "block", "ids"}]} — сегменты ids идут не абзацами, а в них."""
     import fitz
+    import numpy as np
     draw, per, scans, marks = (rules or _page_rules(doc, mask is not None))[:4]
     # картинки на нескольких листах (логотип шапки) — только текстовому слою; get_images не раскодирует картинки
     reused = Counter(x for page in doc for x in {im[0] for im in page.get_images()}) if mask is not None else Counter()
@@ -1295,6 +1296,13 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
             for q in [fitz.Rect(s["loc"]["bbox"]) for s in segs] + [f for f, _ in figs] + \
                     [fitz.Rect(a, y, b, y) for y, a, b in hs] + [fitz.Rect(x, a, x, b) for x, a, b in vs]:
                 R |= q
+            # снимок — вся краска листа (колонтитулы срезаются ниже): петля обратной связи схемы GF(135)/(246) —
+            # растровые линии, не сегмент, не фигура и не линейка, и схема выходила обрезанной слева и снизу (аудит 30.10)
+            pm = page.get_pixmap(dpi=36, colorspace=fitz.csGRAY)
+            ink = np.frombuffer(pm.samples, np.uint8).reshape(pm.height, pm.stride)[:, :pm.width] < 200
+            if ink.any():
+                yy, xx = np.nonzero(ink)
+                R |= fitz.Rect(xx.min() * 2, yy.min() * 2, (xx.max() + 1) * 2, (yy.max() + 1) * 2)
             lead = all(scans[q] for q in range(1, pno))
             off = [s for s in masks.get(pno, []) if s not in segs] if not lead else []
             Hp = page.rect.height
