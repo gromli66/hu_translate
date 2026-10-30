@@ -933,10 +933,11 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields
         if gs and not (first and last):
             g1 = min(gs, key=lambda g: g["top"])
             line = (g1["bottom"] - g1["top"]) / max(g1.get("lines") or 1, 1)
-            gap = max(0.0, hi - max(g["bottom"] for g in gs))
+            gap = min(max(0.0, hi - max(g["bottom"] for g in gs)), line)
             hts.append(min(hi - lo, (g1["top"] - lo) + line + gap))
             # зазор до следующей полосы — отступом после текста ячейки: строка = текст + зазор оригинала, а не текст
-            # вплотную к следующему пункту (30HU375GT: пункты 1.1.7–1.1.15 «стеной», D10)
+            # вплотную к следующему пункту (30HU375GT: пункты 1.1.7–1.1.15 «стеной», D10); зазор — не больше строки
+            # текста (и в высоте строки): зазоры бланков в 25–30 pt раздували перевод на листы (30TKBSZ36BIGT 35 → 39)
             for c in row:
                 if c.get("geom") and gap >= 2:
                     c["pad"] = round(gap, 1)
