@@ -3024,6 +3024,14 @@ def _zone_grid(chars, rects):
     for x in xs:
         if not cols or x - cols[-1] > 8:
             cols.append(x)
+    # вертикаль у края рамки (двойная линия) — граница, а не столбец: пустой узкий столбец у края делал шапку 3SZ17
+    # сеткой «475 | 18 pt», и «Azonosító:3SZ17 … Verziószám: 0» шло одной ячейкой (аудит 30.10)
+    mids = [(float(w["x0"]) + float(w["x1"])) / 2 for w in words]
+    empty = lambda a, b: not any(a <= x <= b for x in mids)
+    while len(cols) >= 3 and cols[-1] - cols[-2] < 24 and empty(cols[-2], cols[-1]):
+        cols.pop(-2)
+    while len(cols) >= 3 and cols[1] - cols[0] < 24 and empty(cols[0], cols[1]):
+        cols.pop(1)
     # внутренние линии — только настоящие вертикали; концы отрезков рамки (у штампа UTS рамка сверху разбита на
     # куски в точках 160 и 448) — места столбцов, но не линии: сетка рисовалась там, где её нет (16.10)
     vx = [(float(r["x0"]) + float(r["x1"])) / 2 for r in rects

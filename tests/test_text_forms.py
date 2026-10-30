@@ -1028,3 +1028,24 @@ def test_orphan_tail_after_section_number_joins_previous_line():
         "A 1*RN06D001 INDÍTANI az 1SZ03 KU 4.10. szerint.",
         "A 1*RN15D001-et INDÍTANI az 1SZ03 KU 4.11. szerint.",
         "Az 1*RN06D001 elindítva, RENDBEN üzemel. Az 1*RN15D001 elindítva, RENDBEN üzemel."]
+
+
+def test_head_box_with_double_right_edge_splits_by_gap(tmp_path):
+    """Рамка шапки с двойной правой линией (вертикаль в 18 pt от края, 3SZ17 листы-серии): пустой узкий столбец у края —
+    граница, не столбец; «Azonosító:3SZ17» и «Verziószám: 0» — две ячейки по зазору, а не одна строка."""
+    import pdfplumber
+    import docx_struct as S
+    src = tmp_path / "h.pdf"
+    doc = fitz.open()
+    pg = doc.new_page(width=595, height=842)
+    sh = pg.new_shape()
+    sh.draw_rect(fitz.Rect(70, 30, 545, 70))
+    sh.draw_line((527, 30), (527, 70))
+    sh.finish(color=(0, 0, 0), width=0.5)
+    sh.commit()
+    for x, y, t in ((77, 45, "Azonosító:3SZ17"), (433, 45, "Verziószám: 0"), (77, 60, "Megnevezés: Haboltó"), (433, 60, "Oldalszám: 5")):
+        pg.insert_text((x, y), t, fontsize=9, fontname="cour")
+    doc.save(str(src))
+    p = pdfplumber.open(str(src)).pages[0]
+    g = S._zone_grid(p.chars, S._drawn(p.rects + p.lines))
+    assert [r["cells"] for r in g["rows"]] == [["Azonosító:3SZ17", "Verziószám: 0"], ["Megnevezés: Haboltó", "Oldalszám: 5"]]
