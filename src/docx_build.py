@@ -1425,6 +1425,14 @@ class Builder:
         framed, pad = bool(bounds), (self.P.get("table") or {}).get("pad_left") or 0
         if len(xs) == ncol + 1:
             widths = [xs[i + 1] - xs[i] for i in range(ncol)]
+            if tgt is None and self.L and xs[0] < self.left - 3 and xs[-1] > self.L["W"] - self.L["right"] + 3:
+                # таблица шире поля набора, в оригинале начата левее поля (1SZ01 прил. 10/6: 28–568 pt при поле 62) —
+                # с того же места: от поля её правый столбец уходил за край листа (аудит 30.10)
+                tp = t._tbl.tblPr
+                nxt = next((c for c in tp if c.tag in {W + n for n in (
+                    "tblBorders", "shd", "tblLayout", "tblCellMar", "tblLook", "tblCaption")}), None)
+                el = _el("w:tblInd", w__w=round((xs[0] - self.left) * 20), w__type="dxa")
+                nxt.addprevious(el) if nxt is not None else tp.append(el)
         else:
             full = [r for r in rows if len(r) == ncol]
             lefts = [min([r[c]["geom"]["x0"] for r in full if r[c].get("geom")] or [None], key=lambda v: v or 0)
