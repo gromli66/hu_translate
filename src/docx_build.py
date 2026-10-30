@@ -529,7 +529,13 @@ class Memory:
             got = [self.get(p) if p.strip() else p for p in parts]
             if all(g is not None for g in got):
                 r = "\t".join(g.strip() if p.strip() else g for p, g in zip(parts, got))
-        return r if r is not None else self._glued(text)
+        # значение известного сегмента «подпись: значение» — раньше склейки по частям: название в шапке «KRITIKUS … /
+        # ARMATÚRÁK ELLENŐRZÉSE» склеивалось из строк титула, каждую переводчик перевёл всей фразой, — дубль (30KBFPRBIGT)
+        return r if r is not None else self.half.get(KEY(text)) or self._glued(text)
+
+    def known(self, text):
+        """Перевод текста, известного целиком: сегмент или значение сегмента «подпись: значение» (не склейка)."""
+        return self.m.get(KEY(text)) or self.half.get(KEY(text))
 
     def zone(self, text):
         """Строка колонтитула, которой нет в памяти целиком: перевод известной строки с другим числом (renumbered) или
@@ -2071,9 +2077,12 @@ class Builder:
     def _wrapped(self, lines):
         """Строки одной фразы, перенесённые узкой ячейкой колонтитула («A lapot kitöltötte» / «(név, dátum, aláírás):»), —
         одной строкой, если вся фраза есть в памяти, а первой строки в ней нет: по строкам фраза не переводилась."""
-        get = getattr(self.tr, "get", None)
+        get, known = getattr(self.tr, "get", None), getattr(self.tr, "known", None)
         whole = " ".join(lines)
-        if len(lines) > 1 and get and PAGE_MARK not in whole and get(whole) and not get(lines[0]):
+        # фраза известна целиком (название листа в две строки — значение «Megnevezés: …») — целиком, даже если строки
+        # известны по отдельности: строки титула переведены каждая всей фразой, и по строкам выходил дубль (30KBFPRBIGT)
+        if len(lines) > 1 and get and PAGE_MARK not in whole and (known and known(whole)
+                                                                   or get(whole) and not get(lines[0])):
             return [whole]
         return lines
 
