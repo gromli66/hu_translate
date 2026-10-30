@@ -2111,14 +2111,18 @@ class Builder:
             mm = num.search(ru) if num and num.search(txt) and not page_marked else None
         if mm:
             r = p.add_run(ru[:mm.start()]); r.bold = bold
-            f = _field(p, "PAGE", tok); f.bold = bold
+            cont = getattr(self, "_cont", None)             # продолжение листа-раздела: «N … (прод.)» текстом
+            if cont:
+                r = p.add_run(str(cont)); r.bold = bold
+            else:
+                f = _field(p, "PAGE", tok); f.bold = bold
             rest = ru[mm.end():]
             m2 = re.match(r"(\s*(?:/|of|из|von|de|di|z)\s*)(\d+)", rest, re.I)   # «20/57», «4 of 13» — и число листов полем
             if m2:
                 r = p.add_run(m2.group(1)); r.bold = bold
                 f = _field(p, "NUMPAGES", m2.group(2)); f.bold = bold
                 rest = rest[m2.end():]
-            r = p.add_run(rest); r.bold = bold
+            r = p.add_run(rest + (" (прод.)" if cont else "")); r.bold = bold
         else:
             r = p.add_run(ru); r.bold = bold
 
@@ -2413,7 +2417,7 @@ class Builder:
                 self.fresh = True
                 # раздел — листы оригинала до следующего раздела: перелившийся на лишний лист — мельче кеглем
                 # (docx_fit, как альбомный: 30KBFPRBIGT, строки «ПЛОМБИРОВАНИЕ, ВЫВЕШИВАНИЕ ПЛАКАТА» в две строки)
-                starts.append((len(self.doc.sections) - 1, page, True))
+                starts.append((len(self.doc.sections) - 1, page, "sheet"))
             if zones and page and not in_title and not in_front:
                 zk = next((i for i, z in enumerate(zones) if z["from"] <= page <= z["to"]), None)
                 if zk != zcur:
@@ -2422,6 +2426,7 @@ class Builder:
                     if made is None and placed:
                         made = self.doc.add_section(WD_SECTION.NEW_PAGE)
                         self.fresh = True
+                        starts.append((len(self.doc.sections) - 1, page, "zone"))   # для «(прод.)» ниже
                     sec = made if made is not None else self.doc.sections[-1]
                     self._header(sec, Lz)
                     self._footer(sec, Lz)
@@ -2518,7 +2523,32 @@ class Builder:
         self.doc.settings.element.append(_el("w:updateFields", w__val="true"))
         # листов оригинала у альбомных разделов: {номер раздела: листов} (docx_fit ужимает разделы в один лист)
         nxt = [p for _, p, _ in starts[1:]] + [len(sizes) + 1]
-        self.fit_want = {i: n - p for (i, p, ld), n in zip(starts, nxt) if ld}
+        self.fit_want = {i: n - p for (i, p, ld), n in zip(starts, nxt) if ld and ld != "zone"}
+        # раздел ровно в один лист оригинала (закрытый подписью лист формы), перелившийся на вторую страницу: на ней —
+        # «N … (прод.)», а не N+1 — номер следующего листа (30KBFPRBIGT, 30BOXFELTEL: два листа «4», аудит 30.10)
+        zl = lambda pg: (lambda k: dict(L, **zones[k]) if k is not None else L)(
+            next((k for k, z in enumerate(zones) if z["from"] <= pg <= z["to"]), None))
+        done = set()
+        for (i, p, ld), n in zip(starts, nxt):
+            # и раздел-серия в один лист (своя шапка у листа: 30TKBSZ36BIGT «6, 6», «14, 14»)
+            if ld in ("sheet", "zone") and n - p == 1 and sheet_no.get(p) and i < len(self.doc.sections):
+                sec = self.doc.sections[i]
+                sec.different_first_page_header_footer = True
+                fp = type("First", (), {"header": sec.first_page_header, "footer": sec.first_page_footer})()
+                self._header(fp, zl(p))
+                self._footer(fp, zl(p))
+                self._cont = sheet_no[p]
+                try:
+                    self._header(sec, zl(p))
+                    self._footer(sec, zl(p))
+                finally:
+                    self._cont = None
+                done.add(i)
+        for i, p, _ in starts:                              # следующий раздел наследовал бы шапку «(прод.)» — своя
+            if i not in done and i - 1 in done and i < len(self.doc.sections) \
+                    and self.doc.sections[i].header.is_linked_to_previous:
+                self._header(self.doc.sections[i], zl(p))
+                self._footer(self.doc.sections[i], zl(p))
         self.doc.save(out)
         font_table(out, (L or {}).get("font_class") or {})
 
