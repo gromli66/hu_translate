@@ -2407,7 +2407,7 @@ def layout(path, blocks, content=None):
     import pdfplumber
     from statistics import median
     pdf = pdfplumber.open(path)
-    cbots = {}
+    cbots, ctops = {}, {}
     if content:
         for pg in pdf.pages:
             bx = content.get(pg.page_number) or []
@@ -2419,6 +2419,7 @@ def layout(path, blocks, content=None):
                              and b[1] - 2 <= float(c["top"]) and float(c["bottom"]) <= b[3] + 2 for b in bx)
                 c["mcid"] = -1 if inside else None
             cbots[pg.page_number] = max((b[3] for b in bx), default=0.0)
+            ctops[pg.page_number] = min((b[1] for b in bx), default=0.0)
     cbot = (lambda pg: cbots.get(pg.page_number, 0.0)) if content else (lambda pg: None)
     W, H = float(pdf.pages[0].width), float(pdf.pages[0].height)
     def flat(bs):
@@ -2460,7 +2461,17 @@ def layout(path, blocks, content=None):
         """Знаки вне тела листа pg: (шапки — выше тела, подвала — от верха подвала, верх подвала)."""
         art = [c for c in pg.chars if c.get("mcid") is None and _upright(c)]
         ft = _foot_top(art, _drawn(pg.rects + pg.lines), H, cbot(pg))
-        return [c for c in art if c["top"] < body_top], [c for c in art if c["top"] >= ft], ft
+        head = [c for c in art if c["top"] < body_top]
+        # шапка этого листа ниже обычной (GF(246) л. 17–19: вторая строка «Megnevezés … Oldalszám» на 107 pt при
+        # верхе тела документа 107) — строки вне тела, что идут сплошь под шапкой до первой строки тела листа, тоже её:
+        # иначе строка не шла ни в шапку, ни в тело, и «Наименование»/«Номер страницы» пропадали (аудит 30.10)
+        if head and ctops.get(pg.page_number, 0) > body_top:
+            bot = max(float(c["bottom"]) for c in head)
+            for c in sorted((c for c in art if body_top <= c["top"] < ctops[pg.page_number]), key=lambda c: c["top"]):
+                if float(c["top"]) - bot <= float(c["bottom"]) - float(c["top"]) + 2:
+                    head.append(c)
+                    bot = max(bot, float(c["bottom"]))
+        return head, [c for c in art if c["top"] >= ft], ft
 
     # колонтитулы листов текстового слоя (PDF без разметки) — по тексту вместе с цифрами, кроме счётчика листов: версия
     # «1» на одних листах и «0» на других, «3PR10» и «3PR10/INFO» — не один колонтитул на документ. Образец тела — лист
