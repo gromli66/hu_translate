@@ -453,3 +453,12 @@ def test_replacing_later_attachment_keeps_earlier_untouched(tmp_path, monkeypatc
     assert r.embfile_get(0) == png
     assert fitz.open(stream=r.embfile_get(1), filetype="pdf")[0].get_text().strip() == "Nem forditott."
     assert fitz.open(stream=r.embfile_get(2), filetype="pdf")[0].get_text().strip() == "Nasos zapuskaetsya."
+
+
+# ------------------------------------------------------------------ ё в переводе: «всё» не становится «все»
+def test_model_answer_keeps_yo_only_in_vsyo():
+    """from_model менял каждую «ё» на «е»: «Проверить всё» (everything) становилось «Проверить все» (all of them),
+    «Всё оборудование» — «Все оборудование». Прочие ё — е, как прежде."""
+    from translate import from_model
+    got = from_model("Проверить всё.[BR]Всё оборудование ещё не включено, ВСЁ-ТАКИ ёмкость[TAB]всех — счётчик")
+    assert got == "Проверить всё.\nВсё оборудование еще не включено, ВСЁ-ТАКИ емкость\tвсех — счетчик"

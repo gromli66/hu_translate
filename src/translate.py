@@ -121,7 +121,11 @@ def to_model(text):
 def from_model(text):
     t = re.sub(r"\s*\[TAB(?:[×x](\d+))?\]\s*", lambda m: "\t" * int(m.group(1) or 1), text)
     t = re.sub(r"\s*\[BR(?:[×x](\d+))?\]\s*", lambda m: "\n" * int(m.group(1) or 1), t)
-    return t.replace("ё", "е").replace("Ё", "Е")
+    # ё → е — единообразие перевода, кроме «всё»: «Проверить всё» (everything) и «Проверить все» (all of them) — разные
+    # слова, а «Все оборудование» читается ошибкой согласования (ё там, где без неё слово читается неверно, — правила
+    # 2006, § 10; 01.11)
+    return re.sub(r"[А-Яа-яЁё]+", lambda m: m.group() if m.group().lower() == "всё"
+                  else m.group().replace("ё", "е").replace("Ё", "Е"), t)
 
 
 FILLER = re.compile(r"[.…_]{3,}")       # линия-заполнитель бланка: «20.......év.........hó.....nap»
