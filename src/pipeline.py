@@ -219,15 +219,22 @@ def rebuild_portfolios(work, out, sfx="_RU"):
         keys = d.embfile_names()                 # по ключам, не по номерам: удаление сдвигает номера
         done = []
         for idx, name in m["map"].items():
+            # старый .doc переводится через DOCX (extract: LibreOffice) — его перевод <имя>_RU.docx; прежде искался
+            # <имя>_RU.doc, которого не бывает, и вложение оставалось непереведённым
+            ext = Path(name).suffix.lower()
+            ext_ru = ".docx" if ext == ".doc" else ext
+            conv = Path(work) / "converted" / f"{Path(name).stem}.docx"
             # вложение, переименованное извлечением (имя занято другим документом комплекта), — под своим новым именем
-            stem = renamed.get(str((man.parent / name).resolve()), Path(name).stem)
-            ru = Path(out) / f"{stem}{sfx}{Path(name).suffix.lower()}"
+            stem = renamed.get(str((man.parent / name).resolve())) or renamed.get(str(conv.resolve())) or Path(name).stem
+            ru = Path(out) / f"{stem}{sfx}{ext_ru}"
             if ru.exists():
                 key = keys[int(idx)]
                 info = d.embfile_info(key)
                 # имя — исправленное (attachment_name): прочитанное как Latin-1 при повторной записи кодировалось
                 # ещё раз («30YCGT MÃ\x83Â\x93DJ.pdf» во вложениях переведённого портфолио, 29.10)
                 fname = attachment_name(info, key)
+                if ext_ru != ext:
+                    fname = Path(fname).with_suffix(ext_ru).name          # внутри — DOCX: и имя с .docx
                 # embfile_upd в PyMuPDF 1.27 падает на bytes («no attribute m_internal») — заменяем удалением и добавлением
                 d.embfile_del(key)
                 d.embfile_add(key, ru.read_bytes(), filename=fname, ufilename=fname, desc=info.get("desc"))

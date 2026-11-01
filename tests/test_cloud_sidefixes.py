@@ -400,3 +400,25 @@ def test_role_labels_reach_every_paragraph_of_page(tmp_path, monkeypatch):
         assert bool(info.get("ocr_pages")) == ocr and len(segs) == 3
         assert [s["loc"].get("roles") for s in segs] == [True] * 3
         assert [s["loc"].get("role") for s in segs] == ["heading", "body", "body"]
+
+
+def test_old_doc_attachment_replaced_by_its_docx_translation(tmp_path):
+    """Вложение .doc переводится через DOCX (<имя>_RU.docx), а сборка портфолио искала <имя>_RU.doc — такое вложение
+    оставалось в переведённом портфолио непереведённым."""
+    import io
+    import fitz
+    from docx import Document
+    work, out = tmp_path / "work", tmp_path / "work" / "out"
+    _portfolio(tmp_path / "30W.PDF", [("30W kezi.doc", b"\xd0\xcf\x11\xe0 old word"), ("30W lap.pdf", _pdf("Lap."))])
+    P.unpack_portfolio(tmp_path / "30W.PDF", work / "unpacked" / "30W")
+    out.mkdir(parents=True)
+    dx = Document()
+    dx.add_paragraph("Ручное управление.")
+    dx.save(out / "30W kezi_RU.docx")
+    (out / "30W lap_RU.pdf").write_bytes(_pdf("List."))
+    P.rebuild_portfolios(work, out)
+    d = fitz.open(out / "30W_RU.pdf")
+    files = {P.attachment_name(d.embfile_info(i), ""): d.embfile_get(i) for i in range(d.embfile_count())}
+    assert sorted(files) == ["30W kezi.docx", "30W lap.pdf"]
+    assert Document(io.BytesIO(files["30W kezi.docx"])).paragraphs[0].text == "Ручное управление."
+    assert "30W kezi.docx" in d[0].get_text().replace("\n", " ")                 # и в перечне на обложке
