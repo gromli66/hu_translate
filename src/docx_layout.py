@@ -20,6 +20,9 @@ import re
 from collections import Counter
 from statistics import median
 
+import geom as GM
+import patterns as PT
+
 FAMILY = {"monospace": "Courier New", "serif": "Times New Roman", "sans-serif": "Arial"}
 NUM = re.compile(r"^\s*(\d+(?:\.\d+)*)\.?\s+\S")
 SIGN = re.compile(r"\s*([•▪◦·●○■□–\-\uf020-\uf0ff])\s")        # знак маркера в начале строки текстового слоя
@@ -564,19 +567,19 @@ def _tables(hs, vs):
         if x1 - x0 < 60 or y1 - y0 < 15 or not any(x0 + 3 < v[0] < x1 - 3 for v in gv):
             continue
         ys = _cluster([h[0] for h in hh] + [y0, y1])
-        ys = [y for i, y in enumerate(ys) if i == 0 or y - ys[i - 1] >= 5]        # двойная линия — одна
+        ys = [y for i, y in enumerate(ys) if i == 0 or y - ys[i - 1] >= GM.DOUBLE]  # двойная линия — одна
         xs = _cluster([v[0] for v in gv] + edges)
         # и двойная вертикаль — одна (1SZ01 прил. 10/6: каждая ячейка обведена двойной линией в 3,5 pt — 42 столбца,
         # половина по 3–4 pt; в DOCX поля таких ячеек шире их самих, настоящие столбцы сжимались, «102,11» рвалось
         # «102,1 / 1», на листе 12 строк вместо 60 — аудит 30.10)
-        xs = [x for i, x in enumerate(xs) if i == 0 or x - xs[i - 1] >= 5]
+        xs = [x for i, x in enumerate(xs) if i == 0 or x - xs[i - 1] >= GM.DOUBLE]
         # вторая линия двойной — на месте оставшейся: одиночная вертикаль строк тела стоит на месте второй, и без этого
         # её не засчитывало, ячейки сливались (3SZ23 «Вид деятельности | Состояние» одной колонкой)
-        gv = [(next((x for x in xs if abs(x - v[0]) < 5), v[0]),) + tuple(v[1:]) for v in gv]
+        gv = [(next((x for x in xs if abs(x - v[0]) < GM.DOUBLE), v[0]),) + tuple(v[1:]) for v in gv]
         # узкий столбец справа, нарисованный в отрыв (3PR10 INFO: «M» — его горизонтали с 517 pt при правом крае таблицы
         # 507, связи нет): вертикаль той же высоты не дальше 60 pt правее — правый край таблицы, столбец — в сетке;
         # иначе «M» и «1» шли абзацами между таблицами и давали листы-пустышки «M / 1» (аудит 30.10)
-        far = [v for v in vs if xs[-1] + 5 <= v[0] <= xs[-1] + 60 and v[1] <= ys[0] + 4 and v[2] >= ys[-1] - 4]
+        far = [v for v in vs if xs[-1] + GM.DOUBLE <= v[0] <= xs[-1] + 60 and v[1] <= ys[0] + 4 and v[2] >= ys[-1] - 4]
         if far:
             v = min(far, key=lambda v: v[0])
             gh = gh + [h for h in hs if xs[-1] - 2 <= h[1] and h[2] <= v[0] + 2 and ys[0] - 4 <= h[0] <= ys[-1] + 4]
@@ -885,11 +888,10 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields
     # Метка пункта или код оборудования в первом столбце («1.1.», «31UJ21S601») — всегда своя полоса, даже если её
     # задел чужой абзац: значения столбца, слитые нарезкой в абзац на пять строк (3SZ23 INFO «-3,6 m … 9,6 m»),
     # склеивали все строки таблицы в одну — коды и места разъезжались; такой абзац — в полосу своей середины
-    label = re.compile(r"\(?(?:\d+(?:\.\d+)*\.?|[a-zA-Z][.)])\)?|\d{2}[A-Z]{2}\d{2}[A-Z]\d{3}")     # номер пункта или код оборудования
     bands = []
     for r, cells in enumerate(grid):
         spans = sorted((min(g["loc"]["bbox"][1] for g in group), max(g["loc"]["bbox"][3] for g in group), ci,
-                        ci == 0 and bool(label.fullmatch(" ".join(g["text"] for g in group).strip())))
+                        ci == 0 and bool(PT.ROW_ANCHOR.fullmatch(" ".join(g["text"] for g in group).strip())))
                        for ci in range(len(cells)) for group in _lines(sorted(
                            put.get((r, ci), []), key=lambda s: (round(s["loc"]["bbox"][1] / 3), s["loc"]["bbox"][0]))))
         strips = []                                             # [верх, низ, {ячейки}, метка]
@@ -1072,7 +1074,7 @@ def _form_marks(drawings):
         small = [o["rect"] for o in drawings if o["rect"][2] - o["rect"][0] <= 20 and o["rect"][3] - o["rect"][1] <= 20]
         inner = lambda b, r: (b[0] - 1 <= r[0] and r[2] <= b[2] + 1 and b[1] - 1 <= r[1] and r[3] <= b[3] + 1
                               and r[2] - r[0] < 0.9 * (b[2] - b[0]))
-        out = [(b, {"○": "◉", "□": "☒", "△": "▲"}[ch] if any(inner(b, r) for r in small) else ch) for b, ch in out]
+        out = [(b, PT.MARK_TICKED[ch] if any(inner(b, r) for r in small) else ch) for b, ch in out]
     return out
 
 
@@ -1287,7 +1289,7 @@ def _chart_table(t, draw):
     import fitz
     xs, ys = t[0], t[1]
     R = fitz.Rect(xs[0], ys[0], xs[-1], ys[-1])
-    near = lambda v, grid: any(abs(v - g) < 5 for g in grid)
+    near = lambda v, grid: any(abs(v - g) < GM.DOUBLE for g in grid)
     # края заливки — у любой линии таблицы (до 5 pt — двойная рамка), и на линиях двойной рамки, что в сетку не вошли (1SZ01: голубая «зебра»
     # по внутренней линии двойной рамки — иначе таблица шла снимком-графиком)
     xs, ys = list(xs) + [v[0] for v in t[3]], list(ys) + [h[0] for h in t[2]]
@@ -1350,7 +1352,7 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
             # снимок — вся краска листа (колонтитулы срезаются ниже): петля обратной связи схемы GF(135)/(246) —
             # растровые линии, не сегмент, не фигура и не линейка, и схема выходила обрезанной слева и снизу (аудит 30.10)
             pm = page.get_pixmap(dpi=36, colorspace=fitz.csGRAY)
-            ink = np.frombuffer(pm.samples, np.uint8).reshape(pm.height, pm.stride)[:, :pm.width] < 200
+            ink = np.frombuffer(pm.samples, np.uint8).reshape(pm.height, pm.stride)[:, :pm.width] < GM.INK
             if ink.any():
                 yy, xx = np.nonzero(ink)
                 R |= fitz.Rect(xx.min() * 2, yy.min() * 2, (xx.max() + 1) * 2, (yy.max() + 1) * 2)
@@ -1389,11 +1391,11 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
             # такие, по одним линиям схема оставалась разобранной на строки (аудит 30.10)
             pd = page.get_drawings()
             slant = [fitz.Rect(dr["rect"]) for dr in pd for it in dr["items"] if it[0] == "l"
-                     and abs(it[1].x - it[2].x) > 2 and abs(it[1].y - it[2].y) > 2 and abs(it[1] - it[2]) >= 25] + \
+                     and abs(it[1].x - it[2].x) > 2 and abs(it[1].y - it[2].y) > 2 and abs(it[1] - it[2]) >= GM.DIAMOND] + \
                     [fitz.Rect(a, a).include_point(b) for dr in pd for it in dr["items"]
                      if it[0] == "qu"
                      for a, b in ((it[1].ul, it[1].ur), (it[1].ur, it[1].lr), (it[1].lr, it[1].ll), (it[1].ll, it[1].ul))
-                     if abs(a.x - b.x) > 2 and abs(a.y - b.y) > 2 and abs(a - b) >= 25]
+                     if abs(a.x - b.x) > 2 and abs(a.y - b.y) > 2 and abs(a - b) >= GM.DIAMOND]
             if len(slant) >= 4:
                 # длинные линии здесь — связки схемы, не линейки листа: боковая рамка «Telefonon visszajelent…» и петля
                 # «igen» схемы 3.2 соединены линиями от 40 pt, и снимок выходил без них (рамка — таблицей ниже схемы)
@@ -1436,10 +1438,9 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
                 # таблиц текстового слоя терялся (3PR10, 3SZ23 «2. Üzemmódok», D2 аудита 30.10); тонкие линии — не фон
                 if fills is None:
                     # рамка текста сегмента выше строки заливки (3SZ23: текст 68–88 pt в заливке 72–84) — запас 4 pt
-                    fills = [(q.x0, q.y0 - 4, q.x1, q.y1 + 4, "%02X%02X%02X" % tuple(round(255 * v) for v in dr["fill"][:3]))
+                    fills = [(q.x0, q.y0 - 4, q.x1, q.y1 + 4, GM.tint(dr["fill"]))
                              for dr in page.get_drawings() for q in [fitz.Rect(dr["rect"])]
-                             if dr.get("fill") and len(dr["fill"]) >= 3 and 0.3 < min(dr["fill"]) < 0.97
-                             and q.width >= 3 and q.height >= 3]
+                             if GM.tint(dr.get("fill")) and q.width >= GM.LINE and q.height >= GM.LINE]
                 __import__("docx_struct").cell_fills(blk["rows"], lambda pg: fills)
                 regs.append({"rect": r, "ids": {s["id"] for s in inside}, "block": blk})
         for i, (r, img) in enumerate(figs):
@@ -1548,7 +1549,7 @@ def load(src, segs, text=False):
                     for a, x in zip(sp, sp[1:]):
                         m, t = re.search(r"(\d+)\s*$", a["text"]), x["text"].strip()
                         if m and len(t) <= 4 and abs(a["origin"][1] - base) < 0.5 \
-                                and base - x["origin"][1] > 0.25 * x["size"]:
+                                and base - x["origin"][1] > GM.SUP_RISE * x["size"]:
                             mid = (fitz.Rect(x["bbox"]).tl + fitz.Rect(x["bbox"]).br) / 2
                             seg = next((s for s in content if s["page"] == pno and fitz.Rect(s["loc"]["bbox"]).contains(mid)), None)
                             if seg:
@@ -1926,8 +1927,8 @@ def layout(src, blocks, segs, info):
         head["font"], head["size"] = info.get("font"), info.get("size")
     head_bottom = max((s["loc"]["bbox"][3] for s in headz), default=36)
     foot_top = min((s["loc"]["bbox"][1] for s in footz), default=H - 36)
-    return {"page_sizes": __import__("docx_struct")._page_sizes(src),
-            "page_bg": __import__("docx_struct")._page_bgs(src),
+    return {"page_sizes": GM.page_sizes(src),
+            "page_bg": GM.page_bgs(src),
             "W": W, "H": H, "left": left, "right": max(right, 20), "top": max(top - 4, head_bottom + 6),
             "bottom": max(H - bottom - 4, H - foot_top + 6), "header": 24, "footer": 18,
             "head_imgs": [], "head_lines": [], "head_grid": head,

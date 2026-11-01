@@ -7,6 +7,8 @@ import math
 import re
 from collections import Counter
 
+import geom as GM
+import patterns as PT
 from docx_struct import text_of, insert_imgs, PAGE_MARK
 from segments import unpua
 
@@ -1015,7 +1017,7 @@ class Builder:
         # маркер пункта и текст через табуляцию («• ⇥ Проверка сочленения …» в ячейке) — висячим отступом на табуляции:
         # перенесённые строки шли под маркер, как сплошной текст (D8: 30PR132GT, 30TKBSZ36BIGT, 01-02FMP0BIGT, аудит 30.10)
         head = "".join(r.get("t", "") for r in runs).split("\t", 1)
-        if stops and len(head) == 2 and re.fullmatch(r"\s*[•▪◦·●○■□–\-−]\s*", head[0]) \
+        if stops and len(head) == 2 and re.fullmatch(rf"\s*[{PT.MARKERS}−]\s*", head[0]) \
                 and not par.paragraph_format.left_indent and not par.paragraph_format.first_line_indent:
             par.paragraph_format.left_indent = Pt(stops[0] - base)
             par.paragraph_format.first_line_indent = Pt(-(stops[0] - base))
@@ -1988,7 +1990,7 @@ class Builder:
         zone = getattr(self.tr, "zone", lambda t: None)
         for r in rows:
             # средняя ширина знака Times — около 0,55 кегля (полужирного — 0,6); поля ячейки LibreOffice — 2 × 5,4 pt
-            k = (0.6 if r.get("bold") or mono else 0.55) * (size or 10)
+            k = (GM.CHAR_W_BOLD if r.get("bold") else GM.CHAR_W_MONO if mono else GM.CHAR_W) * (size or 10)
             for ci, txt in enumerate(r["cells"][:n]):
                 # и ячейка сетки по линиям (строки), и перевод запасным ходом памяти, как его печатает _zone_text:
                 # «Azonosító:» отдельной ячейкой — «Идентификатор:» из половины сегмента, «Oldalszám: 10.» в ячейке
@@ -1999,8 +2001,8 @@ class Builder:
                         continue
                     src = line.replace(PAGE_MARK, "00")
                     ru = self.tr(src) or zone(src) or line
-                    if len(ru) > len(line) and widths[ci] < len(ru) * k + 12:
-                        need[ci] = max(need[ci], len(ru) * k + 12)
+                    if len(ru) > len(line) and widths[ci] < len(ru) * k + GM.CELL_PAD:
+                        need[ci] = max(need[ci], len(ru) * k + GM.CELL_PAD)
         deficit = [max(0.0, need[i] - widths[i]) for i in range(n)]
         total = sum(deficit)
         if total < 1:
@@ -2019,7 +2021,7 @@ class Builder:
         from docx.enum.text import WD_ALIGN_PARAGRAPH as AL
         rows, widths, aligns = grid["rows"], grid.get("widths") or [], grid.get("aligns") or []
         font = self.doc.styles[style].font.name or ""
-        widths = self._fit_widths(rows, widths, grid.get("size"), bool(re.search(r"(?i)courier|mono|consol", font)))
+        widths = self._fit_widths(rows, widths, grid.get("size"), bool(PT.MONO_FONT.search(font)))
         ncol = max(len(r["cells"]) for r in rows)
         t = part.add_table(rows=len(rows), cols=ncol, width=Pt(sum(widths) or 400))
         if grid.get("inner", True):

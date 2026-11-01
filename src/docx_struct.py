@@ -19,13 +19,13 @@ import re
 import unicodedata
 from collections import Counter
 
+import geom as GM
+import patterns as PT
+
 HEAD = {"H1": 1, "H2": 2, "H3": 3, "H4": 4, "H5": 5, "H6": 6}
 SKIP = {"Artifact"}
 PAGE_MARK = "\ue000"           # знаки номера листа в колонтитуле образцового листа (layout) — там ставится поле PAGE
 INLINE = {"Link", "Span", "Reference", "Annot", "Quote", "Code", "BibEntry"}
-# пометка о переносе листа оригинала — служебная строка его разрыва, в переводе её нет (join_tables, lost_segments)
-CONT_MARK = re.compile(r"[\s.…_-]*(?:folytat[aá]s\s+a\s+k[öo]vetkez[őo]\s+oldalon|continued\s+on\s+(?:the\s+)?next\s+page)"
-                       r"[\s.…_-]*", re.I)
 
 
 # начертание в имени шрифта PDF — и по-английски, и по-местному: Word 2016 с венгерским интерфейсом пишет
@@ -464,7 +464,7 @@ def join_tables(bs):
             b = dict(b, items=[join_tables(it) for it in b["items"]])
         # пометка о переносе листа оригинала («… folytatás a következő oldalon …») — прочь и не между таблицами: в
         # переводе листы рвутся в других местах, и она стояла посреди страницы, дальше шёл текст (3PR10, аудит 30.10)
-        if b["k"] == "p" and CONT_MARK.fullmatch(text_of(b.get("runs") or [])):
+        if b["k"] == "p" and PT.CONT_MARK.fullmatch(text_of(b.get("runs") or [])):
             continue
         # пометка о переносе («Folytatás a következő oldalon.») между таблицей и её продолжением без шапки на следующем
         # листе — прочь: в DOCX таблица переносится сама (ÜFK, 16.10)
@@ -2376,28 +2376,6 @@ def cell_edges(rows, thin):
                 a["edges"]["right"] = b["edges"]["left"] = a["edges"]["right"] or b["edges"]["left"]
 
 
-def _page_sizes(path):
-    """Размеры листов оригинала (ширина, высота) с учётом поворота (/Rotate): альбомные листы — альбомными разделами
-    (docx_build.Builder._page)."""
-    import fitz
-    with fitz.open(str(path)) as d:
-        return [(round(pg.rect.width, 1), round(pg.rect.height, 1)) for pg in d]
-
-
-def _page_bgs(path):
-    """Фон листа — заливка во весь лист не белым и не тёмным (жёлтые листы ÜTJ 30HU375GT, 01-02FMP0BIGT): «RRGGBB» или
-    None по листам; docx_build кладёт его фоном раздела, все листы которого такого цвета."""
-    import fitz
-    out = []
-    with fitz.open(str(path)) as d:
-        for pg in d:
-            A = pg.rect.get_area()
-            out.append(next(("%02X%02X%02X" % tuple(round(255 * v) for v in dr["fill"][:3]) for dr in pg.get_drawings()
-                             if dr.get("fill") and len(dr["fill"]) >= 3 and 0.3 < min(dr["fill"]) < 0.97
-                             and fitz.Rect(dr["rect"]).get_area() >= 0.9 * A), None))
-    return out
-
-
 def _zone_keys(texts):
     """Тексты колонтитулов листов без счётчика листов: число, что у большинства листов своё («Oldalszám:» 3, 4, 5 …), —
     «#»; число с немногими значениями (версия 0 или 1, идентификатор) остаётся — листы с разной версией различимы.
@@ -2483,7 +2461,8 @@ def layout(path, blocks, content=None):
             bot = max(float(c["bottom"]) for c in head)
             # и только внутри рамки шапки — выше её нижней линии: «10/6. Melléklet» под рамкой (1SZ01) — не шапка
             # (в шапке «10/6» становилось полем «номер/всего»: «Приложение 42/115»)
-            frame = min((float(r["top"]) for r in _drawn(pg.rects + pg.lines) if float(r["bottom"]) - float(r["top"]) < 3
+            frame = min((float(r["top"]) for r in _drawn(pg.rects + pg.lines)
+                         if float(r["bottom"]) - float(r["top"]) < GM.LINE
                          and float(r["x1"]) - float(r["x0"]) > 0.5 * W and float(r["top"]) > bot - 1), default=body_top)
             for c in sorted((c for c in art if body_top <= c["top"] < min(ctops[pg.page_number], frame)),
                             key=lambda c: c["top"]):
@@ -2636,7 +2615,7 @@ def layout(path, blocks, content=None):
                    [max(6.0, min(36.0, body_top - 4 - 18))])
     sig = lambda chars: re.sub(r"\s+", " ", re.sub(r"\d+\.?", "", "".join(c["text"] for c in chars))).strip()
     body_sig = sig(foot_chars)
-    out = {"page_sizes": _page_sizes(path), "page_bg": _page_bgs(path),
+    out = {"page_sizes": GM.page_sizes(path), "page_bg": GM.page_bgs(path),
            "W": W, "H": H, "left": left, "right": max(right, 20), "top": body_top - 4,
            "bottom": H - foot_top + 12, "header": head_top, "footer": max(H - foot_bottom - 6, 18),
            **fields,
@@ -2934,15 +2913,15 @@ def _foot_top(arts, rects, H, cbot=None):
         # текстовый слой: пробел — не краска, пробел в конце строки тела выходит за её рамку и считался подвалом
         # (32RDGT: верх подвала на 509 pt, нижнее поле 344 pt, 20.10). У размеченного — как было: у HSE без подвала
         # поле считалось по пробелу-артефакту, без него лист переполнялся (регрессия A/B)
-        low = [float(c["top"]) for c in arts if float(c["top"]) > max(cbot, H * 0.6) and c["text"].strip()]
+        low = [float(c["top"]) for c in arts if float(c["top"]) > max(cbot, H * GM.FOOT_TEXT) and c["text"].strip()]
         if not low:
             # знаков ниже тела нет — подвала нет: линии рядов таблицы у низа листа (шаг меньше 15 pt) склеивались в
             # «подвал из одних линий» от 0,7 листа, пробелы в концах строк под ним — в его знаки, нижнее поле 9 см
             # (3PR10, 3SZ17, 30TKBSZ36BIGT: тело кончалось на 70 % листа, аудит 30.10)
             return H
         top = min(low)
-        border = [float(r["top"]) for r in rects if float(r["bottom"]) - float(r["top"]) < 3
-                  and max(cbot, H * 0.6) < float(r["top"]) <= top]
+        border = [float(r["top"]) for r in rects if float(r["bottom"]) - float(r["top"]) < GM.LINE
+                  and max(cbot, H * GM.FOOT_TEXT) < float(r["top"]) <= top]
         return round(min(border) if border else top) - 1
     rows = sorted({round(float(c["top"])) for c in arts if float(c["top"]) > H * 0.7}, reverse=True)
     rr = [r for r in rects if float(r["top"]) > H * 0.7]
@@ -3058,9 +3037,9 @@ def _zone_grid(chars, rects):
     # сеткой «475 | 18 pt», и «Azonosító:3SZ17 … Verziószám: 0» шло одной ячейкой (аудит 30.10)
     mids = [(float(w["x0"]) + float(w["x1"])) / 2 for w in words]
     empty = lambda a, b: not any(a <= x <= b for x in mids)
-    while len(cols) >= 3 and cols[-1] - cols[-2] < 24 and empty(cols[-2], cols[-1]):
+    while len(cols) >= 3 and cols[-1] - cols[-2] < GM.EDGE_COL and empty(cols[-2], cols[-1]):
         cols.pop(-2)
-    while len(cols) >= 3 and cols[1] - cols[0] < 24 and empty(cols[0], cols[1]):
+    while len(cols) >= 3 and cols[1] - cols[0] < GM.EDGE_COL and empty(cols[0], cols[1]):
         cols.pop(1)
     # внутренние линии — только настоящие вертикали; концы отрезков рамки (у штампа UTS рамка сверху разбита на
     # куски в точках 160 и 448) — места столбцов, но не линии: сетка рисовалась там, где её нет (16.10)

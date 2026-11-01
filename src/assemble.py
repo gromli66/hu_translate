@@ -665,7 +665,7 @@ def lost_segments(out, segs, expect, skip_pages=(), H=842):
     переносит слова и ставит метки начертания. → [(сегмент, перевод, сколько вхождений не нашлось)]; сборка из-за
     потери не падает — потерю смотрит человек (лог и лист «нарушения»)."""
     import docx_build as B
-    import docx_struct
+    import patterns as PT
     from segments import needs_translation
     key = lambda t: re.sub(r"[\W\d_]+", "", B.TAGS.sub("", t or "")).lower()
     text = lambda x: key(html.unescape(re.sub(r"<[^>]+>", "", x.replace("</w:p>", " "))))
@@ -681,7 +681,7 @@ def lost_segments(out, segs, expect, skip_pages=(), H=842):
     for s in segs:
         bb = s["loc"].get("bbox")
         if "shot" in s["loc"] or "struct_only" in s["loc"] or s["page"] in skip_pages or not s["text"].strip()                 or (bb and (bb[3] < 0.14 * H or bb[1] > 0.86 * H)) or not needs_translation(B.TAGS.sub("", s["text"])) \
-                or docx_struct.CONT_MARK.fullmatch(s["text"]):  # пометка о переносе листа — в DOCX её нет нарочно
+                or PT.CONT_MARK.fullmatch(s["text"]):  # пометка о переносе листа — в DOCX её нет нарочно
             continue
         ru = expect(s)
         k = key(ru)[:24] if ru else ""
