@@ -259,3 +259,28 @@ def test_pdf_in_place_shorter_than_original_is_reported(tmp_path, monkeypatch, c
     _pages_pdf(full, ["Elso oldal.", "Masodik oldal."])
     segs, _ = S.pdf_segments(full, ocr=False, shots=False)
     assert "pages_missing" not in A.build_pdf(full, tmp_path / "f.pdf", segs, {str(s["id"]): {"ru": "Лист."} for s in segs})
+
+
+# ------------------------------------------------------------------ 5. проверка оформления: таблица в ячейке
+def test_table_checks_pair_top_level_tables_after_nested_one(tmp_path):
+    """Ф9/Ф10: блоки таблиц шли вместе с вложенными, таблицы DOCX — только верхнего уровня: после первой таблицы
+    в ячейке сверка сдвигалась на одну (ложные «ширина»/«заливка шапки» у следующей), ширина внешней складывалась
+    с ячейками вложенной."""
+    import docx_build as B
+    import docx_profile as F
+    from test_struct_docx import LAYOUT, PROFILE, p, png
+    prof = dict(PROFILE, page={"left": LAYOUT["left"], "right": PROFILE["page"]["right"]})
+    inner = {"k": "table", "frame": {"xs": [100, 200]},
+             "rows": [[{"blocks": [p("Belső")], "th": True}], [{"blocks": [p("Belső 2")], "th": False}]]}
+    outer = {"k": "table", "frame": {"xs": [62.4, 535.6]},
+             "rows": [[{"blocks": [p("Külső"), inner], "th": False}, {"blocks": [p("Jobb")], "th": False}]]}
+    second = {"k": "table", "frame": {"xs": [62.4, 535.6], "fill": "D9D9D9"},
+              "rows": [[{"blocks": [p("Fej")], "th": True}], [{"blocks": [p("Test")], "th": False}]]}
+    mem = B.Memory([(t, t) for t in ("Belső", "Belső 2", "Külső", "Jobb", "Fej", "Test")])
+    out = tmp_path / "t.docx"
+    B.Builder(mem, lambda img: png(), prof).build([outer, second], str(out), LAYOUT)
+    tab = lambda v: [x for x in v if x["rule"] in ("Ф9", "Ф10")]
+    assert tab(F.check(str(out), prof, [outer, second], LAYOUT)) == []
+    # настоящее расхождение по-прежнему видно — и у той таблицы, где оно есть
+    other = dict(second, frame={"xs": [62.4, 535.6], "fill": "FFFF00"})
+    assert [x["where"] for x in tab(F.check(str(out), prof, [outer, other], LAYOUT))] == ["таблица 2: заливка шапки"]
