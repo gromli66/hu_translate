@@ -31,3 +31,30 @@ def test_cli_terms_passes_project_source_language(tmp_path, monkeypatch):
                                       "--work", str(tmp_path / "w")])
     TK.main()
     assert seen["src_lang"] == "ru"
+
+
+# ------------------------------------------------------------------ 2. надписи на картинках: источник en
+def test_every_source_language_has_shot_settings():
+    """Пара с источником en (en-ru, en-hu): shots.LANGS без «en» — KeyError в Tesseract, ловился как сбой картинки,
+    и надписи скриншотов и рисунков молча оставались непереведёнными."""
+    import langs as L
+    import shots as SH
+    for lang in L.LANGS:
+        assert SH.LANGS[lang]["tess"] == L.TESS[lang]
+        assert set(SH.LANGS[lang]["other"]) <= set(SH.LANG_NAMES) and lang not in SH.LANGS[lang]["other"]
+    pr = SH.check_prompt("en", SH.PICTURE)
+    assert "английским словарём" in pr and '"lang": "en"|' in pr
+
+
+def test_english_source_labels_read_and_only_english_translated(tmp_path, monkeypatch):
+    import re
+    import llm
+    import shots as SH
+    from test_docx_shots import _echo, _picture
+    img = SH._open_raster(_picture(["Power supply", "Съемный кожух"], size=18))[0]
+    labels = SH.pic_labels(img, tmp_path / "t.png", "en")                 # Tesseract со словарём eng
+    assert any("Power supply" in lb["t"] for lb in labels)
+    monkeypatch.setattr(llm, "chat", _echo(lambda t: "ru" if re.search("[а-яА-Я]", t) else "en"))
+    good = SH.check_labels(b"png", labels, "t", "en", SH.PICTURE, merge=True)
+    assert good and all(not re.search("[а-яА-Я]", lb["t"]) for lb in good)
+    assert any("Power supply" in lb["t"] for lb in good)
