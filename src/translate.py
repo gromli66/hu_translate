@@ -59,6 +59,55 @@ DECIMAL = {"ru": "comma", "hu": "comma", "en": "point"}
 UNITS_OF = {"ru": "кВ, МВт, т/ч, с", "hu": "kV, MW, t/h, s", "en": "kV, MW, t/h, s"}
 QUOTES = {"ru": "«…»", "hu": "„…”", "en": "\"…\""}
 
+# Перевод на английский: русские кавычки, оставленные моделью («Select» в Guide to Creating Exercises, ru-en), —
+# английскими: «…» → “…”, вложенные „…“ → ‘…’ (по глубине). Кавычка, приклеенная к коду изнутри слова (путь
+# C:\«x»\, ключ --title=«x», адрес), и прямые " ' не трогаются; английские “…” ‘…’ — тоже
+_QT_TAG = re.compile(r"(</?f\d+>)")
+_QT_OPEN_AFTER = set(" \t\n([{—–-«„“‘\"'")            # что может стоять перед открывающей кавычкой текста
+_QT_CLOSE_BEFORE = set(" \t\n)]}.,;:!?…—–-»“”’\"'")   # и после закрывающей
+
+
+def en_quotes(text):
+    parts = _QT_TAG.split(text)                       # чётные — текст, нечётные — метки <fN> (кавычку не отделяют)
+    pos = [(k, j) for k in range(0, len(parts), 2) for j in range(len(parts[k]))]
+    plain = "".join(parts[k][j] for k, j in pos)
+    if not any(c in plain for c in "«»„"):
+        return text
+    n = len(plain)
+
+    def free_open(i):                                 # «x»/«y» — косая между парами кавычек — текст, не путь
+        p = plain[i - 1] if i else " "
+        return p in _QT_OPEN_AFTER or (p == "/" and i > 1 and plain[i - 2] in "»“”’")
+
+    def free_close(i):
+        q = plain[i + 1] if i + 1 < n else " "
+        return q in _QT_CLOSE_BEFORE or (q == "/" and i + 2 < n and plain[i + 2] in "«„“‘")
+    rep, stack = {}, []                               # стек: (открывающая, заменена ли)
+    for i, c in enumerate(plain):
+        if c in "«„":
+            free = free_open(i)
+            if free:
+                rep[i] = "“" if len(stack) % 2 == 0 else "‘"
+            stack.append((c, free))
+        elif c == "»" or (c in "“”" and stack and stack[-1][0] == "„"):
+            want = "«" if c == "»" else "„"
+            if any(o == want for o, _ in stack):
+                while stack:
+                    o, free = stack.pop()
+                    if o == want:
+                        break
+            else:
+                free = free_close(i)                  # непарная закрывающая
+            if free:
+                rep[i] = "”" if len(stack) % 2 == 0 else "’"
+    if not rep:
+        return text
+    out = [list(p) for p in parts]
+    for i, ch in rep.items():
+        k, j = pos[i]
+        out[k][j] = ch
+    return "".join("".join(p) for p in out)
+
 
 def system_generic(src, tgt):
     import langs as L
@@ -625,10 +674,12 @@ class Translator:
 
     def post(self, src, out):
         """Постобработка перевода по паре: hu-ru — прописные и единицы (fix_caps, fix_units); перевод на русский —
-        единицы; прочие пары — без изменений."""
+        единицы; на английский — кавычки (en_quotes); прочие пары — без изменений."""
         from segments import keep_lead_glyph
         if self.hu_ru:
             return keep_lead_glyph(src, fix_units(fix_caps(src, out, self.ru_caps)))
+        if self.tgt == "en":
+            return en_quotes(out)
         return keep_lead_glyph(src, fix_units(out)) if self.tgt == "ru" else out
 
     def term_issues(self, src, ru):
