@@ -208,6 +208,22 @@ def portfolio_cover(page, names, lang):
     return True
 
 
+def _replace_attachment(d, key, data, fname, mime_reset=False):
+    """Содержимое вложения — на месте, в поток его же описания файла: порядок, описание, папка портфолио — свои.
+    Удаление с добавлением ломалось: embfile_del PyMuPDF 1.28 удаляет не ту пару массива имён (позиции idx и idx+1
+    вместо 2·idx и 2·idx+1) — при замене не первого вложения предыдущее получало чужое содержимое, а своё терялось
+    (картинка или непереведённый документ перед переведённым), с тремя и более — «Name already exists» и сбой сборки;
+    embfile_upd с bytes падает в 1.27 («no attribute m_internal») — поток меняется update_stream."""
+    import fitz
+    x = d.embfile_upd(key, filename=fname, ufilename=fname)
+    d.update_stream(x, data)
+    n = str(len(data))
+    for k, v in (("DL", n), ("Params/Size", n), ("Params/CheckSum", "null"), ("Params/ModDate", f"({fitz.get_pdf_now()})")):
+        d.xref_set_key(x, k, v)
+    if mime_reset:
+        d.xref_set_key(x, "Subtype", "null")             # тип файла сменился (.doc → .docx)
+
+
 def rebuild_portfolios(work, out, sfx="_RU"):
     """Переведённое портфолио: копия исходного, где каждое вложение заменено своим переводом (PDF — PDF «на месте»,
     DOCX — DOCX). Заказчик получает один файл той же структуры, что прислал; переводы по отдельности тоже остаются."""
@@ -235,9 +251,7 @@ def rebuild_portfolios(work, out, sfx="_RU"):
                 fname = attachment_name(info, key)
                 if ext_ru != ext:
                     fname = Path(fname).with_suffix(ext_ru).name          # внутри — DOCX: и имя с .docx
-                # embfile_upd в PyMuPDF 1.27 падает на bytes («no attribute m_internal») — заменяем удалением и добавлением
-                d.embfile_del(key)
-                d.embfile_add(key, ru.read_bytes(), filename=fname, ufilename=fname, desc=info.get("desc"))
+                _replace_attachment(d, key, ru.read_bytes(), fname, mime_reset=ext_ru != ext)
                 done.append(fname)
         if done:
             portfolio_cover(d[0], done, sfx.lstrip("_").lower())

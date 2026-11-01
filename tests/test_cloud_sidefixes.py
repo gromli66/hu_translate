@@ -422,3 +422,34 @@ def test_old_doc_attachment_replaced_by_its_docx_translation(tmp_path):
     assert sorted(files) == ["30W kezi.docx", "30W lap.pdf"]
     assert Document(io.BytesIO(files["30W kezi.docx"])).paragraphs[0].text == "Ручное управление."
     assert "30W kezi.docx" in d[0].get_text().replace("\n", " ")                 # и в перечне на обложке
+
+
+def test_replacing_later_attachment_keeps_earlier_untouched(tmp_path, monkeypatch):
+    """embfile_del PyMuPDF 1.28 удаляет не ту пару массива имён (idx и idx+1 вместо 2·idx и 2·idx+1): замена вложения
+    не первым по счёту отдавала предыдущему чужое содержимое — картинка или непереведённый документ перед переведённым
+    пропадали из портфолио, а венгерский оригинал оказывался в нём дважды. Описание вложения теперь сохраняется."""
+    import fitz
+    monkeypatch.setenv("HU_ROLES", "0")
+    png = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 4, 4), False).tobytes("png")
+    src, work = tmp_path / "in", tmp_path / "work"
+    src.mkdir()
+    d = fitz.open()
+    d.new_page().insert_text((72, 72), "A legjobb eredmény érdekében…")
+    d.embfile_add("k0", png, filename="30V kep.png", ufilename="30V kep.png", desc="séma")
+    d.embfile_add("k1", _pdf("Nem forditott."), filename="30V regi.pdf", ufilename="30V regi.pdf")
+    d.embfile_add("k2", _pdf("A szivattyu indul."), filename="30V feladat.pdf", ufilename="30V feladat.pdf", desc="utasítás")
+    d.xref_set_key(d.pdf_catalog(), "Collection", "<< /Type /Collection >>")
+    d.save(src / "30V.PDF")
+    P.unpack_portfolio(src / "30V.PDF", work / "unpacked" / "30V")
+    out = work / "out"
+    out.mkdir(parents=True)
+    (out / "30V feladat_RU.pdf").write_bytes(_pdf("Nasos zapuskaetsya."))          # «30V regi» — без перевода
+    P.rebuild_portfolios(work, out)
+    r = fitz.open(out / "30V_RU.pdf")
+    got = [(P.attachment_name(r.embfile_info(i), ""), r.embfile_info(i).get("description")) for i in range(r.embfile_count())]
+    was = fitz.open(src / "30V.PDF")
+    assert got == [(P.attachment_name(was.embfile_info(i), ""), was.embfile_info(i).get("description")) for i in range(3)]
+    assert got[0] == ("30V kep.png", "séma") and got[2] == ("30V feladat.pdf", "utasítás")
+    assert r.embfile_get(0) == png
+    assert fitz.open(stream=r.embfile_get(1), filetype="pdf")[0].get_text().strip() == "Nem forditott."
+    assert fitz.open(stream=r.embfile_get(2), filetype="pdf")[0].get_text().strip() == "Nasos zapuskaetsya."
