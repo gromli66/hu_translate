@@ -328,16 +328,13 @@ def _foreign_ink(page, plates, dpi=150):
     return out, room
 
 
-def build_pdf(src, out, segs, res, progress=None, shots_out=None):
-    """shots_out — куда сохранить оригинал с переведёнными скриншотами (без правки текста): из него собирается DOCX."""
+def build_pdf(src, out, segs, res, progress=None):
     import fitz
     import pagefit as PF
     import shots as SH
     doc = fitz.open(src)
     pages = sorted({s["page"] for s in segs if s["page"] is not None and 0 <= s["page"] < len(doc)})
     n_shots, shot_err = SH.apply(doc, segs, res)
-    if shots_out:
-        doc.save(shots_out, garbage=3, deflate=True)
     # текст страницы — сегменты с рамками строк; надписи скриншотов и абзацы DOCX вписываются не здесь
     segs = [s for s in segs if "frags" in s["loc"]]
     shrink = []
