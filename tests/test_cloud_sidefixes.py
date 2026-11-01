@@ -366,3 +366,37 @@ def test_nonstandard_element_with_own_text_keeps_nested_table(tmp_path):
     assert [b["k"] for b in blocks] == ["p", "table"]
     assert D.text_of(blocks[0]["runs"]).strip() == "Keret felirata."
     assert [D.text_of(c["blocks"][0]["runs"]).strip() for c in blocks[1]["rows"][0]] == ["Bal", "Jobb"]
+
+
+# ------------------------------------------------------------------ попутное: метки ролей — каждому абзацу листа
+def test_role_labels_reach_every_paragraph_of_page(tmp_path, monkeypatch):
+    """С 6388eca (29.10) строки «метки портала → сегмент» стояли вне цикла по абзацам: метку получал только последний
+    сегмент текстового листа (с ролью последнего абзаца), распознанные листы — ни один; заголовки и пункты по меткам
+    в docx_layout не доходили."""
+    import fitz
+    import llm
+    import roles as R
+    import segments as S
+    lines = ["1. Bevezetés", "Az első bekezdés szövege itt van, elég hosszú.", "A második bekezdés szövege is itt van."]
+    d = fitz.open()
+    pg = d.new_page()
+    for i, t in enumerate(lines):
+        pg.insert_text((72, 100 + 60 * i), t, fontsize=12)
+    d.save(tmp_path / "r.pdf")
+    monkeypatch.setattr(S, "OCR_DIR", tmp_path / "ocr")
+    lab = lambda pages: {p: (["x"], {"x": 1}) for p in pages}
+    monkeypatch.setattr(R, "doc_labels", lambda path, pages, workers=4: lab(pages))
+    monkeypatch.setattr(R, "frag_labels", lambda frags, size, workers=4: lab(frags))
+
+    def apply(pars, lines_, labels, join_lines):
+        for p in pars:
+            p["role"] = "heading" if p["text"].startswith("1.") else "body"
+        return pars
+    monkeypatch.setattr(R, "apply", apply)
+    monkeypatch.setattr(llm, "chat", lambda messages, images=None, max_tokens=0, tag="":
+                        {"text": "\n\n".join(lines), "finish": "stop"})      # чтение скана порталом
+    for ocr in (False, True):                                                   # лист с текстовым слоем и скан
+        segs, info = S.pdf_segments(tmp_path / "r.pdf", roles=True, shots=False, ocr=ocr, dpi_tess=150, dpi_portal=72)
+        assert bool(info.get("ocr_pages")) == ocr and len(segs) == 3
+        assert [s["loc"].get("roles") for s in segs] == [True] * 3
+        assert [s["loc"].get("role") for s in segs] == ["heading", "body", "body"]

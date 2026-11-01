@@ -991,6 +991,13 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
                                  "ocr": plan[pno]}})
             if plan[pno] and PF.pixels_only(p["text"]):
                 segs[-1]["loc"]["pix"] = True               # не перерисовывается (assemble.build_pdf)
+            # каждому абзацу листа — по меткам портала. Блок повёрнутых подписей (6388eca, 29.10) вставили между
+            # сегментом и этими строками, и они ушли из цикла: метку получал только последний сегмент текстового листа
+            # (с ролью последнего абзаца), распознанные листы — ни один
+            if labels.get(pno) and labels[pno][1]:
+                segs[-1]["loc"]["roles"] = True
+                if p.get("role"):
+                    segs[-1]["loc"]["role"] = p["role"]
         if not plan[pno]:
             # повёрнутые подписи (стрелки схем: «sikeres/sikertelen»): строки текстового слоя с вертикальным направлением
             # в группировку не идут; каждая — своим сегментом, перевод рисуется в том же повороте (loc.rot)
@@ -1004,10 +1011,6 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
                                      "align": "left", "cell": [page.rect.x0, page.rect.x1], "frags": [bb],
                                      "size": ln["size"], "bold": ln["bold"], "family": ln["family"], "ocr": False,
                                      "rot": ln["rot"]}})
-            if labels.get(pno) and labels[pno][1]:
-                segs[-1]["loc"]["roles"] = True             # абзацы листа — по меткам портала
-                if p.get("role"):
-                    segs[-1]["loc"]["role"] = p["role"]
     n_shots = 0
     text_pages = {p for p in rng if not plan[p]}
     if shots and text_pages:                      # надписи скриншотов — на языке источника (shots.py)          # надписи скриншотов — словарь и правила венгерского (shots.py)
