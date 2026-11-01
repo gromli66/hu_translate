@@ -307,3 +307,62 @@ def test_partial_roles_failure_is_visible(tmp_path, monkeypatch, capsys):
     assert st["roles_share"] == 0.333 and st["roles_pages"] == [1, 3]
     assert "роли строк порталом: да — у 33% сегментов, листов 1 из 3 (часть листов — правилами)" in capsys.readouterr().out
     assert P.roles_note(P.roles_seen([{"page": 0, "loc": {}}])) == "нет (сбой портала)"
+
+
+# ------------------------------------------------------------------ 7. размеченный PDF: вложенные теги, нестандартный тип
+def _tagged_pdf(path, content, tree):
+    """Размеченный PDF из одного листа: content — поток листа (шрифт /helv), tree — [(тип, [MCID | поддерево])]."""
+    import fitz
+    d = fitz.open()
+    pg = d.new_page(width=595, height=842)
+    pg.insert_text((72, 72), "x", fontname="helv")             # шрифт /helv — в ресурсы листа
+    pg.clean_contents()
+    d.update_stream(pg.get_contents()[0], content.encode("latin-1"))
+    page = pg.xref
+    root, top = d.get_new_xref(), d.get_new_xref()
+
+    def elem(t, kids, parent):
+        x = d.get_new_xref()
+        ks = [str(k) if isinstance(k, int) else f"{elem(k[0], k[1], x)} 0 R" for k in kids]
+        d.update_object(x, f"<< /Type /StructElem /S /{t} /P {parent} 0 R /Pg {page} 0 R /K [{' '.join(ks)}] >>")
+        return x
+    kids = [elem(t, k, top) for t, k in tree]
+    d.update_object(top, f"<< /Type /StructElem /S /Document /P {root} 0 R /K [{' '.join(f'{x} 0 R' for x in kids)}] >>")
+    d.update_object(root, f"<< /Type /StructTreeRoot /K {top} 0 R >>")
+    d.xref_set_key(d.pdf_catalog(), "StructTreeRoot", f"{root} 0 R")
+    d.xref_set_key(d.pdf_catalog(), "MarkInfo", "<< /Marked true >>")
+    d.save(path)
+
+
+def _tj(x, y, t):
+    return f"BT /helv 11 Tf {x} {y} Td ({t}) Tj ET "
+
+
+def test_text_inside_nested_tag_without_mcid_stays_in_paragraph(tmp_path):
+    """«/Span <</ActualText …>> BDC» без MCID внутри «/P <</MCID 0>>»: pdfplumber обнулял MCID — слово внутри
+    пропадало молча, текст после него до конца абзаца уходил в артефакты. Артефакт внутри абзаца — по-прежнему не текст."""
+    import docx_struct as D
+    c = ("/P <</MCID 0>> BDC " + _tj(72, 700, "Elso mondat") +
+         "/Span <</ActualText (kotojel)>> BDC " + _tj(150, 700, "kotojel") + "EMC " + _tj(200, 700, "utana.") +
+         "/Artifact BMC " + _tj(500, 700, "Lapszam") + "EMC " + _tj(250, 700, "Vege.") + "EMC "
+         "/P <</MCID 1>> BDC " + _tj(72, 650, "Masodik bekezdes.") + "EMC")
+    _tagged_pdf(tmp_path / "t.pdf", c, [("P", [0]), ("P", [1])])
+    blocks, _ = D.load(str(tmp_path / "t.pdf"))
+    texts = [D.text_of(b["runs"]) for b in blocks if b["k"] == "p"]
+    assert texts[-1] == "Masodik bekezdes."
+    first = " ".join(texts[:-1])
+    assert all(w in first for w in ("Elso mondat", "kotojel", "utana.", "Vege.")) and "Lapszam" not in first
+
+
+def test_nonstandard_element_with_own_text_keeps_nested_table(tmp_path):
+    """Элемент нестандартного типа (рамка текста) со своим MCID и таблицей внутри: весь текст поддерева сливался в
+    один абзац — таблица шла строкой «Keret Bal Jobb»."""
+    import docx_struct as D
+    c = ("/P <</MCID 0>> BDC " + _tj(72, 700, "Keret felirata.") + "EMC "
+         "/P <</MCID 1>> BDC " + _tj(72, 650, "Bal") + "EMC /P <</MCID 2>> BDC " + _tj(300, 650, "Jobb") + "EMC")
+    cell = lambda m: ("TD", [("P", [m])])
+    _tagged_pdf(tmp_path / "t.pdf", c, [("Textbox", [0, ("Table", [("TR", [cell(1), cell(2)])])])])
+    blocks, _ = D.load(str(tmp_path / "t.pdf"))
+    assert [b["k"] for b in blocks] == ["p", "table"]
+    assert D.text_of(blocks[0]["runs"]).strip() == "Keret felirata."
+    assert [D.text_of(c["blocks"][0]["runs"]).strip() for c in blocks[1]["rows"][0]] == ["Bal", "Jobb"]
