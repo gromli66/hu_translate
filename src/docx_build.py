@@ -631,6 +631,11 @@ def item_ind(b, level, P, base):
     return lvl_ind(P, lv, b["kind"])
 
 
+def _first_page(sec):
+    """Шапка и подвал первой страницы раздела (titlePg) в виде раздела — для Builder._header/_footer."""
+    return type("First", (), {"header": sec.first_page_header, "footer": sec.first_page_footer})()
+
+
 class Builder:
     """tr(text) → перевод или None (оставить как есть); image(img) → PNG-байты картинки (переведённый
     скриншот или оригинал) или None."""
@@ -2354,7 +2359,7 @@ class Builder:
             self._footer(first, L)
             if L.get("first"):                  # особый первый лист (ONS: без подвала) — «особый колонтитул» Word
                 first.different_first_page_header_footer = True
-                fp = type("First", (), {"header": first.first_page_header, "footer": first.first_page_footer})()
+                fp = _first_page(first)
                 self._header(fp, dict(L, **L["first"]))
                 self._footer(fp, dict(L, **L["first"]))
         # логотипы титула — те же, что в шапке тела (UTS), — шапкой титула; иные картинки титула — на листе (OAH)
@@ -2555,7 +2560,7 @@ class Builder:
             if ld in ("sheet", "zone") and n - p == 1 and sheet_no.get(p) and i < len(self.doc.sections):
                 sec = self.doc.sections[i]
                 sec.different_first_page_header_footer = True
-                fp = type("First", (), {"header": sec.first_page_header, "footer": sec.first_page_footer})()
+                fp = _first_page(sec)
                 self._header(fp, zl(p))
                 self._footer(fp, zl(p))
                 self._cont = sheet_no[p]
@@ -2591,7 +2596,7 @@ class Builder:
                 if sec.header.is_linked_to_previous:
                     self._header(sec, zl(first_of[j]))
                 if sec.different_first_page_header_footer and sec.first_page_header.is_linked_to_previous:
-                    self._header(type("First", (), {"header": sec.first_page_header})(), zl(first_of[j]))
+                    self._header(_first_page(sec), zl(first_of[j]))
         self.doc.save(out)
         font_table(out, (L or {}).get("font_class") or {})
 

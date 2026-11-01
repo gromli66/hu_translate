@@ -1258,6 +1258,15 @@ def relist(bs):
     return out
 
 
+def _rgb(col):
+    """Цвет pdfplumber — серый числом или (g,), RGB — (r, g, b) — в [r, g, b] (доли 0…1); прочее — None."""
+    if isinstance(col, (int, float)):
+        col = (col,)
+    if isinstance(col, (list, tuple)) and len(col) in (1, 3):
+        return [float(c) for c in (tuple(col) * 3 if len(col) == 1 else col)]
+    return None
+
+
 def load(path):
     """Блоки размеченного PDF. Возвращает (блоки, сведения о листе: поля, колонтитулы)."""
     import pdfplumber
@@ -1389,13 +1398,7 @@ def load(path):
         for y in sorted((float(o["top"]) + float(o["bottom"])) / 2 for o in horiz):
             if not ys or y - ys[-1] > 2:
                 ys.append(y)
-        def hexcol(col):
-            if isinstance(col, (int, float)):
-                col = (col,)
-            if isinstance(col, (list, tuple)) and len(col) in (1, 3):
-                v = [float(c) for c in (tuple(col) * 3 if len(col) == 1 else col)]
-                return "%02X%02X%02X" % tuple(int(round(c * 255)) for c in v)
-            return None
+        hexcol = lambda col: GM.hex_rgb(_rgb(col)) if _rgb(col) else None
         out = {"xs": [round(x, 1) for x in xs], "ys": [round(y, 1) for y in ys]}   # линии строк — высота пустых строк
         if vert:
             out["line"] = Counter(hexcol(o.get("non_stroking_color")) for o in vert).most_common(1)[0][0]
@@ -1511,11 +1514,9 @@ def load(path):
                 col = o.get("non_stroking_color")
                 if not o.get("fill") or x1 - x0 < 5 or t1 - t0 < 5 or (x1 - x0) * (t1 - t0) > 0.3 * area:
                     continue
-                v = [float(c) for c in ((col,) * 3 if isinstance(col, (int, float)) else
-                                        tuple(col) * 3 if isinstance(col, (list, tuple)) and len(col) == 1 else
-                                        col if isinstance(col, (list, tuple)) and len(col) == 3 else ())]
-                if len(v) == 3 and min(v) < 0.97:
-                    out.append((x0, t0, x1, t1, "%02X%02X%02X" % tuple(int(round(c * 255)) for c in v)))
+                v = _rgb(col)
+                if v and min(v) < GM.WHITE:
+                    out.append((x0, t0, x1, t1, GM.hex_rgb(v)))
             fill_of[pn] = out
         return fill_of[pn]
 
@@ -2923,29 +2924,29 @@ def _foot_top(arts, rects, H, cbot=None):
         border = [float(r["top"]) for r in rects if float(r["bottom"]) - float(r["top"]) < GM.LINE
                   and max(cbot, H * GM.FOOT_TEXT) < float(r["top"]) <= top]
         return round(min(border) if border else top) - 1
-    rows = sorted({round(float(c["top"])) for c in arts if float(c["top"]) > H * 0.7}, reverse=True)
-    rr = [r for r in rects if float(r["top"]) > H * 0.7]
+    rows = sorted({round(float(c["top"])) for c in arts if float(c["top"]) > H * GM.FOOT_TAGGED}, reverse=True)
+    rr = [r for r in rects if float(r["top"]) > H * GM.FOOT_TAGGED]
     if not rows:                                # подвал из одних линий (рамка без текста)
         ys = sorted({round(float(r["top"])) for r in rr}, reverse=True)
         if not ys:
             return H
         top = ys[0]
         for y in ys[1:]:
-            if top - y > 15:
+            if top - y > GM.FOOT_GAP:
                 break
             top = y
         return top - 1
     vs = [(float(r["top"]), float(r["bottom"])) for r in rr
-          if float(r["x1"]) - float(r["x0"]) < 3 and float(r["bottom"]) - float(r["top"]) > 5]
+          if float(r["x1"]) - float(r["x0"]) < GM.LINE and float(r["bottom"]) - float(r["top"]) > 5]
     top = rows[0]
     for y in rows[1:]:
         linked = any(a <= y + 12 and b2 >= top - 6 for a, b2 in vs)
-        if top - y > 15 and not linked:
+        if top - y > GM.FOOT_GAP and not linked:
             break
         top = y
     # линия рамки — ближайшая над текстом (и вплотную к ней — двойная/толстая): самая верхняя в 12 pt брала низ
     # таблицы тела, кончившейся над штампом, — лишняя пустая строка штампа (синтетика, 16.10)
-    border = sorted({float(r["top"]) for r in rr if float(r["bottom"]) - float(r["top"]) < 3
+    border = sorted({float(r["top"]) for r in rr if float(r["bottom"]) - float(r["top"]) < GM.LINE
                      and top - 12 <= float(r["top"]) <= top}, reverse=True)
     for i in range(1, len(border)):
         if border[i - 1] - border[i] > 2:           # низ таблицы тела в 2.5 pt над штампом — не его линия

@@ -25,7 +25,7 @@ import patterns as PT
 
 FAMILY = {"monospace": "Courier New", "serif": "Times New Roman", "sans-serif": "Arial"}
 NUM = re.compile(r"^\s*(\d+(?:\.\d+)*)\.?\s+\S")
-SIGN = re.compile(r"\s*([•▪◦·●○■□–\-\uf020-\uf0ff])\s")        # знак маркера в начале строки текстового слоя
+SIGN = re.compile(rf"\s*([{PT.MARKERS}\uf020-\uf0ff])\s")        # знак маркера в начале строки текстового слоя
 PLABEL = re.compile(r"^\s*(\d{1,2}|[a-z]|[A-Z])(\.\)|\))\s+\S")  # «a)», «1)», «a.)» — как docx_struct.PLABEL
 
 
@@ -50,7 +50,7 @@ def suits(path, ocr_pages):
 
 def _zone(s, H):
     y0, y1 = s["loc"]["bbox"][1], s["loc"]["bbox"][3]
-    return "head" if y1 < 0.14 * H else "foot" if y0 > 0.86 * H else None
+    return "head" if y1 < GM.HEAD_EDGE * H else "foot" if y0 > GM.FOOT_EDGE * H else None
 
 
 def _sig(text):
@@ -666,7 +666,7 @@ def _figures(page, segs, drawings, scan=False):
     import cv2
     k = 50 / 72
     pix = page.get_pixmap(dpi=50, colorspace=fitz.csGRAY)
-    ink = (np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.stride)[:, :pix.width] < 200).astype(np.uint8)
+    ink = (np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.stride)[:, :pix.width] < GM.INK).astype(np.uint8)
     for s in segs:
         x0, y0, x1, y1 = s["loc"]["bbox"]
         ink[max(0, int((y0 - 1) * k)):int((y1 + 1) * k) + 1, max(0, int((x0 - 1) * k)):int((x1 + 1) * k) + 1] = 0
@@ -769,7 +769,7 @@ def _scheme_figures(page, pno, drawings, segs, tabs, figs):
     sb = [fitz.Rect(s["loc"]["bbox"]) for s in segs]
     rs = [fitz.Rect(d["rect"]) + (-0.5, -0.5, 0.5, 0.5) for d in drawings]
     rs = [r for r in rs if r.width < 0.75 * W and r.height < 0.75 * H and (r.width > 0.5 or r.height > 0.5)
-          and r.y1 >= 0.14 * H and r.y0 <= 0.86 * H and not any((b + (-2, -2, 2, 2)).contains(r) for b in sb)
+          and r.y1 >= GM.HEAD_EDGE * H and r.y0 <= GM.FOOT_EDGE * H and not any((b + (-2, -2, 2, 2)).contains(r) for b in sb)
           and not any(r.intersects(t) for t in tabs) and not any(r.intersects(f) for f in figs)]
     items = [(True, r) for r in rs] + [(False, b) for b in sb]
     up = list(range(len(items)))
@@ -1310,6 +1310,7 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
     """Таблицы и рисунки листов: {лист: [{"rect", "block", "ids"}]} — сегменты ids идут не абзацами, а в них."""
     import fitz
     import numpy as np
+    import docx_struct
     draw, per, scans, marks = (rules or _page_rules(doc, mask is not None))[:4]
     # картинки на нескольких листах (логотип шапки) — только текстовому слою; get_images не раскодирует картинки
     reused = Counter(x for page in doc for x in {im[0] for im in page.get_images()}) if mask is not None else Counter()
@@ -1441,7 +1442,7 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
                     fills = [(q.x0, q.y0 - 4, q.x1, q.y1 + 4, GM.tint(dr["fill"]))
                              for dr in page.get_drawings() for q in [fitz.Rect(dr["rect"])]
                              if GM.tint(dr.get("fill")) and q.width >= GM.LINE and q.height >= GM.LINE]
-                __import__("docx_struct").cell_fills(blk["rows"], lambda pg: fills)
+                docx_struct.cell_fills(blk["rows"], lambda pg: fills)
                 regs.append({"rect": r, "ids": {s["id"] for s in inside}, "block": blk})
         for i, (r, img) in enumerate(figs):
             if i in used or any(r.intersects(g["rect"]) for g in regs):
@@ -1581,7 +1582,7 @@ def load(src, segs, text=False):
     flow = [s for s in content if s["id"] not in taken]
     marks = {}          # текстовый слой: маркер пункта — свой сегмент слева от текста пункта (layout.frags_from_text)
     if text:            # только в потоке: «-» в ячейке таблицы — значение (НГТУ)
-        bullet = [s for s in flow if re.fullmatch(r"\s*[•▪◦·●○■□o–\-\uf020-\uf0ff]\s*", s["text"])]
+        bullet = [s for s in flow if re.fullmatch(rf"\s*[{PT.MARKERS}o\uf020-\uf0ff]\s*", s["text"])]
         # маркер — если справа на той же строке ближе 40 pt есть пункт; иначе «-» — значение («Revision: ⇥ -»);
         # строка пункта — первая строка его сегмента: у пункта в несколько строк середина всего сегмента ниже маркера,
         # и маркер Symbol Eskom не узнавался (текст пункта — по ширине знака, а не на своём месте, 20.10)
