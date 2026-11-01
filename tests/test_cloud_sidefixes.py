@@ -284,3 +284,26 @@ def test_table_checks_pair_top_level_tables_after_nested_one(tmp_path):
     # настоящее расхождение по-прежнему видно — и у той таблицы, где оно есть
     other = dict(second, frame={"xs": [62.4, 535.6], "fill": "FFFF00"})
     assert [x["where"] for x in tab(F.check(str(out), prof, [outer, other], LAYOUT))] == ["таблица 2: заливка шапки"]
+
+
+# ------------------------------------------------------------------ 6. метки ролей портала: частичный сбой виден
+def test_partial_roles_failure_is_visible(tmp_path, monkeypatch, capsys):
+    """struct["roles"] = True, если метки получил хоть один сегмент: сбой портала на части листов не был виден."""
+    import segments as S
+    src = tmp_path / "in"
+    src.mkdir()
+    (src / "Doc.pdf").write_bytes(_pdf("Szoveg."))
+
+    def fake(f, roles=False, **kw):
+        segs = [{"id": 4 * pg + k, "text": f"Mondat {pg}.{k}", "page": pg, "loc": {"roles": True} if roles and pg == 0 else {}}
+                for pg in range(3) for k in range(4)]
+        segs.append({"id": 12, "text": "Mentés", "page": 1, "loc": {"shot": {"xref": 5}}})   # надпись скриншота — не в счёт
+        return segs, {"ocr_pages": []}
+    monkeypatch.setattr(S, "pdf_segments", fake)
+    monkeypatch.setenv("HU_ROLES", "1")
+    P.extract([src], tmp_path / "w")
+    st = P.load_docs(tmp_path / "w")["Doc"]["struct"]
+    assert st["mode"] == "text" and st["roles"] is True                          # как прежде
+    assert st["roles_share"] == 0.333 and st["roles_pages"] == [1, 3]
+    assert "роли строк порталом: да — у 33% сегментов, листов 1 из 3 (часть листов — правилами)" in capsys.readouterr().out
+    assert P.roles_note(P.roles_seen([{"page": 0, "loc": {}}])) == "нет (сбой портала)"

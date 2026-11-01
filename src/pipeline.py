@@ -283,6 +283,24 @@ def _renamed(work, f=None, stem=None):
     return m
 
 
+def roles_seen(segs):
+    """Метки ролей портала в сегментах листа: roles — получил ли их хоть один (как прежде), roles_share — доля
+    сегментов с метками, roles_pages — [листов с метками, листов с сегментами]. Прежде было только «да/нет», и сбой
+    портала на части листов (метки — у 3 листов из 40) выглядел как «да». Надписи скриншотов меток не получают — не в счёт."""
+    own = [s for s in segs if not s["loc"].get("shot")]
+    got = [s for s in own if s["loc"].get("roles")]
+    return {"roles": len(got) > 0, "roles_share": round(len(got) / len(own), 3) if own else 0.0,
+            "roles_pages": [len({s["page"] for s in got}), len({s["page"] for s in own})]}
+
+
+def roles_note(st):
+    """Строка лога о метках ролей: «да (…)» / «нет (сбой портала)»."""
+    if not st.get("roles"):
+        return "нет (сбой портала)"
+    k, n = st["roles_pages"]
+    return f"да — у {st['roles_share']:.0%} сегментов, листов {k} из {n}" + ("" if k == n else " (часть листов — правилами)")
+
+
 def extract(inputs, work, progress=_quiet, src_lang="hu"):
     """src_lang — язык источника (пара проекта): Tesseract, OCR порталом, надписи на картинках PDF и DOCX (читаются
     его словарём и переводятся только на нём)."""
@@ -381,8 +399,8 @@ def extract(inputs, work, progress=_quiet, src_lang="hu"):
                 # роли строк и колонтитулы распознанных листов — метками портала (roles.py; замер на сканах 18.10:
                 # правила не находят ни заголовков, ни пунктов, гибрид — 0,84 и 0,89); распознавание — из кэша
                 segs, info = S.pdf_segments(f, roles=True, lang=lang)
-                struct["roles"] = sum(1 for s in segs if s["loc"].get("roles")) > 0
-                log(f"извлечение: {f.name} — роли строк порталом: {'да' if struct['roles'] else 'нет (сбой портала)'}")
+                struct.update(roles_seen(segs))
+                log(f"извлечение: {f.name} — роли строк порталом: {roles_note(struct)}")
         if f.suffix.lower() == ".pdf" and (not info.get("ocr_pages") or few_ocr) and not struct:
             # PDF с текстовым слоем без разметки (Word без тегов, виртуальный принтер): DOCX — по сегментам листа,
             # начертание — по шрифтам слоя, колонтитулы — правилами размеченного (docx_layout, режим "text").
@@ -396,8 +414,8 @@ def extract(inputs, work, progress=_quiet, src_lang="hu"):
                 # границы абзацев и роли строк (заголовок, пункт) — метками портала (roles.py, замер 18.10: F1 абзацев
                 # 0,86 → 0,97, заголовков 0,36 → 0,86, пунктов 0,57 → 0,90); распознавание листов — из кэша
                 segs, info = S.pdf_segments(f, roles=True, lang=lang)
-                struct["roles"] = sum(1 for s in segs if s["loc"].get("roles")) > 0
-                log(f"извлечение: {f.name} — роли строк порталом: {'да' if struct['roles'] else 'нет (сбой портала)'}")
+                struct.update(roles_seen(segs))
+                log(f"извлечение: {f.name} — роли строк порталом: {roles_note(struct)}")
         jf.write_text(json.dumps({"file": str(f.resolve()), "segs": segs, "res": {}, "info": info, "docx": dplan,
                                   "struct": struct}, ensure_ascii=False, default=_plain), encoding="utf-8")
         log(f"извлечение: {f.name} — сегментов {len(segs)}, OCR-страниц {len(info.get('ocr_pages', []))}, {time.time() - t0:.0f} с")
