@@ -409,7 +409,7 @@ def main(argv=None):
     c.add_argument("--only", action="append", default=[], help="только документы с этой частью имени (после пробной сборки --only)")
     a = ap.parse_args(argv)
     try:
-        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)      # в фоне (вывод в файл) строки идут сразу, не в конце
     except Exception:
         pass
     return cmd_build(a) if a.cmd == "build" else cmd_compare(a)
