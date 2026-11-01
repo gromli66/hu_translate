@@ -26,6 +26,46 @@ HEAD = {"H1": 1, "H2": 2, "H3": 3, "H4": 4, "H5": 5, "H6": 6}
 SKIP = {"Artifact"}
 PAGE_MARK = "\ue000"           # знаки номера листа в колонтитуле образцового листа (layout) — там ставится поле PAGE
 INLINE = {"Link", "Span", "Reference", "Annot", "Quote", "Code", "BibEntry"}
+# элементы-блоки (load.block): внутри элемента нестандартного типа они обходятся, а не сливаются в один абзац
+BLOCK = set(HEAD) | {"P", "Caption", "BlockQuote", "Figure", "L", "Table", "TOC", "Note", "Sect", "Div", "Part", "Art"}
+
+
+def _nested_marked_content():
+    """pdfplumber 0.11 помнит только последний тег отмеченного содержимого: вложенный тег без MCID (/Span с ActualText
+    у PDFMaker, /Lang, /OC) внутри «/P <</MCID n>> BDC» обнулял MCID — знаки внутри него пропадали из дерева разметки
+    молча (ни в абзаце, ни среди артефактов), а знаки после его EMC до конца /P шли без тега — артефактами (колонтитул).
+    Стек тегов: вложенный тег без MCID наследует MCID внешнего, внутри Artifact — тоже артефакт, EMC возвращает
+    внешний. Без вложенных тегов (обычный экспорт Word) — как прежде. Ставится один раз на класс — для всех разборов
+    pdfplumber процесса одинаково (docx_struct, docx_profile)."""
+    from pdfplumber.page import PDFPageAggregatorWithMarkedContent as Agg
+    from pdfplumber.utils import decode_text
+    if getattr(Agg, "_hut_stack", False):
+        return
+
+    def begin_tag(self, tag, props=None):
+        stack = self.__dict__.setdefault("_hut_mc", [])
+        name = decode_text(tag.name)
+        mcid = props["MCID"] if isinstance(props, dict) and "MCID" in props else None
+        if mcid is None and stack:
+            if stack[-1][0] in SKIP:
+                name = stack[-1][0]
+            elif name not in SKIP:
+                mcid = stack[-1][1]
+        stack.append((name, mcid))
+        self.cur_tag, self.cur_mcid = name, mcid
+
+    def end_tag(self):
+        stack = self.__dict__.setdefault("_hut_mc", [])
+        if stack:
+            stack.pop()
+        self.cur_tag, self.cur_mcid = stack[-1] if stack else (None, None)
+    Agg.begin_tag, Agg.end_tag, Agg._hut_stack = begin_tag, end_tag, True
+
+
+try:
+    _nested_marked_content()
+except ImportError:                                 # без pdfplumber разметка не читается вовсе (load сообщит)
+    pass
 
 
 # начертание в имени шрифта PDF — и по-английски, и по-местному: Word 2016 с венгерским интерфейсом пишет
@@ -1587,7 +1627,11 @@ def load(path):
             # ссылка/фрагмент рядом с абзацем, а не внутри него (перекрёстная ссылка Word «5.6.4.7 fejezet)» в пункте
             # списка) — часть соседнего абзаца, где бы ни оказалась на листе
             return [{"k": "p", "runs": _runs(items(el)), "geom": geom(el), "inline": True}]
-        if el.mcids and t not in ("Document", "Sect", "Div", "Part", "Art"):
+        # элемент нестандартного типа со своим текстом — абзацем; но если в нём блоки (таблица, список, абзацы в рамке
+        # текста), одним абзацем из всего текста поддерева терялась их структура: таблица шла строкой. Тогда — как
+        # обёртка: свой текст абзацем, затем вложенные блоки
+        if el.mcids and t not in ("Document", "Sect", "Div", "Part", "Art") \
+                and not any(c.type in BLOCK for c in el.children):
             out.append({"k": "p", "runs": _runs(items(el)), "geom": geom(el)})
             return out
         if el.mcids and t != "Document":

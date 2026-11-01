@@ -129,13 +129,21 @@ def unpack_portfolio(f, dest):
     if d.xref_get_key(d.pdf_catalog(), "Collection")[0] == "null" or not d.embfile_count():
         return None
     dest.mkdir(parents=True, exist_ok=True)
-    out, emb = [], {}
+    out, emb, used = [], {}, set()
     for i in range(d.embfile_count()):
         name = Path(attachment_name(d.embfile_info(i), f"{f.stem}_{i}")).name
         if Path(name).suffix.lower() not in DOC_SUFFIXES:
             continue
         if not name.startswith(f.stem):                 # имя документа в комплекте должно быть уникальным
             name = f"{f.stem} {name}"
+        # одноимённые вложения (папки портфолио) затирали друг друга молча: второе — «<имя> (2)», как загрузка сервиса
+        base, k = name, 1
+        while name.casefold() in used:
+            k += 1
+            name = f"{Path(base).stem} ({k}){Path(base).suffix}"
+        if k > 1:
+            log(f"извлечение: {f.name} — вложение «{base}» не одно с таким именем: это — «{name}»")
+        used.add(name.casefold())
         p = dest / name
         p.write_bytes(d.embfile_get(i))
         out.append(p)
@@ -146,12 +154,25 @@ def unpack_portfolio(f, dest):
     return out
 
 
-def portfolio_target(out, stem, sfx="_RU"):
+def _is_portfolio(path):
+    import fitz
+    try:
+        with fitz.open(path) as d:
+            return d.xref_get_key(d.pdf_catalog(), "Collection")[0] != "null"
+    except Exception:                                   # noqa: BLE001 — не прочитан: не оболочка
+        return False
+
+
+def portfolio_target(out, stem, sfx="_RU", names=()):
     """Файл переведённого портфолио. Вложение с тем же именем, что у оболочки (30BLM1M2GT.PDF ⊃ 30BLM1M2GT.pdf), уже
     переведено в `<имя>_RU.pdf` — оболочка с заглушкой «откройте в Acrobat» затирала настоящий перевод (30BLM1M2GT,
-    30RYBSZGT, 29.10); тогда оболочка — рядом, под своим именем."""
+    30RYBSZGT, 29.10); тогда оболочка — рядом, под своим именем.
+    names — имена вложений из описи. Повторная сборка (правки редактора) находила `<имя>_RU.pdf` — оболочку прошлой
+    сборки — и клала вторую копию в `_портфолио.pdf`: занятым считается только файл, который не оболочка, или имя,
+    которое по описи принадлежит переводу вложения."""
     t = Path(out) / f"{stem}{sfx}.pdf"
-    return t.with_name(f"{stem}{sfx}_портфолио.pdf") if t.exists() else t
+    own = any(Path(n).stem == stem and Path(n).suffix.lower() == ".pdf" for n in names)
+    return t.with_name(f"{stem}{sfx}_портфолио.pdf") if own or (t.exists() and not _is_portfolio(t)) else t
 
 
 PORTFOLIO_COVER = {
@@ -187,33 +208,118 @@ def portfolio_cover(page, names, lang):
     return True
 
 
+def _replace_attachment(d, key, data, fname, mime_reset=False):
+    """Содержимое вложения — на месте, в поток его же описания файла: порядок, описание, папка портфолио — свои.
+    Удаление с добавлением ломалось: embfile_del PyMuPDF 1.28 удаляет не ту пару массива имён (позиции idx и idx+1
+    вместо 2·idx и 2·idx+1) — при замене не первого вложения предыдущее получало чужое содержимое, а своё терялось
+    (картинка или непереведённый документ перед переведённым), с тремя и более — «Name already exists» и сбой сборки;
+    embfile_upd с bytes падает в 1.27 («no attribute m_internal») — поток меняется update_stream."""
+    import fitz
+    x = d.embfile_upd(key, filename=fname, ufilename=fname)
+    d.update_stream(x, data)
+    n = str(len(data))
+    for k, v in (("DL", n), ("Params/Size", n), ("Params/CheckSum", "null"), ("Params/ModDate", f"({fitz.get_pdf_now()})")):
+        d.xref_set_key(x, k, v)
+    if mime_reset:
+        d.xref_set_key(x, "Subtype", "null")             # тип файла сменился (.doc → .docx)
+
+
 def rebuild_portfolios(work, out, sfx="_RU"):
     """Переведённое портфолио: копия исходного, где каждое вложение заменено своим переводом (PDF — PDF «на месте»,
     DOCX — DOCX). Заказчик получает один файл той же структуры, что прислал; переводы по отдельности тоже остаются."""
     import fitz
+    renamed = _renamed(work)
     for man in sorted((Path(work) / "unpacked").glob("*/_portfolio.json")):
         m = json.loads(man.read_text(encoding="utf-8"))
         d = fitz.open(m["source"])
         keys = d.embfile_names()                 # по ключам, не по номерам: удаление сдвигает номера
         done = []
         for idx, name in m["map"].items():
-            ru = Path(out) / f"{Path(name).stem}{sfx}{Path(name).suffix.lower()}"
+            # старый .doc переводится через DOCX (extract: LibreOffice) — его перевод <имя>_RU.docx; прежде искался
+            # <имя>_RU.doc, которого не бывает, и вложение оставалось непереведённым
+            ext = Path(name).suffix.lower()
+            ext_ru = ".docx" if ext == ".doc" else ext
+            conv = Path(work) / "converted" / f"{Path(name).stem}.docx"
+            # вложение, переименованное извлечением (имя занято другим документом комплекта), — под своим новым именем
+            stem = renamed.get(str((man.parent / name).resolve())) or renamed.get(str(conv.resolve())) or Path(name).stem
+            ru = Path(out) / f"{stem}{sfx}{ext_ru}"
             if ru.exists():
                 key = keys[int(idx)]
                 info = d.embfile_info(key)
                 # имя — исправленное (attachment_name): прочитанное как Latin-1 при повторной записи кодировалось
                 # ещё раз («30YCGT MÃ\x83Â\x93DJ.pdf» во вложениях переведённого портфолио, 29.10)
                 fname = attachment_name(info, key)
-                # embfile_upd в PyMuPDF 1.27 падает на bytes («no attribute m_internal») — заменяем удалением и добавлением
-                d.embfile_del(key)
-                d.embfile_add(key, ru.read_bytes(), filename=fname, ufilename=fname, desc=info.get("desc"))
+                if ext_ru != ext:
+                    fname = Path(fname).with_suffix(ext_ru).name          # внутри — DOCX: и имя с .docx
+                _replace_attachment(d, key, ru.read_bytes(), fname, mime_reset=ext_ru != ext)
                 done.append(fname)
         if done:
             portfolio_cover(d[0], done, sfx.lstrip("_").lower())
         done = len(done)
-        target = portfolio_target(out, Path(m["source"]).stem, sfx)
+        stem = Path(m["source"]).stem
+        target = portfolio_target(out, stem, sfx, m["map"].values())
+        stale = Path(out) / f"{stem}{sfx}_портфолио.pdf"
+        if target != stale and stale.exists() and _is_portfolio(stale):
+            stale.unlink()                       # вторая копия оболочки от прежней повторной сборки
+            log(f"сборка: {stale.name} — лишняя копия портфолио удалена, оболочка — {target.name}")
         d.save(target, garbage=3, deflate=True)
         log(f"сборка: {target.name} — портфолио, переведённых вложений {done} из {len(m['map'])}")
+
+
+def doc_stem(f, work, taken):
+    """Имя документа в рабочей папке (json/<имя>.json, кэш OCR, файлы перевода <имя>_RU.*) — имя файла без расширения;
+    занятое в этом прогоне другим файлом (taken, без учёта регистра — Windows) или прежним прогоном под другим именем
+    файла — «<имя> (2)», «<имя> (3)»… Обычный комплект (имена без повторов) — как прежде."""
+    stem, k = f.stem, 1
+    while True:
+        jf = Path(work) / "json" / f"{stem}.json"
+        mine = f.name if k == 1 else f"{stem}{f.suffix}"     # переименованный документ — копия под новым именем
+        if stem.casefold() not in taken and (not jf.exists() or _doc_file_is(jf, mine)):
+            taken.add(stem.casefold())
+            return stem
+        k += 1
+        stem = f"{f.stem} ({k})"
+
+
+def _doc_file_is(jf, name):
+    """json документа — от файла с этим именем (копия с выпрямленными листами и DOCX из .doc имя сохраняют)."""
+    try:
+        rec = json.loads(Path(jf).read_text(encoding="utf-8")).get("file")
+    except (OSError, ValueError):
+        return True                                     # не прочитан — как прежде: «уже есть»
+    return not rec or Path(rec).name.casefold() == name.casefold()
+
+
+def _renamed(work, f=None, stem=None):
+    """Опись переименованных документов work/renamed.json {исходный путь: новое имя}: по ней сборка портфолио находит
+    перевод вложения, имя которого было занято. С f и stem — дописать."""
+    p = Path(work) / "renamed.json"
+    try:
+        m = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+    except (OSError, ValueError):
+        m = {}
+    if f is not None and m.get(str(Path(f).resolve())) != stem:
+        m[str(Path(f).resolve())] = stem
+        p.write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding="utf-8")
+    return m
+
+
+def roles_seen(segs):
+    """Метки ролей портала в сегментах листа: roles — получил ли их хоть один (как прежде), roles_share — доля
+    сегментов с метками, roles_pages — [листов с метками, листов с сегментами]. Прежде было только «да/нет», и сбой
+    портала на части листов (метки — у 3 листов из 40) выглядел как «да». Надписи скриншотов меток не получают — не в счёт."""
+    own = [s for s in segs if not s["loc"].get("shot")]
+    got = [s for s in own if s["loc"].get("roles")]
+    return {"roles": len(got) > 0, "roles_share": round(len(got) / len(own), 3) if own else 0.0,
+            "roles_pages": [len({s["page"] for s in got}), len({s["page"] for s in own})]}
+
+
+def roles_note(st):
+    """Строка лога о метках ролей: «да (…)» / «нет (сбой портала)»."""
+    if not st.get("roles"):
+        return "нет (сбой портала)"
+    k, n = st["roles_pages"]
+    return f"да — у {st['roles_share']:.0%} сегментов, листов {k} из {n}" + ("" if k == n else " (часть листов — правилами)")
 
 
 def extract(inputs, work, progress=_quiet, src_lang="hu"):
@@ -249,11 +355,24 @@ def extract(inputs, work, progress=_quiet, src_lang="hu"):
             log(f"извлечение: {f.name} — PDF-портфолио, документов внутри: {len(inner)} "
                 f"({', '.join(p.name for p in inner)}); страница-заглушка пропущена")
             queue = inner + queue
+    taken = set()
     for i, f in enumerate(files):
         progress("извлечение", i, len(files))
-        jf = work / "json" / f"{f.stem}.json"
+        stem = doc_stem(f, work, taken)
+        if stem != f.stem:
+            # Doc.docx и Doc.pdf (или вложение портфолио с именем документа комплекта) давали один Doc.json — второй
+            # молча пропускался как «уже есть». Теперь — копия под своим именем: кэш OCR, json и файлы перевода — её
+            log(f"извлечение: {f.name} — имя «{f.stem}» уже занято другим документом комплекта: переводится как «{stem}»")
+            _renamed(work, f, stem)
+        jf = work / "json" / f"{stem}.json"
         if jf.exists():
             log(f"извлечение: {f.name} — уже есть"); continue
+        if stem != f.stem:
+            import shutil
+            cp = work / "renamed" / f"{stem}{f.suffix}"
+            cp.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(f, cp)
+            f = cp
         t0 = time.time()
         if f.suffix.lower() == ".pdf":
             up = S.upright(f, work / "upright")             # повёрнутые листы — прямо (дальше весь путь — по копии)
@@ -301,8 +420,8 @@ def extract(inputs, work, progress=_quiet, src_lang="hu"):
                 # роли строк и колонтитулы распознанных листов — метками портала (roles.py; замер на сканах 18.10:
                 # правила не находят ни заголовков, ни пунктов, гибрид — 0,84 и 0,89); распознавание — из кэша
                 segs, info = S.pdf_segments(f, roles=True, lang=lang)
-                struct["roles"] = sum(1 for s in segs if s["loc"].get("roles")) > 0
-                log(f"извлечение: {f.name} — роли строк порталом: {'да' if struct['roles'] else 'нет (сбой портала)'}")
+                struct.update(roles_seen(segs))
+                log(f"извлечение: {f.name} — роли строк порталом: {roles_note(struct)}")
         if f.suffix.lower() == ".pdf" and (not info.get("ocr_pages") or few_ocr) and not struct:
             # PDF с текстовым слоем без разметки (Word без тегов, виртуальный принтер): DOCX — по сегментам листа,
             # начертание — по шрифтам слоя, колонтитулы — правилами размеченного (docx_layout, режим "text").
@@ -316,8 +435,8 @@ def extract(inputs, work, progress=_quiet, src_lang="hu"):
                 # границы абзацев и роли строк (заголовок, пункт) — метками портала (roles.py, замер 18.10: F1 абзацев
                 # 0,86 → 0,97, заголовков 0,36 → 0,86, пунктов 0,57 → 0,90); распознавание листов — из кэша
                 segs, info = S.pdf_segments(f, roles=True, lang=lang)
-                struct["roles"] = sum(1 for s in segs if s["loc"].get("roles")) > 0
-                log(f"извлечение: {f.name} — роли строк порталом: {'да' if struct['roles'] else 'нет (сбой портала)'}")
+                struct.update(roles_seen(segs))
+                log(f"извлечение: {f.name} — роли строк порталом: {roles_note(struct)}")
         jf.write_text(json.dumps({"file": str(f.resolve()), "segs": segs, "res": {}, "info": info, "docx": dplan,
                                   "struct": struct}, ensure_ascii=False, default=_plain), encoding="utf-8")
         log(f"извлечение: {f.name} — сегментов {len(segs)}, OCR-страниц {len(info.get('ocr_pages', []))}, {time.time() - t0:.0f} с")

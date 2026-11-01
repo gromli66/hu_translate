@@ -520,6 +520,11 @@ def build_pdf(src, out, segs, res, progress=None, shots_out=None):
     # garbage=4 склеивает одинаковые объекты: 3,3 МБ, рендер совпадает пиксель в пиксель (замер 01.10)
     sub.save(out, garbage=4, deflate=True, deflate_fonts=True)
     info = {"shrunk": shrink, "pages": len(pages)}
+    if len(pages) < len(doc):
+        # лист без сегментов (рисунок без текста, пустой разделитель) в этот PDF не попадает: где PDF потом печатается
+        # из DOCX, это неважно, а без LibreOffice (и для сканов) он итоговый и короче оригинала — сигнал в отчёт сборки
+        info["pages_of"] = len(doc)
+        info["pages_missing"] = [p + 1 for p in range(len(doc)) if p not in set(pages)]
     if n_shots or shot_err:
         info["shots"] = n_shots
         if shot_err:
@@ -604,7 +609,7 @@ def docx_from_pdf(pdf, out, progress=None):
                                 errors="replace")
     except OSError as e:
         return {"error": f"{type(e).__name__}: {e}"[:200]}
-    ok, err = None, ""
+    ok, err, skipped = None, "", []
     for ln in proc.stdout:
         ln = ln.strip()
         if ln.startswith("PAGE ") and progress:
@@ -614,11 +619,29 @@ def docx_from_pdf(pdf, out, progress=None):
             ok = int(ln.split()[1])
         elif ln.startswith("ERR "):
             err = ln[4:]
+        elif ln.startswith("SKIP "):
+            skipped.append((int(ln.split()[1]) + 1, ln.split(maxsplit=2)[2] if len(ln.split()) > 2 else ""))
     proc.wait()
     if ok is not None and Path(out).exists():
-        return {"converter": "pdf2docx", "pages": ok}
+        info = {"converter": "pdf2docx", "pages": ok}
+        if skipped:
+            info["failed_pages"] = [p for p, _ in skipped]
+            info["failed_why"] = skipped[0][1][:200]
+            print(f"DOCX из PDF: листы {', '.join(map(str, info['failed_pages']))} из {ok} pdf2docx не сконвертировал "
+                  f"ни с одной настройкой — в DOCX пустыми листами ({info['failed_why']})"[:400], flush=True)
+        return info
     Path(out).unlink(missing_ok=True)
     return {"error": (err or (proc.stderr.read() if proc.stderr else "") or f"код {proc.returncode}")[:200]}
+
+
+def _blank_part(path, width, height):
+    """Пустой DOCX-лист размера страницы PDF (pt) — на место страницы, которую pdf2docx не сконвертировал."""
+    from docx import Document
+    from docx.shared import Pt
+    d = Document()
+    s = d.sections[0]
+    s.page_width, s.page_height = Pt(width), Pt(height)
+    d.save(str(path))
 
 
 def _p2d_child(pdf, out):
@@ -632,7 +655,9 @@ def _p2d_child(pdf, out):
         print("ERR pdf2docx не установлен", flush=True); return
     logging.getLogger().setLevel(logging.ERROR)            # pdf2docx пишет по строке на страницу в INFO
     try:
-        n = fitz.open(str(pdf)).page_count
+        with fitz.open(str(pdf)) as src:
+            sizes = [(pg.rect.width, pg.rect.height) for pg in src]
+        n = len(sizes)
         with tempfile.TemporaryDirectory() as tmp:
             parts = []
             for pno in range(n):
@@ -640,15 +665,24 @@ def _p2d_child(pdf, out):
                 part = Path(tmp) / f"p{pno:04d}.docx"
                 # pdf2docx падает на некоторых таблицах («Failed to merge docx_cell», титул 30RDGT, 06.10) и
                 # молча отдаёт пустую страницу — тогда повтор без распознавания таблиц по тексту, потом совсем без таблиц
+                done, err = False, None
                 for extra in ({}, {"parse_stream_table": False}, {"parse_stream_table": False, "parse_lattice_table": False}):
                     cv = Converter(str(pdf))
                     try:
                         cv.convert(str(part), pages=[pno], raw_exceptions=True, **P2D, **extra)
+                        done = True
                         break
-                    except Exception:                      # noqa: BLE001 — следующий набор настроек
+                    except Exception as e:                 # noqa: BLE001 — следующий набор настроек
+                        err = e
                         continue
                     finally:
                         cv.close()
+                if not done or not part.exists():
+                    # ни одна настройка не прошла: файла страницы нет, а он шёл в склейку — Document() падал, и запасной
+                    # DOCX терялся целиком. Теперь лист — пустым разделом того же размера (границы листов не сдвигаются),
+                    # и отметка «SKIP» — в отчёт сборки; потерянный текст листа — в лист «нарушения» (lost_segments)
+                    print(" ".join(f"SKIP {pno} {type(err).__name__}: {err}"[:200].split()), flush=True)
+                    _blank_part(part, *sizes[pno])
                 parts.append(part)
             _merge_docx(parts, out)
         print(f"OK {n}", flush=True)
@@ -1036,6 +1070,14 @@ def assemble_all(jf, d, out_dir=None, progress=None):
                 attention.append(f"DOCX — запасным путём из переведённого PDF (pdf2docx): {failed}")
             if info["docx"].get("error"):
                 attention.append(f"DOCX из переведённого PDF (pdf2docx) не собран: {info['docx']['error']}")
+            if info["docx"].get("failed_pages"):
+                attention.append(f"DOCX из переведённого PDF: листы {', '.join(map(str, info['docx']['failed_pages']))} "
+                                 f"pdf2docx не сконвертировал — пустыми листами ({info['docx'].get('failed_why')})")
+    # PDF «на месте» — только листы с сегментами: если он итоговый (не напечатан из DOCX), лист без текста выпал
+    if info.get("pages_missing") and (info.get("pdf") or {}).get("from") != "DOCX (LibreOffice)":
+        miss = info["pages_missing"]
+        attention.append(f"{stem}{sfx}.pdf — {info['pages_of'] - len(miss)} из {info['pages_of']} листов оригинала, "
+                         f"без текста не вошли: {', '.join(map(str, miss[:20]))}{' …' if len(miss) > 20 else ''}")
     if attention:
         info["attention"] = attention
         for a in attention:
