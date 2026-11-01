@@ -462,18 +462,12 @@ def join_tables(bs):
     for b in bs:
         if b["k"] == "list":
             b = dict(b, items=[join_tables(it) for it in b["items"]])
-        # пометка о переносе листа оригинала («… folytatás a következő oldalon …») — прочь и не между таблицами: в
-        # переводе листы рвутся в других местах, и она стояла посреди страницы, дальше шёл текст (3PR10, аудит 30.10)
+        # пометка о переносе листа оригинала («… folytatás a következő oldalon …») — прочь везде, и между таблицей и её
+        # продолжением на следующем листе (ÜFK, 16.10: тогда таблица склеивается, в DOCX она переносится сама): посреди
+        # страницы перевода она стояла с текстом дальше (3PR10, аудит 30.10). Прочий короткий текст между таблицами —
+        # текст (подпись, заголовок), не пометка: правило «до 60 знаков — прочь» его теряло
         if b["k"] == "p" and PT.CONT_MARK.fullmatch(text_of(b.get("runs") or [])):
             continue
-        # пометка о переносе («Folytatás a következő oldalon.») между таблицей и её продолжением без шапки на следующем
-        # листе — прочь: в DOCX таблица переносится сама (ÜFK, 16.10)
-        if b["k"] == "table" and len(out) >= 2 and out[-1]["k"] == "p" and out[-2]["k"] == "table" \
-                and len(text_of(out[-1]["runs"]).strip()) < 60 and b["rows"] and out[-2]["rows"] \
-                and not all(c["th"] for c in b["rows"][0]) \
-                and (out[-2].get("geom") or {}).get("page", 0) <= (out[-1].get("geom") or {}).get("page", -1) \
-                < (b.get("geom") or {}).get("page", 0):
-            out.pop()
         prev = out[-1] if out else None
         rep = 0
         if prev is not None and prev["k"] == "table" and b["k"] == "table" and prev["rows"] and b["rows"]:

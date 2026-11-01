@@ -545,6 +545,12 @@ def test_spans_autonum_text_labels_and_continuation_note():
     mark = {"k": "p", "runs": [{"t": "… folytatás a következő oldalon …"}], "geom": {"page": 12}}
     got = D.join_tables([p("Nyitni az alábbi armatúrákat"), mark, p("Folytatás a lap tetején")])
     assert [D.text_of(b["runs"]) for b in got] == ["Nyitni az alábbi armatúrákat", "Folytatás a lap tetején"]
+    # короткий текст между таблицей и её продолжением на следующем листе — не пометка: остаётся, и таблицы через
+    # него не склеиваются (правило «до 60 знаков — прочь» теряло такие строки, 02.11)
+    lead = {"k": "p", "runs": [{"t": "Zárni a következő armatúrát:"}], "geom": {"page": 90}}
+    got = D.join_tables([t1, lead, t2])
+    assert [b["k"] for b in got] == ["table", "p", "table"]
+    assert D.text_of(got[1]["runs"]) == "Zárni a következő armatúrát:"
 
 
 def ocr_doc(tmp_path, pages=8):
