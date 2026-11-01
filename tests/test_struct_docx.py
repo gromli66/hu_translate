@@ -276,6 +276,25 @@ def test_table_cut_by_pages_is_joined():
     assert [len(t["rows"]) for t in got] == [5, 2]
 
 
+def test_sheet_closed_by_its_signature_starts_next_sheet_on_new_page():
+    """Лист формы кончается своей подписью «A lapot kitöltötte …» (30PR132GT, 30BOXFELTEL): склеенная через листы
+    таблица режется после неё, следующий лист — с нового листа перевода; строка с кодом, случайно последняя на двух
+    листах, листа не закрывает."""
+    cell = lambda t, pg, top: {"blocks": [p(t, pg, top)] if t else [], "th": False}
+    sig = "A lapot kitöltötte (dátum, aláírás): ........"
+    rows = [[cell(f"{pg}.1", pg, 100), cell(f"30TK5{pg}S001", pg, 100)] for pg in (3, 4, 5)]
+    rows = [r for pg, r in zip((3, 4, 5), rows) for r in (r, [cell(sig, pg, 760), cell("", pg, 760)])]
+    t = {"k": "table", "rows": rows, "split": True, "geom": {"page": 3}}
+    after = p("Megjegyzés", 6, 90)
+    closed = D.closed_sheets([t, after])
+    assert closed == {3, 4, 5}
+    got = D.split_at_zones([t, after], None, closed)
+    assert [len(b.get("rows") or []) for b in got] == [2, 2, 2, 0]
+    assert [bool(b.get("break")) for b in got] == [False, True, True, True]
+    code = lambda pg: p("02TD81S203 ZÁR", pg, 700)
+    assert D.closed_sheets([p("a", 3), code(3), p("b", 4), code(4), p("c", 5), p("d", 6), p("e", 7), p("f", 8)]) == set()
+
+
 def test_label_tab_kept_and_column_alignment_from_original():
     assert B._keep_tab("Műszaki változás száma\t10776", "Номер технического изменения 10776") == \
         "Номер технического изменения\t10776"
@@ -522,6 +541,16 @@ def test_spans_autonum_text_labels_and_continuation_note():
     t2 = {"k": "table", "rows": [[cell(False)] * 2], "geom": {"page": 91}}
     got = D.join_tables([t1, note, t2])
     assert len(got) == 1 and len(got[0]["rows"]) == 3
+    # пометка о переносе листа и между абзацами — прочь (3PR10: стояла посреди страницы), прочий короткий текст — нет
+    mark = {"k": "p", "runs": [{"t": "… folytatás a következő oldalon …"}], "geom": {"page": 12}}
+    got = D.join_tables([p("Nyitni az alábbi armatúrákat"), mark, p("Folytatás a lap tetején")])
+    assert [D.text_of(b["runs"]) for b in got] == ["Nyitni az alábbi armatúrákat", "Folytatás a lap tetején"]
+    # короткий текст между таблицей и её продолжением на следующем листе — не пометка: остаётся, и таблицы через
+    # него не склеиваются (правило «до 60 знаков — прочь» теряло такие строки, 02.11)
+    lead = {"k": "p", "runs": [{"t": "Zárni a következő armatúrát:"}], "geom": {"page": 90}}
+    got = D.join_tables([t1, lead, t2])
+    assert [b["k"] for b in got] == ["table", "p", "table"]
+    assert D.text_of(got[1]["runs"]) == "Zárni a következő armatúrát:"
 
 
 def ocr_doc(tmp_path, pages=8):
@@ -1786,7 +1815,8 @@ def test_scan_scheme_of_arrows_and_short_labels_is_figure(tmp_path):
 
 def test_label_column_splits_table_row_into_sub_rows():
     """Таблица-бланк без внутренних горизонталей (31RDGT): номер, текст и отметка — каждый против своего; строка сетки
-    режется по верху меток первого столбца, линий между подстроками нет."""
+    режется по горизонтальным полосам абзацев (отметка «O» — против своего кода, не против метки), линий между
+    подстроками нет."""
     import docx_layout as DL
     gh = [(90, 60, 560), (300, 60, 560)]
     gv = [(60, 90, 300), (110, 90, 300), (430, 90, 300), (560, 90, 300)]
@@ -1800,11 +1830,38 @@ def test_label_column_splits_table_row_into_sub_rows():
             seg("O", 490, 160, 498)]
     b = DL._table_block(t, segs, 0, None, "Times New Roman", 10, False)
     text = lambda c: [ "".join(r.get("t", "") for r in p["runs"]) for p in c["blocks"]]
-    assert len(b["rows"]) == 2
-    assert [text(c) for c in b["rows"][0]] == [["1.1."], ["Az alábbi armatúrák", "31RA31S401"], ["O"]]
-    assert [text(c) for c in b["rows"][1]] == [["1.2."], ["A 31RD31P702 kör"], ["O"]]
+    assert len(b["rows"]) == 3
+    assert [text(c) for c in b["rows"][0]] == [["1.1."], ["Az alábbi armatúrák"], []]
+    assert [text(c) for c in b["rows"][1]] == [[], ["31RA31S401"], ["O"]]
+    assert [text(c) for c in b["rows"][2]] == [["1.2."], ["A 31RD31P702 kör"], ["O"]]
     assert not b["rows"][0][1]["edges"]["bottom"] and not b["rows"][1][1]["edges"]["top"]
-    assert len(b["frame"]["ys"]) == 3
+    assert len(b["frame"]["ys"]) == 4
+
+
+def test_table_row_cut_by_horizontal_strips_of_paragraphs():
+    """«Tevékenység | Állapot» (3SZ23, 3PR10): действия слева и состояния справа без горизонталей между ними — подстроки
+    по полосам: абзацы ячеек, пересекающиеся по высоте, — одна подстрока; строки одной ячейки, рядом с которыми ничего
+    нет, — продолжение подстроки выше."""
+    import docx_layout as DL
+    gh = [(90, 60, 560), (400, 60, 560)]
+    gv = [(60, 90, 400), (300, 90, 400), (560, 90, 400)]
+    t = (DL._cluster([v[0] for v in gv]), [90, 400], gh, gv)
+
+    def seg(text, x0, y0, y1):
+        return {"id": 0, "page": 0, "text": text, "loc": {"bbox": [x0, y0, x0 + 200, y1], "frags": [[x0, y0, x0 + 200, y1]],
+                                                          "size": 10, "bold": False, "align": "left"}}
+    segs = [seg("A 30UJ04S001 nyitása", 70, 100, 124), seg("Feltöltés", 310, 104, 116),
+            seg("Ellenőrizni", 70, 150, 162), seg("ZÁRNI:", 70, 170, 182),
+            seg("Zárva", 310, 200, 212), seg("NYITNI", 70, 200, 212)]
+    b = DL._table_block(t, segs, 0, None, "Times New Roman", 10, False)
+    text = lambda c: ["".join(r.get("t", "") for r in p["runs"]) for p in c["blocks"]]
+    assert [[text(c) for c in r] for r in b["rows"]] == [
+        [["A 30UJ04S001 nyitása", "Ellenőrizni", "ZÁRNI:"], ["Feltöltés"]], [["NYITNI"], ["Zárva"]]]
+    assert not b["rows"][0][0]["edges"]["bottom"] and not b["rows"][1][1]["edges"]["top"]
+    # отметка «O» против последней строки перечня кодов (один абзац в пять строк, 30TKBSZ36BIGT 4.1.1) — ячейка по низу
+    segs = [seg("YP10T401, YP10T701, YP14T001XQ01, YP24T001XQ01, YP29T001XQ01.", 70, 100, 160), seg("O", 310, 150, 160)]
+    b = DL._table_block(t, segs, 0, None, "Times New Roman", 10, False)
+    assert [c.get("valign") for c in b["rows"][0]] == [None, "bottom"]
 
 
 def test_case_suffix_and_dotted_abbreviation_are_not_codes():

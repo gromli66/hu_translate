@@ -8,8 +8,9 @@
 - PDF: исходный текст переведённых абзацев убирается (текстовый слой — redaction текста;
   OCR-страница — белая заливка + удаление нарисованных букв), перевод вписывается в рамку
   абзаца, расширенную до соседей (insert_htmlbox ужимает кегль, если не влезает).
-  DOCX для PDF-исходника — из переведённого PDF конвертером pdf2docx (docx_from_pdf); для размеченного PDF
-  (экспорт Word) — по дереву разметки и профилю оформления оригинала (build_struct_docx)."""
+  DOCX для PDF-исходника — по дереву разметки (экспорт Word), текстовому слою или сегментам распознанного листа
+  и профилю оформления оригинала (build_struct_docx), PDF — из этого DOCX; у чистого скана и запасным путём —
+  из переведённого PDF конвертером pdf2docx (docx_from_pdf)."""
 import re, html, zipfile
 from pathlib import Path
 
@@ -263,6 +264,70 @@ def _toc_line(page, s, r, rect, fam, sz, busy):
     return True
 
 
+def _foreign_ink(page, plates, dpi=150):
+    """Краска скана, которую перевод не должен задеть: подписи, штампы, чужие надписи. Возвращает (поверх, место):
+    поверх — [(рамка, PNG с прозрачностью)]: цветные штрихи (не серые), что выходят за белые плашки строк, своими
+    пикселями поверх перевода — плашка по рамке строки стирала середину подписи, перевод ложился на обрывки («Bucsi
+    Gábor» 30YCGT nyilv, «Horváth László» PG, аудит 30.10); печатный текст строки — внутри своей плашки и стирается, как
+    прежде; чёрные штрихи не возвращаются — линейки бланка и задевшие их буквы проступили бы под переводом. Штрих
+    «выходит» — больше 40 его пикселей (≈ 3×3 pt при 150 dpi) вне плашек; бледная подпись в скане рвётся на точки —
+    цветное склеивается расширением на 2 px. место(рамка, своя, первая строка) — рамка текста, урезанная справа и снизу
+    до чужой краски вне плашек (подпись правее строки: «Подпись:» русской строки, длиннее венгерской, ложился на неё,
+    30RYBSZGT nyilv)."""
+    import fitz
+    import cv2
+    import numpy as np
+    pm = page.get_pixmap(dpi=dpi, annots=False)
+    a = np.frombuffer(pm.samples, np.uint8).reshape(pm.height, pm.width, pm.n)[:, :, :3]
+    ai = a.astype(np.int16)
+    color = ((ai.max(2) - ai.min(2) > 60) & (ai.min(2) < 200)).astype(np.uint8)
+    k = dpi / 72
+    box = lambda r: (max(int(r.x0 * k), 0), max(int(r.y0 * k), 0), int(np.ceil(r.x1 * k)), int(np.ceil(r.y1 * k)))
+    under = np.zeros(color.shape, bool)
+    for r in plates:
+        x0, y0, x1, y1 = box(r)
+        under[y0:y1, x0:x1] = True
+    # чужая краска для места: тёмное вне плашек без линеек бланка (от 20 pt; их места задаёт ячейка при извлечении —
+    # линия ряда под строкой ужимала «6./ Разработал:», линия в полосе строки — «Ф. И. О.:» в точку) и без пылинок
+    dark = ((ai.min(2) < 160) & ~under).astype(np.uint8)
+    L = int(20 * k)
+    op = lambda m, w, h: cv2.morphologyEx(m, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (w, h)))
+    for w, h in ((L, 1), (1, L)):                   # линия — длинная и тонкая (штамп шире 20 pt — не линия)
+        dark &= ~(op(dark, w, h) & ~op(dark, max(w, 5), max(h, 5)))
+    n, lab, st, _ = cv2.connectedComponentsWithStats(dark, connectivity=8)
+    dark = np.isin(lab, np.nonzero(st[:, cv2.CC_STAT_AREA] >= 20)[0][1:])
+
+    def room(rect, own, first):
+        X0, Y0, X1, Y1 = box(fitz.Rect(own))
+        # вправо — по полосе первой строки: рукопись у второй строки абзаца (дата в ряду ниже заголовка) не сужает его
+        F0, F1 = box(fitz.Rect(first))[1::2]
+        cols = np.nonzero(dark[F0:F1, X1:min(int(rect.x1 * k), dark.shape[1])].any(0))[0]
+        if len(cols):
+            rect = fitz.Rect(rect.x0, rect.y0, max((X1 + cols[0]) / k - 1, own[2]), rect.y1)
+        # вниз — от 3 pt под строкой: у самой строки место — как было (высота строки с интервалом)
+        Y = Y1 + int(3 * k)
+        rows = np.nonzero(dark[Y:min(int(rect.y1 * k), dark.shape[0]), X0:int(rect.x1 * k)].any(1))[0]
+        if len(rows):
+            rect = fitz.Rect(rect.x0, rect.y0, rect.x1, max((Y + rows[0]) / k - 1, own[3] + 2))
+        return rect
+    out = []
+    if (color.astype(bool) & under).any():
+        n, lab = cv2.connectedComponents(cv2.dilate(color, np.ones((5, 5), np.uint8)), connectivity=8)
+        lab = np.where(color.astype(bool), lab, 0)
+        lab_in, lab_out = lab[under & (lab > 0)], lab[~under & (lab > 0)]
+        keep = np.nonzero((np.bincount(lab_in, minlength=n) > 0) & (np.bincount(lab_out, minlength=n) > 40))[0]
+        m = np.isin(lab, keep) & under
+        from PIL import Image
+        for r in plates:
+            x0, y0, x1, y1 = box(r)
+            sub = m[y0:y1, x0:x1]
+            if sub.any():
+                buf = __import__("io").BytesIO()
+                Image.fromarray(np.dstack([a[y0:y1, x0:x1], sub.astype(np.uint8) * 255]), "RGBA").save(buf, "PNG")
+                out.append((fitz.Rect(x0 / k, y0 / k, x1 / k, y1 / k), buf.getvalue()))
+    return out, room
+
+
 def build_pdf(src, out, segs, res, progress=None, shots_out=None):
     """shots_out — куда сохранить оригинал с переведёнными скриншотами (без правки текста): из него собирается DOCX."""
     import fitz
@@ -306,6 +371,7 @@ def build_pdf(src, out, segs, res, progress=None, shots_out=None):
         # минимум по всей форме мельчил её целиком (30RDIT_TU: медиана 10 → 9 pt, красная команда 15.10)
         tabs = [] if ocr or page.rotation else [r for r in (fitz.Rect(t.bbox) for t in page.find_tables().tables)
                                                  if r.get_area() < 0.5 * page.rect.get_area()]
+        plates = []
         for s, r in todo:
             if ocr:
                 # OCR-страница: белая заливка по рамкам строк абзаца, а не по общей рамке — общая рамка формы
@@ -313,10 +379,13 @@ def build_pdf(src, out, segs, res, progress=None, shots_out=None):
                 # влево под тире/номер пункта, которые Tesseract мог не включить в рамку
                 for i, (x0, y0, x1, y1) in enumerate(s["loc"]["frags"]):
                     left = 16 if i == 0 and re.match(r"\s*[-–•]", s["text"]) else 2
-                    page.add_redact_annot(fitz.Rect(x0 - left, y0 - 1.5, x1 + 2, y1 + 1.5) * der, fill=(1, 1, 1))
+                    plates.append(fitz.Rect(x0 - left, y0 - 1.5, x1 + 2, y1 + 1.5))
+                    page.add_redact_annot(plates[-1] * der, fill=(1, 1, 1))
             else:
                 for bb in s["loc"]["frags"]:
                     page.add_redact_annot(fitz.Rect(bb) * der, fill=False)
+        # подписи и штампы, задетые плашками, — поверх перевода (лист без поворота: рамки сегментов = рамки листа)
+        ink, room = _foreign_ink(page, plates) if ocr and not page.rotation else ([], None)
         # скан: пиксели под белой плашкой стираются в самой картинке — иначе её вытаскивает конвертер в DOCX
         # и под русским текстом проступает венгерский (30RDGT nyilv, 06.10)
         page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS if ocr else fitz.PDF_REDACT_IMAGE_NONE,
@@ -394,6 +463,14 @@ def build_pdf(src, out, segs, res, progress=None, shots_out=None):
         for i in order:
             s, rect, txt, align, size, fam = items[i]
             rect = _free(rect, busy, s["loc"]["bbox"])
+            if room:
+                # скан: место — до чужой краски (подпись, штамп правее и ниже); тесная надпись ужимается сама, масштаб
+                # листа — как прежде, по месту без неё (иначе весь лист PG мельчал из-за подписи под фамилией)
+                rect = room(rect, s["loc"]["bbox"], s["loc"]["frags"][0])
+                if align == "center":               # по центру — урезанное справа место симметрично вокруг середины
+                    c = (s["loc"]["bbox"][0] + s["loc"]["bbox"][2]) / 2
+                    h = max(min(c - rect.x0, rect.x1 - c), (s["loc"]["bbox"][2] - s["loc"]["bbox"][0]) / 2)
+                    rect = fitz.Rect(c - h, rect.y0, c + h, rect.y1)
             ki = kt[tab_of[i]] if tab_of[i] is not None else k
             sz = size * min(ki, 1.0)
             if not ocr and not page.rotation and _toc_line(page, s, res[str(s["id"])], rect, fam, sz, busy):
@@ -435,12 +512,19 @@ def build_pdf(src, out, segs, res, progress=None, shots_out=None):
             spare, scale = page.insert_htmlbox(rect * der, txt, css=css(al), scale_low=0)
             if scale * min(k, 1.0) < 0.7:             # тесный блок — сокращение (pipeline.fit) по каждой надписи блока
                 shrink += [{"page": pno + 1, "id": it[0]["id"], "scale": round(scale * min(k, 1.0), 2)} for it in mem]
+        for r, png in ink:
+            page.insert_image(r, stream=png, overlay=True)
         sub.insert_pdf(doc, from_page=pno, to_page=pno)
     # отдаём только обработанные страницы: и для выборки, и для полного прогона это вся работа
     # каждая вставка абзаца встраивает свой экземпляр шрифта (5275 объектов на 157 стр. ÜFK I, 43,8 МБ);
     # garbage=4 склеивает одинаковые объекты: 3,3 МБ, рендер совпадает пиксель в пиксель (замер 01.10)
     sub.save(out, garbage=4, deflate=True, deflate_fonts=True)
     info = {"shrunk": shrink, "pages": len(pages)}
+    if len(pages) < len(doc):
+        # лист без сегментов (рисунок без текста, пустой разделитель) в этот PDF не попадает: где PDF потом печатается
+        # из DOCX, это неважно, а без LibreOffice (и для сканов) он итоговый и короче оригинала — сигнал в отчёт сборки
+        info["pages_of"] = len(doc)
+        info["pages_missing"] = [p + 1 for p in range(len(doc)) if p not in set(pages)]
     if n_shots or shot_err:
         info["shots"] = n_shots
         if shot_err:
@@ -525,7 +609,7 @@ def docx_from_pdf(pdf, out, progress=None):
                                 errors="replace")
     except OSError as e:
         return {"error": f"{type(e).__name__}: {e}"[:200]}
-    ok, err = None, ""
+    ok, err, skipped = None, "", []
     for ln in proc.stdout:
         ln = ln.strip()
         if ln.startswith("PAGE ") and progress:
@@ -535,11 +619,29 @@ def docx_from_pdf(pdf, out, progress=None):
             ok = int(ln.split()[1])
         elif ln.startswith("ERR "):
             err = ln[4:]
+        elif ln.startswith("SKIP "):
+            skipped.append((int(ln.split()[1]) + 1, ln.split(maxsplit=2)[2] if len(ln.split()) > 2 else ""))
     proc.wait()
     if ok is not None and Path(out).exists():
-        return {"converter": "pdf2docx", "pages": ok}
+        info = {"converter": "pdf2docx", "pages": ok}
+        if skipped:
+            info["failed_pages"] = [p for p, _ in skipped]
+            info["failed_why"] = skipped[0][1][:200]
+            print(f"DOCX из PDF: листы {', '.join(map(str, info['failed_pages']))} из {ok} pdf2docx не сконвертировал "
+                  f"ни с одной настройкой — в DOCX пустыми листами ({info['failed_why']})"[:400], flush=True)
+        return info
     Path(out).unlink(missing_ok=True)
     return {"error": (err or (proc.stderr.read() if proc.stderr else "") or f"код {proc.returncode}")[:200]}
+
+
+def _blank_part(path, width, height):
+    """Пустой DOCX-лист размера страницы PDF (pt) — на место страницы, которую pdf2docx не сконвертировал."""
+    from docx import Document
+    from docx.shared import Pt
+    d = Document()
+    s = d.sections[0]
+    s.page_width, s.page_height = Pt(width), Pt(height)
+    d.save(str(path))
 
 
 def _p2d_child(pdf, out):
@@ -553,7 +655,9 @@ def _p2d_child(pdf, out):
         print("ERR pdf2docx не установлен", flush=True); return
     logging.getLogger().setLevel(logging.ERROR)            # pdf2docx пишет по строке на страницу в INFO
     try:
-        n = fitz.open(str(pdf)).page_count
+        with fitz.open(str(pdf)) as src:
+            sizes = [(pg.rect.width, pg.rect.height) for pg in src]
+        n = len(sizes)
         with tempfile.TemporaryDirectory() as tmp:
             parts = []
             for pno in range(n):
@@ -561,15 +665,24 @@ def _p2d_child(pdf, out):
                 part = Path(tmp) / f"p{pno:04d}.docx"
                 # pdf2docx падает на некоторых таблицах («Failed to merge docx_cell», титул 30RDGT, 06.10) и
                 # молча отдаёт пустую страницу — тогда повтор без распознавания таблиц по тексту, потом совсем без таблиц
+                done, err = False, None
                 for extra in ({}, {"parse_stream_table": False}, {"parse_stream_table": False, "parse_lattice_table": False}):
                     cv = Converter(str(pdf))
                     try:
                         cv.convert(str(part), pages=[pno], raw_exceptions=True, **P2D, **extra)
+                        done = True
                         break
-                    except Exception:                      # noqa: BLE001 — следующий набор настроек
+                    except Exception as e:                 # noqa: BLE001 — следующий набор настроек
+                        err = e
                         continue
                     finally:
                         cv.close()
+                if not done or not part.exists():
+                    # ни одна настройка не прошла: файла страницы нет, а он шёл в склейку — Document() падал, и запасной
+                    # DOCX терялся целиком. Теперь лист — пустым разделом того же размера (границы листов не сдвигаются),
+                    # и отметка «SKIP» — в отчёт сборки; потерянный текст листа — в лист «нарушения» (lost_segments)
+                    print(" ".join(f"SKIP {pno} {type(err).__name__}: {err}"[:200].split()), flush=True)
+                    _blank_part(part, *sizes[pno])
                 parts.append(part)
             _merge_docx(parts, out)
         print(f"OK {n}", flush=True)
@@ -587,6 +700,8 @@ def lost_segments(out, segs, expect, skip_pages=(), H=842):
     переносит слова и ставит метки начертания. → [(сегмент, перевод, сколько вхождений не нашлось)]; сборка из-за
     потери не падает — потерю смотрит человек (лог и лист «нарушения»)."""
     import docx_build as B
+    import geom as GM
+    import patterns as PT
     from segments import needs_translation
     key = lambda t: re.sub(r"[\W\d_]+", "", B.TAGS.sub("", t or "")).lower()
     text = lambda x: key(html.unescape(re.sub(r"<[^>]+>", "", x.replace("</w:p>", " "))))
@@ -601,7 +716,8 @@ def lost_segments(out, segs, expect, skip_pages=(), H=842):
     groups = {}
     for s in segs:
         bb = s["loc"].get("bbox")
-        if "shot" in s["loc"] or "struct_only" in s["loc"] or s["page"] in skip_pages or not s["text"].strip()                 or (bb and (bb[3] < 0.14 * H or bb[1] > 0.86 * H)) or not needs_translation(B.TAGS.sub("", s["text"])):
+        if "shot" in s["loc"] or "struct_only" in s["loc"] or s["page"] in skip_pages or not s["text"].strip()                 or (bb and (bb[3] < GM.HEAD_EDGE * H or bb[1] > GM.FOOT_EDGE * H)) or not needs_translation(B.TAGS.sub("", s["text"])) \
+                or PT.CONT_MARK.fullmatch(s["text"]):  # пометка о переносе листа — в DOCX её нет нарочно
             continue
         ru = expect(s)
         k = key(ru)[:24] if ru else ""
@@ -891,7 +1007,7 @@ def assemble_all(jf, d, out_dir=None, progress=None):
     sfx = L.suffix(d.get("pair"))                       # _RU (hu-ru), _EN, _HU — по паре проекта
     outd, stem = Path(out_dir or Path(jf).parent), Path(jf).stem
     outd.mkdir(parents=True, exist_ok=True)
-    rows = []
+    rows, attention = [], []
 
     def from_pdf():
         """DOCX из переведённого PDF конвертером; что в нём потерялось от перевода PDF — в лист «нарушения»."""
@@ -916,59 +1032,57 @@ def assemble_all(jf, d, out_dir=None, progress=None):
         except (OSError, RuntimeError, subprocess.SubprocessError) as e:
             info["fit"] = {"skipped": f"{type(e).__name__}: {e}"[:200]}
     else:
-        if d.get("struct"):
-            # размеченный PDF: DOCX по дереву разметки и профилю оформления оригинала
-            info = build_pdf(src, outd / f"{stem}{sfx}.pdf", d["segs"], d["res"], progress=lambda x: tick(0.4 * x))
-            try:
+        # PDF — один путь: перевод «на месте» (у скана это и есть PDF перевода); DOCX — по сегментам задания
+        # (d["struct"]: «struct» — дерево разметки, «text» — текстовый слой, «layout» — сегменты распознанного листа:
+        # один кегль, стили, пункты, колонтитулы; области рисунков — с переведённого PDF), PDF — из этого DOCX.
+        # Старое задание без d["struct"] — по сегментам листа, если лист распознан (docx_layout.suits), без переведённой
+        # подложки, как прежде. Чистый скан — DOCX из переведённого PDF (pdf2docx): это его путь. Запасной путь один —
+        # тот же pdf2docx, если сборка DOCX упала, и PDF «в вёрстке оригинала», если LibreOffice не напечатал DOCX;
+        # оба — громко: строкой в лог и в лист «нарушения» вычитки, в info["attention"]
+        info = build_pdf(src, outd / f"{stem}{sfx}.pdf", d["segs"], d["res"], progress=lambda x: tick(0.4 * x))
+        failed = None
+        try:
+            mode = (d["struct"].get("mode") or "struct") if d.get("struct") else "layout"
+            if not d.get("struct"):
+                if d.get("docx"):                       # план docx_src (извлечение до 17.10) — больше не собирается
+                    attention.append("старое задание с планом DOCX из оригинала (docx_src) — собрано общим путём")
+                import docx_layout as DL
+                if not DL.suits(src, (d.get("info") or {}).get("ocr_pages")):
+                    mode = None                         # не распознанный PDF или скан
+            if mode:
                 info["docx"], rows = build_struct_docx(src, outd / f"{stem}{sfx}.docx", d["segs"], d["res"],
                                                        (d.get("polish") or {}).get("rules"),
-                                                       progress=lambda x: tick(0.4 + 0.6 * x),
-                                                       mode=d["struct"].get("mode") or "struct",
-                                                       overlay=outd / f"{stem}{sfx}.pdf",
+                                                       progress=lambda x: tick(0.4 + 0.6 * x), mode=mode,
+                                                       overlay=outd / f"{stem}{sfx}.pdf" if d.get("struct") else None,
                                                        lang_check=L.parse_pair(d.get("pair")) == ("hu", "ru"))
                 import subprocess
                 try:                                    # PDF — из этого DOCX; без LibreOffice — в вёрстке оригинала
                     info["pdf"] = pdf_from_docx(outd / f"{stem}{sfx}.docx", outd / f"{stem}{sfx}.pdf")
                 except (OSError, RuntimeError, subprocess.SubprocessError) as e:
                     info["pdf"] = {"from": "вёрстка оригинала", "reason": f"{type(e).__name__}: {e}"[:200]}
-            except Exception as e:                      # noqa: BLE001 — DOCX прежним путём, причина — в отчёт сборки
-                info["docx"] = from_pdf()
-                info["docx"]["fallback"] = f"{type(e).__name__}: {e}"[:200]
-        elif d.get("docx"):
-            # PDF с текстовым слоем: DOCX — из оригинала с переведёнными скриншотами, перевод — в абзацы Word
-            import docx_src
-            shots_pdf = outd / f"{stem}_shots.tmp.pdf"
-            try:
-                info = build_pdf(src, outd / f"{stem}{sfx}.pdf", d["segs"], d["res"], progress=lambda x: tick(0.4 * x),
-                                 shots_out=shots_pdf)
-                try:
-                    info["docx"] = docx_src.build(shots_pdf, outd / f"{stem}{sfx}.docx", d["segs"], d["res"], d["docx"])
-                except Exception as e:                  # noqa: BLE001 — DOCX прежним путём, причина — в отчёт сборки
-                    info["docx"] = from_pdf()
-                    info["docx"]["fallback"] = f"{type(e).__name__}: {e}"[:200]
-            finally:
-                shots_pdf.unlink(missing_ok=True)
-        else:
-            info = build_pdf(src, outd / f"{stem}{sfx}.pdf", d["segs"], d["res"], progress=lambda x: tick(0.4 * x))
-            try:
-                import docx_layout as DL
-                if not DL.suits(src, (d.get("info") or {}).get("ocr_pages")):
-                    raise ValueError("не распознанный PDF или скан")
-                # распознанный PDF (текст листа — контурами): DOCX по сегментам листа (docx_layout) — один кегль, стили,
-                # пункты, колонтитулы; PDF — из него. Раньше DOCX был из переведённого PDF: строки резались, налезали
-                info["docx"], rows = build_struct_docx(src, outd / f"{stem}{sfx}.docx", d["segs"], d["res"],
-                                                       (d.get("polish") or {}).get("rules"),
-                                                       progress=lambda x: tick(0.4 + 0.6 * x), mode="layout",
-                                                       lang_check=L.parse_pair(d.get("pair")) == ("hu", "ru"))
-                import subprocess
-                try:
-                    info["pdf"] = pdf_from_docx(outd / f"{stem}{sfx}.docx", outd / f"{stem}{sfx}.pdf")
-                except (OSError, RuntimeError, subprocess.SubprocessError) as e:
-                    info["pdf"] = {"from": "вёрстка оригинала", "reason": f"{type(e).__name__}: {e}"[:200]}
-            except Exception as e:                      # noqa: BLE001 — DOCX прежним путём, причина — в отчёт сборки
-                info["docx"] = from_pdf()
-                if not isinstance(e, ValueError):
-                    info["docx"]["fallback"] = f"{type(e).__name__}: {e}"[:200]
+                    attention.append(f"PDF — в вёрстке оригинала, не из DOCX: {info['pdf']['reason']}")
+        except Exception as e:                          # noqa: BLE001 — запасной путь, громко (attention)
+            mode, failed = None, f"{type(e).__name__}: {e}"[:200]
+        if not mode:
+            info["docx"] = from_pdf()
+            if failed:
+                info["docx"]["fallback"] = failed
+                attention.append(f"DOCX — запасным путём из переведённого PDF (pdf2docx): {failed}")
+            if info["docx"].get("error"):
+                attention.append(f"DOCX из переведённого PDF (pdf2docx) не собран: {info['docx']['error']}")
+            if info["docx"].get("failed_pages"):
+                attention.append(f"DOCX из переведённого PDF: листы {', '.join(map(str, info['docx']['failed_pages']))} "
+                                 f"pdf2docx не сконвертировал — пустыми листами ({info['docx'].get('failed_why')})")
+    # PDF «на месте» — только листы с сегментами: если он итоговый (не напечатан из DOCX), лист без текста выпал
+    if info.get("pages_missing") and (info.get("pdf") or {}).get("from") != "DOCX (LibreOffice)":
+        miss = info["pages_missing"]
+        attention.append(f"{stem}{sfx}.pdf — {info['pages_of'] - len(miss)} из {info['pages_of']} листов оригинала, "
+                         f"без текста не вошли: {', '.join(map(str, miss[:20]))}{' …' if len(miss) > 20 else ''}")
+    if attention:
+        info["attention"] = attention
+        for a in attention:
+            print(f"СБОРКА {stem}: ВНИМАНИЕ — {a}", flush=True)
+        rows += [("", "сборка", f"ВНИМАНИЕ: {a}", "") for a in attention]
     review_xlsx(outd / f"{stem}_вычитка.xlsx", d["segs"], d["res"], stem, polish=d.get("polish"), extra_rows=rows,
                 pair=d.get("pair"))
     return info

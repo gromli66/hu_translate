@@ -25,6 +25,12 @@ def test_vector_marks_of_form():
     dot = {"rect": (486, 400, 494, 408), "type": "f", "fill": (0, 0, 0), "items": [("c",)] * 4}
     box = {"rect": (90, 300, 200, 314), "type": "s", "color": (0, 0, 0), "items": [("re", (90, 300, 200, 314))]}
     assert [ch for _, ch in DL._form_marks([circle, square, dot, box])] == ["○", "□"]
+    # треугольник «△» графы «Ok | HIBA» (30RL2126GT) — три замкнутых отрезка; ломаная из трёх — не отметка
+    P = lambda x, y: __import__("fitz").Point(x, y)
+    tri = {"rect": (486, 500, 502, 516), "type": "s", "color": (0, 0, 0),
+           "items": [("l", P(494, 500), P(502, 516)), ("l", P(502, 516), P(486, 516)), ("l", P(486, 516), P(494, 500))]}
+    zig = dict(tri, items=[("l", P(486, 500), P(502, 500)), ("l", P(502, 500), P(486, 516)), ("l", P(486, 516), P(502, 516))])
+    assert [ch for _, ch in DL._form_marks([tri, zig])] == ["△"]
 
 
 def _form_pdf(path, rows=None):
@@ -730,6 +736,14 @@ def test_header_label_column_widens_for_longer_russian_label():
     w = b._fit_widths(rows, [55, 300, 70, 40], 11.0)
     assert w[0] > 55 and w[2] > 70 and abs(sum(w) - 465) < 1 and w[1] >= 0.6 * 300
     assert b._fit_widths(rows, [120, 200, 100, 45], 11.0) == [120, 200, 100, 45]
+    # шапка Courier: знак — 0,6 кегля; по средней Times «Номер страницы:» выходил ровно в ширину столбца и переносился
+    # (3FI18: 102,75 pt, «Номер / страницы:», 30.10)
+    rows = [{"cells": ["Azonosító: 3FI18", "Oldalszám:", "26"]}]
+    mem = B.Memory([("Azonosító: 3FI18", "Идентификатор: 3FI18"), ("Oldalszám:", "Номер страницы:"), ("26", "26")])
+    b = B.Builder(mem, lambda img: png(), PROFILE)
+    assert b._fit_widths(rows, [330, 102.75, 36], 11.0) == [330, 102.75, 36]
+    w = b._fit_widths(rows, [330, 102.75, 36], 11.0, mono=True)
+    assert w[1] >= 15 * 0.6 * 11 + 10.8 and abs(sum(w) - 468.75) < 1
 
 
 def test_header_words_keep_glyphs_of_fallback_font_raised_by_two_points():
@@ -1022,3 +1036,58 @@ def test_orphan_tail_after_section_number_joins_previous_line():
         "A 1*RN06D001 INDÍTANI az 1SZ03 KU 4.10. szerint.",
         "A 1*RN15D001-et INDÍTANI az 1SZ03 KU 4.11. szerint.",
         "Az 1*RN06D001 elindítva, RENDBEN üzemel. Az 1*RN15D001 elindítva, RENDBEN üzemel."]
+
+
+def test_head_box_with_double_right_edge_splits_by_gap(tmp_path):
+    """Рамка шапки с двойной правой линией (вертикаль в 18 pt от края, 3SZ17 листы-серии): пустой узкий столбец у края —
+    граница, не столбец; «Azonosító:3SZ17» и «Verziószám: 0» — две ячейки по зазору, а не одна строка."""
+    import pdfplumber
+    import docx_struct as S
+    src = tmp_path / "h.pdf"
+    doc = fitz.open()
+    pg = doc.new_page(width=595, height=842)
+    sh = pg.new_shape()
+    sh.draw_rect(fitz.Rect(70, 30, 545, 70))
+    sh.draw_line((527, 30), (527, 70))
+    sh.finish(color=(0, 0, 0), width=0.5)
+    sh.commit()
+    for x, y, t in ((77, 45, "Azonosító:3SZ17"), (433, 45, "Verziószám: 0"), (77, 60, "Megnevezés: Haboltó"), (433, 60, "Oldalszám: 5")):
+        pg.insert_text((x, y), t, fontsize=9, fontname="cour")
+    doc.save(str(src))
+    p = pdfplumber.open(str(src)).pages[0]
+    g = S._zone_grid(p.chars, S._drawn(p.rects + p.lines))
+    assert [r["cells"] for r in g["rows"]] == [["Azonosító:3SZ17", "Verziószám: 0"], ["Megnevezés: Haboltó", "Oldalszám: 5"]]
+
+
+def test_flowchart_with_quad_diamonds_and_long_links_is_one_figure(tmp_path):
+    """Схема из рамок-блоков, где ромбы — четырёхугольники («qu»), а боковая рамка и петля «igen» соединены линиями
+    от 40 pt (3FI18 «3.2 Automatikus indítás», аудит 30.10): одним рисунком со всеми рамками, а не строками и таблицей."""
+    src = tmp_path / "s.pdf"
+    d = fitz.open()
+    pg = d.new_page(width=595, height=842)
+    pg.insert_text((72, 60), "Az alábbi lépések sorrendje kötelező a kezelő számára.", fontsize=11)
+    for x0, y0, x1, y1, t in [(200, 120, 380, 160, "Masodik tuzjelzes"), (200, 200, 380, 240, "Nyitas ellenorzese"),
+                              (200, 470, 380, 510, "Armatura kezi nyitasa"), (200, 560, 380, 600, "Oltas mukodtetese"),
+                              (420, 360, 540, 400, "Telefonon visszajelent")]:
+        pg.draw_rect(fitz.Rect(x0, y0, x1, y1), width=1)
+        pg.insert_text((x0 + 6, y0 + 24), t, fontsize=9)
+    for a, b in [((290, 160), (290, 200)), ((290, 240), (290, 290)), ((290, 350), (290, 410)), ((290, 440), (290, 470)),
+                 ((290, 510), (290, 560)), ((320, 320), (480, 320)), ((480, 320), (480, 360)), ((260, 380), (130, 380)),
+                 ((130, 380), (130, 580)), ((130, 580), (200, 580))]:
+        pg.draw_line(a, b, width=1)
+    for x, y, t in [(274, 324, "Tuz?"), (266, 384, "Megy?"), (390, 314, "nem"), (150, 374, "igen")]:
+        pg.insert_text((x, y), t, fontsize=8)
+    pg.wrap_contents()
+    x = pg.get_contents()[-1]
+    s = d.xref_stream(x)
+    for cy in (320, 380):                       # ромб — замкнутый путь из четырёх отрезков: PyMuPDF отдаёт его фигурой qu
+        y = 842 - cy
+        s += f"\n290 {y - 30} m 320 {y} l 290 {y + 30} l 260 {y} l 290 {y - 30} l S".encode()
+    d.update_stream(x, s)
+    d.save(str(src))
+    assert sum(it[0] == "qu" for dr in fitz.open(str(src))[0].get_drawings() for it in dr["items"]) == 2
+    blocks, info = DL.load(str(src), _segs(src), text=True)
+    figs = [r["img"]["clip"] for b in blocks for r in b.get("runs") or [] if "img" in r and r["img"].get("clip")]
+    assert len(figs) == 1 and not any(b["k"] == "table" for b in blocks)
+    x0, y0, x1, y1 = figs[0]
+    assert x0 <= 130 and x1 >= 540 and y0 <= 120 and y1 >= 600      # и петля слева, и рамка «Telefonon…» справа

@@ -46,6 +46,16 @@ def _flat(blocks, ctx="body", depth=0):
                     yield from _flat(c["blocks"], "th" if c["th"] else "td", depth)
 
 
+def _top_tables(blocks):
+    """Таблицы вне ячеек других таблиц (и в пунктах списков) в порядке чтения — пара к таблицам верхнего уровня DOCX."""
+    for b in blocks:
+        if b["k"] == "table":
+            yield b
+        elif b["k"] == "list":
+            for it in b["items"]:
+                yield from _top_tables(it)
+
+
 def _list_firsts(blocks, depth=0, cell=False):
     """(вид списка, первый абзац пункта, глубина, в ячейке ли) по всем спискам, и в ячейках таблиц."""
     for b in blocks:
@@ -391,14 +401,17 @@ def check(docx_path, P, blocks, L):
             bad("Ф8", t[:40], "подпись не под рисунком", "под рисунком")
         if t.startswith("Таблица") and P["caption"]["tab_above"] and not (nxt is not None and nxt.tag == f"{W}tbl"):
             bad("Ф8", t[:40], "подпись не над таблицей", "над таблицей")
-    # таблицы: ширина, заливка шапки, шапка не отрывается
-    tabs = [b for r, b, _ in _flat(blocks) if r == "table"]
+    # таблицы: ширина, заливка шапки, шапка не отрывается. Пара — таблицы верхнего уровня с обеих сторон: в блоках
+    # прежде шли и вложенные (_flat обходит ячейки), и после первой таблицы в ячейке сверка сдвигалась на одну —
+    # ложные Ф9/Ф10 у всех следующих, а последние не проверялись
+    tabs = list(_top_tables(blocks))
     dts = [t for t in body.iter(f"{W}tbl") if not any(a.tag == f"{W}tbl" for a in t.iterancestors())]
     text_w = L["W"] - L["left"] - L["right"]
     for n, (b, t) in enumerate(zip(tabs, dts), 1):
         xs = (b.get("frame") or {}).get("xs") or []
         grid = sum(int(c.get(qn("w:w"))) for c in t.findall(f"{W}tblGrid/{W}gridCol")) / 20
-        tcw = [sum(int(w.get(qn("w:w"))) for w in tr.iter(f"{W}tcW")) / 20 for tr in t.findall(f"{W}tr")]
+        # ширина строки — по своим ячейкам: iter() складывал с ними и ячейки вложенной таблицы
+        tcw = [sum(int(w.get(qn("w:w"))) for w in tr.findall(f"{W}tc/{W}tcPr/{W}tcW")) / 20 for tr in t.findall(f"{W}tr")]
         width = max(tcw) if tcw and max(tcw) else grid
         if len(xs) >= 2 and abs(width - (xs[-1] - xs[0])) > 0.05 * text_w:
             bad("Ф10", f"таблица {n}", f"{round(width)} pt", f"{round(xs[-1] - xs[0])} pt")

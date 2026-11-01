@@ -7,6 +7,8 @@ import math
 import re
 from collections import Counter
 
+import geom as GM
+import patterns as PT
 from docx_struct import text_of, insert_imgs, PAGE_MARK
 from segments import unpua
 
@@ -529,7 +531,13 @@ class Memory:
             got = [self.get(p) if p.strip() else p for p in parts]
             if all(g is not None for g in got):
                 r = "\t".join(g.strip() if p.strip() else g for p, g in zip(parts, got))
-        return r if r is not None else self._glued(text)
+        # значение известного сегмента «подпись: значение» — раньше склейки по частям: название в шапке «KRITIKUS … /
+        # ARMATÚRÁK ELLENŐRZÉSE» склеивалось из строк титула, каждую переводчик перевёл всей фразой, — дубль (30KBFPRBIGT)
+        return r if r is not None else self.half.get(KEY(text)) or self._glued(text)
+
+    def known(self, text):
+        """Перевод текста, известного целиком: сегмент или значение сегмента «подпись: значение» (не склейка)."""
+        return self.m.get(KEY(text)) or self.half.get(KEY(text))
 
     def zone(self, text):
         """Строка колонтитула, которой нет в памяти целиком: перевод известной строки с другим числом (renumbered) или
@@ -621,6 +629,11 @@ def item_ind(b, level, P, base):
         if m >= -15 and t >= m:
             return _marker_room(b["kind"], lv, max(m, 0.0), max(t, 0.0))
     return lvl_ind(P, lv, b["kind"])
+
+
+def _first_page(sec):
+    """Шапка и подвал первой страницы раздела (titlePg) в виде раздела — для Builder._header/_footer."""
+    return type("First", (), {"header": sec.first_page_header, "footer": sec.first_page_footer})()
 
 
 class Builder:
@@ -819,11 +832,16 @@ class Builder:
             w = float(img["x1"]) - float(img["x0"])
             if getattr(self, "L", None):                    # не шире поля набора
                 w0 = w
-                w = min(w, self.L["W"] - self.L["left"] - self.L["right"])
+                # поле — своего раздела: альбомный лист (схема GF(135)/(246)) — альбомное, а не книжное тела — схема
+                # вставала на 60 % ширины листа (аудит 30.10)
+                sec = self.doc.sections[-1]
+                pt = lambda v, d: v.pt if v is not None else d
+                PW, PH = pt(sec.page_width, self.L["W"]), pt(sec.page_height, self.L["H"])
+                w = min(w, PW - pt(sec.left_margin, self.L["left"]) - pt(sec.right_margin, self.L["right"]))
                 # и не выше поля набора без места под подпись: снимок во весь лист уводил «Рисунок 17» на следующий
                 # лист (ИН-1065, 18.10)
                 h = (float(img.get("bottom") or 0) - float(img.get("top") or 0)) * w / w0 if w0 > 0 else 0
-                room = self.L["H"] - self.L["top"] - self.L["bottom"] - 48
+                room = PH - pt(sec.top_margin, self.L["top"]) - pt(sec.bottom_margin, self.L["bottom"]) - 48
                 if h > room > 100:
                     w *= room / h
             par.add_run().add_picture(io.BytesIO(data), width=Pt(w))
@@ -920,6 +938,10 @@ class Builder:
             else:
                 plain = self.tr("".join(parts))
                 out = _restyle(plain if plain is not None else "".join(parts), groups, parts)
+        # верхний индекс оригинала («10» + приподнятое «-4», docx_layout: loc["sup"]) — индексом и в переводе
+        for base, up in {p for r in runs for p in r.get("sup") or ()}:
+            pat = re.compile(rf"(?<![\d.,]){re.escape(base)}\s?{re.escape(up)}(?![\d])")
+            out = [(k, pat.sub(f"{base}<sup>{up}</sup>", t) if t else t) for k, t in out]
         if lead_img:
             for im in imgs:
                 self._img_run(par, im["img"])
@@ -994,9 +1016,16 @@ class Builder:
         # него («A.1. ⇥ Helyre kell állítani…» ÜFK II — пропадало, 18.10)
         base = getattr(self, "_tab_base", None)
         base = self.left if base is None else base
-        for x in sorted({round(x) for r in runs for x in r.get("tabs", [])}):
-            if x - base > 6:
-                par.paragraph_format.tab_stops.add_tab_stop(Pt(x - base))
+        stops = [x for x in sorted({round(x) for r in runs for x in r.get("tabs", [])}) if x - base > 6]
+        for x in stops:
+            par.paragraph_format.tab_stops.add_tab_stop(Pt(x - base))
+        # маркер пункта и текст через табуляцию («• ⇥ Проверка сочленения …» в ячейке) — висячим отступом на табуляции:
+        # перенесённые строки шли под маркер, как сплошной текст (D8: 30PR132GT, 30TKBSZ36BIGT, 01-02FMP0BIGT, аудит 30.10)
+        head = "".join(r.get("t", "") for r in runs).split("\t", 1)
+        if stops and len(head) == 2 and re.fullmatch(rf"\s*[{PT.MARKERS}−]\s*", head[0]) \
+                and not par.paragraph_format.left_indent and not par.paragraph_format.first_line_indent:
+            par.paragraph_format.left_indent = Pt(stops[0] - base)
+            par.paragraph_format.first_line_indent = Pt(-(stops[0] - base))
         if self.L and any(r.get("rtab") for r in runs):
             # номер листа в конце строки оглавления — к правому полю: русское название длиннее, и номер
             # по позиции оригинала перескакивал на следующую строку (3SZ19, 16.10)
@@ -1410,6 +1439,14 @@ class Builder:
         framed, pad = bool(bounds), (self.P.get("table") or {}).get("pad_left") or 0
         if len(xs) == ncol + 1:
             widths = [xs[i + 1] - xs[i] for i in range(ncol)]
+            if tgt is None and self.L and xs[0] < self.left - 3 and xs[-1] > self.L["W"] - self.L["right"] + 3:
+                # таблица шире поля набора, в оригинале начата левее поля (1SZ01 прил. 10/6: 28–568 pt при поле 62) —
+                # с того же места: от поля её правый столбец уходил за край листа (аудит 30.10)
+                tp = t._tbl.tblPr
+                nxt = next((c for c in tp if c.tag in {W + n for n in (
+                    "tblBorders", "shd", "tblLayout", "tblCellMar", "tblLook", "tblCaption")}), None)
+                el = _el("w:tblInd", w__w=round((xs[0] - self.left) * 20), w__type="dxa")
+                nxt.addprevious(el) if nxt is not None else tp.append(el)
         else:
             full = [r for r in rows if len(r) == ncol]
             lefts = [min([r[c]["geom"]["x0"] for r in full if r[c].get("geom")] or [None], key=lambda v: v or 0)
@@ -1643,6 +1680,10 @@ class Builder:
                 fill = fill or cell.get("fill")                     # заливка ячейки по оригиналу (docx_struct)
                 if fill:
                     dc._tc.get_or_add_tcPr().append(_el("w:shd", w__val="clear", w__color="auto", w__fill=fill))
+                if cell.get("valign"):                              # отметка против нижней строки (docx_layout)
+                    dc._tc.get_or_add_tcPr().append(_el("w:vAlign", w__val=cell["valign"]))
+                if cell.get("pad") and dc.paragraphs:               # зазор до следующей полосы (docx_layout)
+                    dc.paragraphs[-1].paragraph_format.space_after = Pt(cell["pad"])
                 if tight is not None:                               # узкие поля ячейки — слово влезло целиком (см. выше)
                     tcpr = dc._tc.get_or_add_tcPr()
                     mar_el = _el("w:tcMar")
@@ -1852,7 +1893,9 @@ class Builder:
 
     def _shrink_tail(self):
         """Перед разрывом листа: пустой абзац Word после таблицы — в 1 pt. Таблица кончалась у низа листа, этот абзац
-        уходил на следующий лист один, а за ним текст «с новой страницы» — пустой лист (ÜFK I л. 75, 18.10)."""
+        уходил на следующий лист один, а за ним текст «с новой страницы» — пустой лист (ÜFK I л. 75, 18.10). И в 1 pt
+        он уходил, если таблица кончалась вплотную к низу (30RL2126GT, листы-формы, 30.10), — поэтому разрыв ставится
+        на него самого (_block). → этот абзац или None."""
         from docx.shared import Pt
         body = self.doc.element.body
         last = next((e for e in reversed(body) if e.tag != W + "sectPr"), None)
@@ -1862,6 +1905,8 @@ class Builder:
             if par._p is last:
                 par.paragraph_format.space_before = par.paragraph_format.space_after = Pt(0)
                 par.paragraph_format.line_spacing = Pt(1)
+                return par
+        return None
 
     def block(self, b):
         k = b["k"]
@@ -1873,8 +1918,11 @@ class Builder:
     def _block(self, b):
         k = b["k"]
         fresh, self.fresh = getattr(self, "fresh", False), False
+        tail = None                                         # пустой абзац после таблицы — он и несёт разрыв
         if b.get("break") and not fresh:
-            self._shrink_tail()
+            tail = self._shrink_tail()
+            if tail is not None and k != "table":           # абзац «с новой страницы» отделяет таблицу и сам
+                tail._p.getparent().remove(tail._p)
         if k == "h":
             self.heading(b)
         elif k == "p":
@@ -1883,12 +1931,15 @@ class Builder:
             if b.get("break") and par is not None and not fresh:
                 par.paragraph_format.page_break_before = True
         elif k == "list":
+            n0 = len(self.doc.paragraphs)
             self.list_(b, b.get("level", 0))                # уровень по отступу оригинала (docx_layout)
+            if b.get("break") and not fresh and len(self.doc.paragraphs) > n0:     # лист после закрытого — список
+                self.doc.paragraphs[n0].paragraph_format.page_break_before = True
         elif k == "table":
             if b.get("break") and not fresh:
                 # разрыв перед таблицей — пустым абзацем в 1 pt «с новой страницы»: у таблицы своего разрыва нет
                 from docx.shared import Pt
-                par = self.doc.add_paragraph(style="Table Text")
+                par = tail or self.doc.add_paragraph(style="Table Text")
                 par.paragraph_format.page_break_before = True
                 par.paragraph_format.space_before = par.paragraph_format.space_after = Pt(0)
                 par.paragraph_format.line_spacing = Pt(1)
@@ -1932,23 +1983,31 @@ class Builder:
             b.append(_el(f"w:{side}", w__val="nil"))
         _tblpr_put(table, b)
 
-    def _fit_widths(self, rows, widths, size):
+    def _fit_widths(self, rows, widths, size, mono=False):
         """Столбец подписи шапки по ширине венгерской («Azonosító:», 55 pt) не вмещает русскую («Идентифика / тор:»):
         столбцам, где перевод короткой ячейки длиннее оригинала и не помещается в строку, ширина добавляется за счёт
-        самого широкого столбца (он остаётся не меньше 60 % прежнего)."""
+        самого широкого столбца (он остаётся не меньше 60 % прежнего). mono — шрифт шапки моноширинный (Courier):
+        знак — ровно 0,6 кегля, по средней Times «Номер страницы:» выходил впритык и переносился (3FI18, 30.10)."""
         n = len(widths)
         if n < 2:
             return widths
         need = [0.0] * n
+        zone = getattr(self.tr, "zone", lambda t: None)
         for r in rows:
             # средняя ширина знака Times — около 0,55 кегля (полужирного — 0,6); поля ячейки LibreOffice — 2 × 5,4 pt
-            k = (0.6 if r.get("bold") else 0.55) * (size or 10)
+            k = (GM.CHAR_W_BOLD if r.get("bold") else GM.CHAR_W_MONO if mono else GM.CHAR_W) * (size or 10)
             for ci, txt in enumerate(r["cells"][:n]):
-                if isinstance(txt, dict) or "\n" in txt or not txt.strip() or len(txt) > 30:
-                    continue
-                ru = self.tr(txt.replace(PAGE_MARK, "00")) or txt
-                if len(ru) > len(txt) and widths[ci] < len(ru) * k + 12:
-                    need[ci] = max(need[ci], len(ru) * k + 12)
+                # и ячейка сетки по линиям (строки), и перевод запасным ходом памяти, как его печатает _zone_text:
+                # «Azonosító:» отдельной ячейкой — «Идентификатор:» из половины сегмента, «Oldalszám: 10.» в ячейке
+                # по линиям — «Номер страницы: 10.»; без них столбец не расширялся, «Иденти / фикато / р:»
+                # (GF(246) л. 13–14), «Номер / страницы» (30TKBSZ36BIGT, 01-02FMP0BIGT, аудит 30.10)
+                for line in ([ln for ln, _ in txt["lines"]] if isinstance(txt, dict) else [txt]):
+                    if "\n" in line or not line.strip() or len(line) > 30:
+                        continue
+                    src = line.replace(PAGE_MARK, "00")
+                    ru = self.tr(src) or zone(src) or line
+                    if len(ru) > len(line) and widths[ci] < len(ru) * k + GM.CELL_PAD:
+                        need[ci] = max(need[ci], len(ru) * k + GM.CELL_PAD)
         deficit = [max(0.0, need[i] - widths[i]) for i in range(n)]
         total = sum(deficit)
         if total < 1:
@@ -1966,7 +2025,8 @@ class Builder:
         from docx.shared import Pt
         from docx.enum.text import WD_ALIGN_PARAGRAPH as AL
         rows, widths, aligns = grid["rows"], grid.get("widths") or [], grid.get("aligns") or []
-        widths = self._fit_widths(rows, widths, grid.get("size"))
+        font = self.doc.styles[style].font.name or ""
+        widths = self._fit_widths(rows, widths, grid.get("size"), bool(PT.MONO_FONT.search(font)))
         ncol = max(len(r["cells"]) for r in rows)
         t = part.add_table(rows=len(rows), cols=ncol, width=Pt(sum(widths) or 400))
         if grid.get("inner", True):
@@ -2041,9 +2101,12 @@ class Builder:
     def _wrapped(self, lines):
         """Строки одной фразы, перенесённые узкой ячейкой колонтитула («A lapot kitöltötte» / «(név, dátum, aláírás):»), —
         одной строкой, если вся фраза есть в памяти, а первой строки в ней нет: по строкам фраза не переводилась."""
-        get = getattr(self.tr, "get", None)
+        get, known = getattr(self.tr, "get", None), getattr(self.tr, "known", None)
         whole = " ".join(lines)
-        if len(lines) > 1 and get and PAGE_MARK not in whole and get(whole) and not get(lines[0]):
+        # фраза известна целиком (название листа в две строки — значение «Megnevezés: …») — целиком, даже если строки
+        # известны по отдельности: строки титула переведены каждая всей фразой, и по строкам выходил дубль (30KBFPRBIGT)
+        if len(lines) > 1 and get and PAGE_MARK not in whole and (known and known(whole)
+                                                                   or get(whole) and not get(lines[0])):
             return [whole]
         return lines
 
@@ -2072,14 +2135,18 @@ class Builder:
             mm = num.search(ru) if num and num.search(txt) and not page_marked else None
         if mm:
             r = p.add_run(ru[:mm.start()]); r.bold = bold
-            f = _field(p, "PAGE", tok); f.bold = bold
+            cont = getattr(self, "_cont", None)             # продолжение листа-раздела: «N … (прод.)» текстом
+            if cont:
+                r = p.add_run(str(cont)); r.bold = bold
+            else:
+                f = _field(p, "PAGE", tok); f.bold = bold
             rest = ru[mm.end():]
             m2 = re.match(r"(\s*(?:/|of|из|von|de|di|z)\s*)(\d+)", rest, re.I)   # «20/57», «4 of 13» — и число листов полем
             if m2:
                 r = p.add_run(m2.group(1)); r.bold = bold
                 f = _field(p, "NUMPAGES", m2.group(2)); f.bold = bold
                 rest = rest[m2.end():]
-            r = p.add_run(rest); r.bold = bold
+            r = p.add_run(rest + (" (прод.)" if cont else "")); r.bold = bold
         else:
             r = p.add_run(ru); r.bold = bold
 
@@ -2292,7 +2359,7 @@ class Builder:
             self._footer(first, L)
             if L.get("first"):                  # особый первый лист (ONS: без подвала) — «особый колонтитул» Word
                 first.different_first_page_header_footer = True
-                fp = type("First", (), {"header": first.first_page_header, "footer": first.first_page_footer})()
+                fp = _first_page(first)
                 self._header(fp, dict(L, **L["first"]))
                 self._footer(fp, dict(L, **L["first"]))
         # логотипы титула — те же, что в шапке тела (UTS), — шапкой титула; иные картинки титула — на листе (OAH)
@@ -2329,6 +2396,7 @@ class Builder:
         # листы тела со своими колонтитулами (версия «1» вместо «0», «3PR10/INFO» вместо «3PR10» — docx_struct.layout,
         # variants): серия листов — свой раздел со своей шапкой и подвалом; None — колонтитулы тела
         zones, zcur, placed = L.get("variants") or [], None, False
+        sheet_no = L.get("sheet_no") or {}                  # лист оригинала → его номер (docx_struct.layout)
         for b in blocks:
             g = b.get("geom") or {}
             page = g.get("page")
@@ -2366,6 +2434,14 @@ class Builder:
                 if ns:
                     self._num_start(sec, ns["value"])
                     restart = True
+            # лист оригинала, закрытый подписью (docx_struct.closed_sheets), — свой раздел: номер листа — его, не
+            # подряд по листам перевода
+            if b.get("sheet") and page and not in_title and not in_front and made is None and sheet_no.get(page):
+                sec = made = self.doc.add_section(WD_SECTION.NEW_PAGE)
+                self.fresh = True
+                # раздел — листы оригинала до следующего раздела: перелившийся на лишний лист — мельче кеглем
+                # (docx_fit, как альбомный: 30KBFPRBIGT, строки «ПЛОМБИРОВАНИЕ, ВЫВЕШИВАНИЕ ПЛАКАТА» в две строки)
+                starts.append((len(self.doc.sections) - 1, page, "sheet"))
             if zones and page and not in_title and not in_front:
                 zk = next((i for i, z in enumerate(zones) if z["from"] <= page <= z["to"]), None)
                 if zk != zcur:
@@ -2374,9 +2450,16 @@ class Builder:
                     if made is None and placed:
                         made = self.doc.add_section(WD_SECTION.NEW_PAGE)
                         self.fresh = True
+                        starts.append((len(self.doc.sections) - 1, page, "zone"))   # для «(прод.)» ниже
                     sec = made if made is not None else self.doc.sections[-1]
                     self._header(sec, Lz)
                     self._footer(sec, Lz)
+            # раздел тела, начатый на листе оригинала (серия, альбомный, закрытый лист), — нумерация с номера этого
+            # листа в колонтитуле оригинала: PAGE считал листы перевода подряд, и номера уезжали (3PR10 «14» на листе
+            # «10», 30PR132GT «41» на «35», аудит 30.10); копия sectPr несла начало прошлого раздела
+            if made is not None and not in_title and not in_front and sheet_no.get(page):
+                self._num_start(made, sheet_no[page])
+                restart = True
             # логотипы обложки — те же, что в шапке тела, или стоящие в полосе шапки (выше поля тела; «atom erőmű» UTS
             # уезжал за правый край), — шапкой титула из логотипов тела. Картинка без xref (снимок скана титула) — не
             # логотип, хоть у векторного логотипа шапки xref тоже нет: скан титула пропадал, лист 1 пустой (ред-тим 20.10)
@@ -2464,9 +2547,83 @@ class Builder:
         self.doc.settings.element.append(_el("w:updateFields", w__val="true"))
         # листов оригинала у альбомных разделов: {номер раздела: листов} (docx_fit ужимает разделы в один лист)
         nxt = [p for _, p, _ in starts[1:]] + [len(sizes) + 1]
+        # и раздел-серия: перелившись за свои листы, он сдвигал номер следующего раздела, что начинает с номера своего
+        # листа оригинала, — номер повторялся («14, 14», «17, 17» 30TKBSZ36BIGT, «13, 13» GF(246), аудит 30.10)
         self.fit_want = {i: n - p for (i, p, ld), n in zip(starts, nxt) if ld}
+        # раздел ровно в один лист оригинала (закрытый подписью лист формы), перелившийся на вторую страницу: на ней —
+        # «N … (прод.)», а не N+1 — номер следующего листа (30KBFPRBIGT, 30BOXFELTEL: два листа «4», аудит 30.10)
+        zl = lambda pg: (lambda k: dict(L, **zones[k]) if k is not None else L)(
+            next((k for k, z in enumerate(zones) if z["from"] <= pg <= z["to"]), None))
+        done = set()
+        for (i, p, ld), n in zip(starts, nxt):
+            # и раздел-серия в один лист (своя шапка у листа: 30TKBSZ36BIGT «6, 6», «14, 14»)
+            if ld in ("sheet", "zone") and n - p == 1 and sheet_no.get(p) and i < len(self.doc.sections):
+                sec = self.doc.sections[i]
+                sec.different_first_page_header_footer = True
+                fp = _first_page(sec)
+                self._header(fp, zl(p))
+                self._footer(fp, zl(p))
+                self._cont = sheet_no[p]
+                try:
+                    self._header(sec, zl(p))
+                    self._footer(sec, zl(p))
+                finally:
+                    self._cont = None
+                done.add(i)
+        for i, p, _ in starts:                              # следующий раздел наследовал бы шапку «(прод.)» — своя
+            if i not in done and i - 1 in done and i < len(self.doc.sections) \
+                    and self.doc.sections[i].header.is_linked_to_previous:
+                self._header(self.doc.sections[i], zl(p))
+                self._footer(self.doc.sections[i], zl(p))
+        # фон листа оригинала (заливка во весь лист: жёлтые листы ÜTJ 30HU375GT, 01-02FMP0BIGT) — у раздела, все листы
+        # которого такого цвета: фон страницы DOCX (w:background) один на документ, и закрашены были только ячейки
+        bgs, first_of = L.get("page_bg") or [], {i: p for i, p, _ in starts}
+        painted = set()
+        for (i, p, _), n in zip(starts, nxt):
+            cols = set(bgs[p - 1:n - 1])
+            if len(cols) != 1 or None in cols or i >= len(self.doc.sections):
+                continue
+            sec, size = self.doc.sections[i], (sizes[p - 1] if p <= len(sizes) else (L["W"], L["H"]))
+            if sec.header.is_linked_to_previous:
+                self._header(sec, zl(p))
+            for hdr in [sec.header] + ([sec.first_page_header] if sec.different_first_page_header_footer else []):
+                self._page_bg(hdr, bgs[p - 1], *size)
+            painted.add(i)
+        for i in painted:                                   # следующий раздел без фона — своя шапка, не со ссылкой
+            j = i + 1
+            if j not in painted and j in first_of and j < len(self.doc.sections):
+                sec = self.doc.sections[j]
+                if sec.header.is_linked_to_previous:
+                    self._header(sec, zl(first_of[j]))
+                if sec.different_first_page_header_footer and sec.first_page_header.is_linked_to_previous:
+                    self._header(_first_page(sec), zl(first_of[j]))
         self.doc.save(out)
         font_table(out, (L or {}).get("font_class") or {})
+
+    def _page_bg(self, hdr, color, w, h):
+        """Фон листа — картинка 1×1 цвета color во весь лист (w×h pt) за текстом, привязанная к листу, в шапке раздела:
+        шапка повторяется на каждом листе раздела."""
+        from docx.shared import Pt
+        from docx.oxml import parse_xml
+        from docx.oxml.ns import nsdecls, qn
+        from PIL import Image
+        buf = io.BytesIO()
+        Image.new("RGB", (1, 1), "#" + color).save(buf, "PNG")
+        buf.seek(0)
+        run = hdr.paragraphs[-1].add_run()
+        run.add_picture(buf, width=Pt(w), height=Pt(h))
+        inline = run._r.find(".//" + qn("wp:inline"))
+        anchor = parse_xml(
+            f'<wp:anchor {nsdecls("wp")} distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="0" '
+            'behindDoc="1" locked="1" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/>'
+            '<wp:positionH relativeFrom="page"><wp:posOffset>0</wp:posOffset></wp:positionH>'
+            '<wp:positionV relativeFrom="page"><wp:posOffset>0</wp:posOffset></wp:positionV></wp:anchor>')
+        anchor.append(inline.find(qn("wp:extent")))
+        anchor.append(parse_xml(f'<wp:effectExtent {nsdecls("wp")} l="0" t="0" r="0" b="0"/>'))
+        anchor.append(parse_xml(f'<wp:wrapNone {nsdecls("wp")}/>'))
+        for tag in ("wp:docPr", "wp:cNvGraphicFramePr", "a:graphic"):
+            anchor.append(inline.find(qn(tag)))
+        inline.getparent().replace(inline, anchor)
 
     def _tab_groups(self):
         """Пары «подпись ⇥ значение» подряд с одной табуляцией (титул: «Műszaki változás száma⇥10776»): позиция —
@@ -2579,7 +2736,8 @@ def blocks_layout(pdf, segs, mode):
         blocks, info = docx_layout.load(str(pdf), segs, text=mode == "text")
         if mode == "text":
             L = dict(docx_struct.layout(str(pdf), blocks, content=info.get("content_boxes")), sizes=True)
-            blocks = docx_struct.split_at_zones(blocks, L.get("variants"))   # раздел с другой шапкой — не внутри таблицы
+            # раздел с другой шапкой — не внутри таблицы; лист, закрытый подписью, — до конца страницы
+            blocks = docx_struct.split_at_zones(blocks, L.get("variants"), docx_struct.closed_sheets(blocks))
             # логотип своей шапки первого листа (L["first"]) — уже в колонтитуле; рисунком тела он шёл второй копией
             # (E42 корпуса: логотип OAH дважды, 22.10)
             first = L.get("first") or {}

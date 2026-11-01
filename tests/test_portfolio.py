@@ -53,6 +53,27 @@ def test_rebuilt_portfolio_carries_translations(tmp_path):
     assert "Nasos" in inner[0].get_text()
 
 
+def test_rebuilt_portfolio_cover_is_in_target_language(tmp_path):
+    """Видимая страница переведённого портфолио — не венгерская заглушка Adobe, а надпись на языке перевода с перечнем
+    вложений (9 портфолио ночи 29→30.10); имя вложения, записанное UTF-8 как Latin-1, не портится второй раз."""
+    src = tmp_path / "in"
+    src.mkdir()
+    # PyMuPDF пишет имя байтами UTF-8 и читает их как Latin-1 — как во вложениях 30YCGT.PDF («30YCGT MÃDJ.pdf»)
+    make_portfolio(src / "30X.PDF", [("30X feladat.pdf", pdf_bytes("A szivattyu indul.")),
+                                     ("30X MÓDJ.pdf", pdf_bytes("Modositas."))])
+    work = tmp_path / "work"
+    P.extract([src], work)
+    out = work / "out"
+    out.mkdir()
+    (out / "30X feladat_RU.pdf").write_bytes(pdf_bytes("Nasos."))
+    (out / "30X MÓDJ_RU.pdf").write_bytes(pdf_bytes("Izmenenie."))
+    P.rebuild_portfolios(work, out)
+    d = fitz.open(out / "30X_RU.pdf")
+    cover = d[0].get_text()
+    assert "legjobb" not in cover and "во вложениях" in cover and "30X MÓDJ.pdf" in cover.replace("\n", " ")
+    assert P.attachment_name(d.embfile_info(1), "") == "30X MÓDJ.pdf"
+
+
 def test_plain_pdf_is_not_portfolio(tmp_path):
     p = tmp_path / "a.pdf"
     p.write_bytes(pdf_bytes("Sima dokumentum."))

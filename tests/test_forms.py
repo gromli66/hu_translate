@@ -212,3 +212,35 @@ def test_degree_unit_not_matched_to_misread_sign():
           word("98", 380, 141, w=10), word("9C.", 395, 141, w=14, c=51)]
     out, _ = S.ocr_words(ws, "emelkedik, t < 98 °C.")
     assert [w["t"] for w in out] == ["emelkedik,", "t", "<", "98", "°C."]
+
+
+def test_scan_signature_crossing_line_plate_stays_on_top_and_text_stops_before_foreign_ink(tmp_path):
+    """Скан бланка: подпись (синим) пересекает строку «Név: Bucsi Gábor», правее строки — штамп (чёрное пятно).
+    Белая плашка строки стирала середину подписи, длинный перевод ложился на штамп (30YCGT/30RYBSZGT nyilv, PG «Horváth
+    László», аудит 30.10): подпись — поверх перевода своими пикселями, перевод — не дальше штампа."""
+    import io
+    import numpy as np
+    from PIL import Image, ImageDraw
+    from assemble import build_pdf
+    k = 150 / 72
+    im = Image.new("RGB", (round(595 * k), round(842 * k)), "white")
+    dr = ImageDraw.Draw(im)
+    dr.rectangle([62 * k, 302 * k, 178 * k, 310 * k], fill="black")                  # печатная строка
+    dr.line([(120 * k, 280 * k), (150 * k, 330 * k)], fill=(40, 60, 220), width=4)     # подпись поперёк строки
+    dr.ellipse([330 * k, 296 * k, 360 * k, 316 * k], fill="black")                    # штамп правее строки
+    buf = io.BytesIO()
+    im.save(buf, "PNG")
+    src, out = tmp_path / "scan.pdf", tmp_path / "ru.pdf"
+    d = fitz.open()
+    d.new_page(width=595, height=842).insert_image(fitz.Rect(0, 0, 595, 842), stream=buf.getvalue())
+    d.save(src)
+    seg = {"id": 0, "page": 0, "text": "Név: Bucsi Gábor",
+           "loc": {"bbox": [60, 300, 180, 312], "avail": [60, 300, 520, 312], "frags": [[60, 300, 180, 312]],
+                   "size": 10, "bold": False, "family": "serif", "ocr": True}}
+    build_pdf(str(src), str(out), [seg], {"0": {"ru": "Ф. И. О.: Бучи Габор Подразделение: управление эксплуатации"}})
+    q = fitz.open(out)[0]
+    pm = q.get_pixmap(dpi=150, clip=fitz.Rect(58, 299, 182, 313))
+    a = np.frombuffer(pm.samples, np.uint8).reshape(pm.height, pm.width, pm.n)[:, :, :3].astype(int)
+    assert ((a[:, :, 2] - a[:, :, 0] > 80) & (a[:, :, 2] > 150)).sum() > 20      # синие штрихи подписи в плашке
+    spans = [s for b in q.get_text("dict")["blocks"] for ln in b.get("lines", []) for s in ln["spans"] if s["text"].strip()]
+    assert spans and max(s["bbox"][2] for s in spans) < 330                       # перевод не заходит на штамп

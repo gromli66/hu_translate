@@ -123,7 +123,7 @@ def test_text_after_field_or_symbol_keeps_its_place(tmp_path):
     # «(рисунок » + REF «1» + «).»: перевод всей группы ложился в первый прогон, поле оставалось после «).» — после
     # пересчёта «(Figure 1).1»; стрелка шрифта Symbol посреди строки уезжала в конец
     body = ('<w:p><w:r><w:t xml:space="preserve">окно (рисунок </w:t></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r>'
-            '<w:r><w:instrText> REF _Ref1 \r \h </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r>'
+            r'<w:r><w:instrText> REF _Ref1 \r \h </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r>'
             '<w:r><w:t>1</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r><w:r><w:t>).</w:t></w:r></w:p>'
             '<w:p><w:r><w:t xml:space="preserve">Назначить </w:t></w:r><w:r><w:rPr><w:rFonts w:ascii="Symbol"/></w:rPr>'
             '<w:t>→</w:t></w:r><w:r><w:t xml:space="preserve"> Выбрать</w:t></w:r></w:p>')

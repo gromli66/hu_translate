@@ -20,9 +20,12 @@ import re
 from collections import Counter
 from statistics import median
 
+import geom as GM
+import patterns as PT
+
 FAMILY = {"monospace": "Courier New", "serif": "Times New Roman", "sans-serif": "Arial"}
 NUM = re.compile(r"^\s*(\d+(?:\.\d+)*)\.?\s+\S")
-SIGN = re.compile(r"\s*([•▪◦·●○■□–\-\uf020-\uf0ff])\s")        # знак маркера в начале строки текстового слоя
+SIGN = re.compile(rf"\s*([{PT.MARKERS}\uf020-\uf0ff])\s")        # знак маркера в начале строки текстового слоя
 PLABEL = re.compile(r"^\s*(\d{1,2}|[a-z]|[A-Z])(\.\)|\))\s+\S")  # «a)», «1)», «a.)» — как docx_struct.PLABEL
 
 
@@ -47,7 +50,7 @@ def suits(path, ocr_pages):
 
 def _zone(s, H):
     y0, y1 = s["loc"]["bbox"][1], s["loc"]["bbox"][3]
-    return "head" if y1 < 0.14 * H else "foot" if y0 > 0.86 * H else None
+    return "head" if y1 < GM.HEAD_EDGE * H else "foot" if y0 > GM.FOOT_EDGE * H else None
 
 
 def _sig(text):
@@ -564,8 +567,23 @@ def _tables(hs, vs):
         if x1 - x0 < 60 or y1 - y0 < 15 or not any(x0 + 3 < v[0] < x1 - 3 for v in gv):
             continue
         ys = _cluster([h[0] for h in hh] + [y0, y1])
-        ys = [y for i, y in enumerate(ys) if i == 0 or y - ys[i - 1] >= 5]        # двойная линия — одна
+        ys = [y for i, y in enumerate(ys) if i == 0 or y - ys[i - 1] >= GM.DOUBLE]  # двойная линия — одна
         xs = _cluster([v[0] for v in gv] + edges)
+        # и двойная вертикаль — одна (1SZ01 прил. 10/6: каждая ячейка обведена двойной линией в 3,5 pt — 42 столбца,
+        # половина по 3–4 pt; в DOCX поля таких ячеек шире их самих, настоящие столбцы сжимались, «102,11» рвалось
+        # «102,1 / 1», на листе 12 строк вместо 60 — аудит 30.10)
+        xs = [x for i, x in enumerate(xs) if i == 0 or x - xs[i - 1] >= GM.DOUBLE]
+        # вторая линия двойной — на месте оставшейся: одиночная вертикаль строк тела стоит на месте второй, и без этого
+        # её не засчитывало, ячейки сливались (3SZ23 «Вид деятельности | Состояние» одной колонкой)
+        gv = [(next((x for x in xs if abs(x - v[0]) < GM.DOUBLE), v[0]),) + tuple(v[1:]) for v in gv]
+        # узкий столбец справа, нарисованный в отрыв (3PR10 INFO: «M» — его горизонтали с 517 pt при правом крае таблицы
+        # 507, связи нет): вертикаль той же высоты не дальше 60 pt правее — правый край таблицы, столбец — в сетке;
+        # иначе «M» и «1» шли абзацами между таблицами и давали листы-пустышки «M / 1» (аудит 30.10)
+        far = [v for v in vs if xs[-1] + GM.DOUBLE <= v[0] <= xs[-1] + 60 and v[1] <= ys[0] + 4 and v[2] >= ys[-1] - 4]
+        if far:
+            v = min(far, key=lambda v: v[0])
+            gh = gh + [h for h in hs if xs[-1] - 2 <= h[1] and h[2] <= v[0] + 2 and ys[0] - 4 <= h[0] <= ys[-1] + 4]
+            gv, xs = gv + [v], xs + [v[0]]
         if len(ys) >= 2 and len(xs) >= 3:
             out.append((xs, ys, gh, gv))
     return out
@@ -648,7 +666,7 @@ def _figures(page, segs, drawings, scan=False):
     import cv2
     k = 50 / 72
     pix = page.get_pixmap(dpi=50, colorspace=fitz.csGRAY)
-    ink = (np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.stride)[:, :pix.width] < 200).astype(np.uint8)
+    ink = (np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.stride)[:, :pix.width] < GM.INK).astype(np.uint8)
     for s in segs:
         x0, y0, x1, y1 = s["loc"]["bbox"]
         ink[max(0, int((y0 - 1) * k)):int((y1 + 1) * k) + 1, max(0, int((x0 - 1) * k)):int((x1 + 1) * k) + 1] = 0
@@ -751,7 +769,7 @@ def _scheme_figures(page, pno, drawings, segs, tabs, figs):
     sb = [fitz.Rect(s["loc"]["bbox"]) for s in segs]
     rs = [fitz.Rect(d["rect"]) + (-0.5, -0.5, 0.5, 0.5) for d in drawings]
     rs = [r for r in rs if r.width < 0.75 * W and r.height < 0.75 * H and (r.width > 0.5 or r.height > 0.5)
-          and r.y1 >= 0.14 * H and r.y0 <= 0.86 * H and not any((b + (-2, -2, 2, 2)).contains(r) for b in sb)
+          and r.y1 >= GM.HEAD_EDGE * H and r.y0 <= GM.FOOT_EDGE * H and not any((b + (-2, -2, 2, 2)).contains(r) for b in sb)
           and not any(r.intersects(t) for t in tabs) and not any(r.intersects(f) for f in figs)]
     items = [(True, r) for r in rs] + [(False, b) for b in sb]
     up = list(range(len(items)))
@@ -816,7 +834,8 @@ def _runs_of(group, bold, font, size, mono, right=None):
         for pc in pieces:                                   # цвет — четвёртым, у текстового слоя (_text_style)
             t, b, it = pc[:3]
             runs.append({"t": t, "font": font, "size": size, "b": b, "i": it, "color": pc[3] if len(pc) > 3 else "000000",
-                         "body_mono": mono, **({"box": f"b{g['id']}"} if g["loc"].get("box") else {})})
+                         "body_mono": mono, **({"box": f"b{g['id']}"} if g["loc"].get("box") else {}),
+                         **({"sup": g["loc"]["sup"]} if g["loc"].get("sup") else {})})
         last = runs[-1]
         if i + 1 < len(group):
             last["t"] += "\t"
@@ -861,23 +880,38 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields
             continue
         ci = next(k for k, (a, z, _) in enumerate(grid[r]) if a <= c < z)
         put.setdefault((r, ci), []).append(s)
-    # строка сетки без внутренних горизонталей, где в первом столбце — несколько меток пунктов («1.1.», «1.2.» … формы
-    # RDGT: номер, условие и графа отметки — каждый против своего), — подстроками по верху меток: всё строкой шло
-    # в одну ячейку, и номера, текст и отметки съезжали друг относительно друга (31RDGT л. 1, 20.10). Над первой
-    # меткой — своя подстрока (легенда, заголовок раздела); линий между подстроками нет
-    label = re.compile(r"\(?(?:\d+(?:\.\d+)*\.?|[a-zA-Z][.)])\)?|\d{2}[A-Z]{2}\d{2}[A-Z]\d{3}")     # номер пункта или код оборудования
+    # строка сетки без внутренних горизонталей — подстроками по горизонтальным полосам: абзацы разных ячеек, что
+    # пересекаются по высоте, — одна полоса, полоса не рвёт абзац. Всё строкой шло в одну ячейку, и номера, текст и
+    # отметки съезжали друг относительно друга (31RDGT л. 1, 20.10), «Tevékenység | Állapot» — столбцами-стопками,
+    # значение уезжало от своего кода (3SZ23, 3PR10, аудит 30.10). Полоса с текстом одной ячейки, у которой текст был
+    # и в полосе выше, — продолжение той строки (рядом ничего, резать нечего); линий между подстроками нет.
+    # Метка пункта или код оборудования в первом столбце («1.1.», «31UJ21S601») — всегда своя полоса, даже если её
+    # задел чужой абзац: значения столбца, слитые нарезкой в абзац на пять строк (3SZ23 INFO «-3,6 m … 9,6 m»),
+    # склеивали все строки таблицы в одну — коды и места разъезжались; такой абзац — в полосу своей середины
     bands = []
     for r, cells in enumerate(grid):
-        tops = sorted({round(s["loc"]["bbox"][1], 1) for s in put.get((r, 0), [])
-                       if label.fullmatch(s["text"].strip())})
-        if len(cells) >= 2 and len(tops) >= 2:
-            above = any(s["loc"]["bbox"][3] <= tops[0] for ci in range(len(cells)) for s in put.get((r, ci), []))
-            cuts = [ys[r]] + [t - 2 for t in (tops if above else tops[1:]) if t - 2 > ys[r] + 1] + [ys[r + 1]]
+        spans = sorted((min(g["loc"]["bbox"][1] for g in group), max(g["loc"]["bbox"][3] for g in group), ci,
+                        ci == 0 and bool(PT.ROW_ANCHOR.fullmatch(" ".join(g["text"] for g in group).strip())))
+                       for ci in range(len(cells)) for group in _lines(sorted(
+                           put.get((r, ci), []), key=lambda s: (round(s["loc"]["bbox"][1] / 3), s["loc"]["bbox"][0]))))
+        strips = []                                             # [верх, низ, {ячейки}, метка]
+        for a, z, ci, anchor in spans:
+            if strips and a < strips[-1][1] - 2 and not (anchor and a > strips[-1][0] + 2):
+                strips[-1][1] = max(strips[-1][1], z)
+                strips[-1][2].add(ci)
+            else:
+                strips.append([a, z, {ci}, anchor])
+        strips = [s for k, s in enumerate(strips) if s[3] or not (k and len(s[2]) == 1 and s[2] <= strips[k - 1][2])]
+        if len(cells) >= 2 and len(strips) >= 2:
+            # низ последней строки сетки — по тексту: рамка листа тянет её до низа листа, и подстрока с такой
+            # наименьшей высотой не делилась на листы LibreOffice — уходила на следующий, полстраницы пусто (3SZ23)
+            end = min(ys[r + 1], max(s[1] for s in strips) + 4) if r == len(grid) - 1 else ys[r + 1]
+            cuts = [ys[r]] + [s[0] - 2 for s in strips[1:] if s[0] - 2 > ys[r] + 1] + [end]
             for k in range(len(cuts) - 1):
                 bands.append((r, cuts[k], cuts[k + 1], k == 0, k == len(cuts) - 2))
         else:
             bands.append((r, ys[r], ys[r + 1], True, True))
-    rows = []
+    rows, hts = [], []
     for r, lo, hi, first, last in bands:
         cells = grid[r]
         row = []
@@ -901,8 +935,35 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields
             for img in (pics.get((r, ci), []) if first else []):
                 paras.append({"k": "p", "runs": [{"img": img}], "seg": True})
             row.append({"blocks": paras, "th": False, "geom": geom, "edges": e, "span": z - a})
+        # отметка («O», «□») против нижней строки многострочного абзаца соседней ячейки (перечень кодов 4.1.1
+        # 30TKBSZ36BIGT): полоса абзац не рвёт — ячейка отметки по низу, как в оригинале, а не вверху (аудит 30.10)
+        span = [(c["geom"]["top"], c["geom"]["bottom"]) for c in row if c.get("geom")]
+        for c in row:
+            g, tx = c.get("geom"), "".join(ru.get("t", "") for p in c["blocks"] for ru in p.get("runs") or []).strip()
+            if g and span and len(tx) <= 2 and not re.search(r"[^\W\d_]{2}|\d", tx) \
+                    and (g["top"] + g["bottom"]) / 2 > (min(a for a, _ in span) + max(z for _, z in span)) / 2:
+                c["valign"] = "bottom"
         rows.append(row)
-    ys = [bands[0][1]] + [b[2] for b in bands] if bands else ys     # линии строк — по подстрокам
+        # высота подстроки «не ниже» — отступ над текстом, одна его строка и зазор до следующей полосы, а не вся полоса
+        # оригинала: перевод компактнее (коды строкой, а не столбиком, 30TKBSZ36BIGT 4.1.2) — дыры в полстраницы
+        gs = [p["geom"] for c in row for p in c["blocks"] if p.get("geom")]
+        if gs and not (first and last):
+            g1 = min(gs, key=lambda g: g["top"])
+            line = (g1["bottom"] - g1["top"]) / max(g1.get("lines") or 1, 1)
+            gap = min(max(0.0, hi - max(g["bottom"] for g in gs)), line)
+            hts.append(min(hi - lo, (g1["top"] - lo) + line + gap))
+            # зазор до следующей полосы — отступом после текста ячейки: строка = текст + зазор оригинала, а не текст
+            # вплотную к следующему пункту (30HU375GT: пункты 1.1.7–1.1.15 «стеной», D10); зазор — не больше строки
+            # текста (и в высоте строки): зазоры бланков в 25–30 pt раздували перевод на листы (30TKBSZ36BIGT 35 → 39)
+            for c in row:
+                if c.get("geom") and gap >= 2:
+                    c["pad"] = round(gap, 1)
+        else:
+            hts.append(hi - lo)
+    if bands:                                                       # линии строк — по подстрокам
+        ys = [bands[0][1]]
+        for h in hts:
+            ys.append(round(ys[-1] + max(h, 0), 1))
     head = [p for c in rows[0] for p in c["blocks"]] if rows else []
     # картинка в ячейке шапки (значок, JPDS текстовым слоем) — не текст: KeyError 't' ронял сборку (18.10)
     if head and len(rows) > 1 and all(r.get("b") for p in head for r in p["runs"] if r.get("t", "").strip()):
@@ -1004,12 +1065,16 @@ def _form_marks(drawings):
             out.append(((x0, y0, x1, y1), "○"))
         elif ks in (["re"], ["qu"]) or len(ks) == 4 and all(k == "l" for k in ks):
             out.append(((x0, y0, x1, y1), "□"))
+        elif ks == ["l", "l", "l"] and abs(dr["items"][0][1][0] - dr["items"][-1][2][0]) + abs(
+                dr["items"][0][1][1] - dr["items"][-1][2][1]) < 1:
+            # треугольник — три отрезка, замкнутые: «△» графы «Ok | HIBA» 30RL2126GT терялись целиком (аудит 30.10)
+            out.append(((x0, y0, x1, y1), "△"))
     if out:
         # внутри — другой путь (галочка, крестик, точка): отметка поставлена — пустой «□» говорил обратное (ред-тим 20.10)
         small = [o["rect"] for o in drawings if o["rect"][2] - o["rect"][0] <= 20 and o["rect"][3] - o["rect"][1] <= 20]
         inner = lambda b, r: (b[0] - 1 <= r[0] and r[2] <= b[2] + 1 and b[1] - 1 <= r[1] and r[3] <= b[3] + 1
                               and r[2] - r[0] < 0.9 * (b[2] - b[0]))
-        out = [(b, {"○": "◉", "□": "☒"}[ch] if any(inner(b, r) for r in small) else ch) for b, ch in out]
+        out = [(b, PT.MARK_TICKED[ch] if any(inner(b, r) for r in small) else ch) for b, ch in out]
     return out
 
 
@@ -1224,7 +1289,10 @@ def _chart_table(t, draw):
     import fitz
     xs, ys = t[0], t[1]
     R = fitz.Rect(xs[0], ys[0], xs[-1], ys[-1])
-    near = lambda v, grid: any(abs(v - g) <= 2 for g in grid)
+    near = lambda v, grid: any(abs(v - g) < GM.DOUBLE for g in grid)
+    # края заливки — у любой линии таблицы (до 5 pt — двойная рамка), и на линиях двойной рамки, что в сетку не вошли (1SZ01: голубая «зебра»
+    # по внутренней линии двойной рамки — иначе таблица шла снимком-графиком)
+    xs, ys = list(xs) + [v[0] for v in t[3]], list(ys) + [h[0] for h in t[2]]
     n = 0
     for d in draw:
         if not d.get("solid"):
@@ -1241,6 +1309,8 @@ def _chart_table(t, draw):
 def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
     """Таблицы и рисунки листов: {лист: [{"rect", "block", "ids"}]} — сегменты ids идут не абзацами, а в них."""
     import fitz
+    import numpy as np
+    import docx_struct
     draw, per, scans, marks = (rules or _page_rules(doc, mask is not None))[:4]
     # картинки на нескольких листах (логотип шапки) — только текстовому слою; get_images не раскодирует картинки
     reused = Counter(x for page in doc for x in {im[0] for im in page.get_images()}) if mask is not None else Counter()
@@ -1280,6 +1350,13 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
             for q in [fitz.Rect(s["loc"]["bbox"]) for s in segs] + [f for f, _ in figs] + \
                     [fitz.Rect(a, y, b, y) for y, a, b in hs] + [fitz.Rect(x, a, x, b) for x, a, b in vs]:
                 R |= q
+            # снимок — вся краска листа (колонтитулы срезаются ниже): петля обратной связи схемы GF(135)/(246) —
+            # растровые линии, не сегмент, не фигура и не линейка, и схема выходила обрезанной слева и снизу (аудит 30.10)
+            pm = page.get_pixmap(dpi=36, colorspace=fitz.csGRAY)
+            ink = np.frombuffer(pm.samples, np.uint8).reshape(pm.height, pm.stride)[:, :pm.width] < GM.INK
+            if ink.any():
+                yy, xx = np.nonzero(ink)
+                R |= fitz.Rect(xx.min() * 2, yy.min() * 2, (xx.max() + 1) * 2, (yy.max() + 1) * 2)
             lead = all(scans[q] for q in range(1, pno))
             off = [s for s in masks.get(pno, []) if s not in segs] if not lead else []
             Hp = page.rect.height
@@ -1308,10 +1385,28 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
             # находился, подписи перемешивались между разделами, 19.10) — областью листа с переведённого PDF
             tabs = [fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1]) for t in _tables(hs, vs)]
             figs += _vector_figures(page, pno, draw[pno], segs, masks.get(pno, []), tabs, [f for f, _ in figs], per[pno])
+            # схема из блоков-рамок и ромбов (3FI18 «3.1 Kézi indítás»): рамки блоков — маленькие таблицы, фигуры, что их
+            # касаются, в схему не шли — ромбы и стрелки терялись, подписи рассыпались строками (аудит 30.10). Ромб —
+            # косые отрезки от 25 pt (у значков «△» и галочек короче): где их от четырёх, схема ищется и поверх таблиц.
+            # Ромб и фигурой-четырёхугольником (стороны повёрнутого «qu»): «3.2 Automatikus indítás» 3FI18 — оба ромба
+            # такие, по одним линиям схема оставалась разобранной на строки (аудит 30.10)
+            pd = page.get_drawings()
+            slant = [fitz.Rect(dr["rect"]) for dr in pd for it in dr["items"] if it[0] == "l"
+                     and abs(it[1].x - it[2].x) > 2 and abs(it[1].y - it[2].y) > 2 and abs(it[1] - it[2]) >= GM.DIAMOND] + \
+                    [fitz.Rect(a, a).include_point(b) for dr in pd for it in dr["items"]
+                     if it[0] == "qu"
+                     for a, b in ((it[1].ul, it[1].ur), (it[1].ur, it[1].lr), (it[1].lr, it[1].ll), (it[1].ll, it[1].ul))
+                     if abs(a.x - b.x) > 2 and abs(a.y - b.y) > 2 and abs(a - b) >= GM.DIAMOND]
+            if len(slant) >= 4:
+                # длинные линии здесь — связки схемы, не линейки листа: боковая рамка «Telefonon visszajelent…» и петля
+                # «igen» схемы 3.2 соединены линиями от 40 pt, и снимок выходил без них (рамка — таблицей ниже схемы)
+                for R, img in _vector_figures(page, pno, draw[pno], segs, masks.get(pno, []), [], []):
+                    if sum(R.contains(q) for q in slant) >= 4:
+                        figs = [(f, i) for f, i in figs if not R.contains(f)] + [(R, img)]
         elif not scans[pno]:
             tabs = [fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1]) for t in _tables(hs, vs)]
             figs += _scheme_figures(page, pno, draw[pno], segs, tabs, [f for f, _ in figs])
-        regs, used = [], set()
+        regs, used, fills = [], set(), None                 # fills — заливки листа (по первой таблице)
         for t in _tables(hs, vs):
             r = fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1])
             if any((f & r).get_area() > 0.8 * r.get_area() for f, _ in figs):
@@ -1339,9 +1434,16 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
             fields = [f for f in marks[pno][1] if _in_cell(f, xs_, ys_, whole=True)]
             if inside:
                 used |= set(mine)
-                regs.append({"rect": r, "ids": {s["id"] for s in inside},
-                             "block": _table_block(t, inside + glyphs, pno, bold, font, size, mono,
-                                                   [figs[i] for i in mine], pua, fields)})
+                blk = _table_block(t, inside + glyphs, pno, bold, font, size, mono, [figs[i] for i in mine], pua, fields)
+                # заливка ячейки — как у размеченного PDF (docx_struct.cell_fills): серый фон заголовков разделов и шапок
+                # таблиц текстового слоя терялся (3PR10, 3SZ23 «2. Üzemmódok», D2 аудита 30.10); тонкие линии — не фон
+                if fills is None:
+                    # рамка текста сегмента выше строки заливки (3SZ23: текст 68–88 pt в заливке 72–84) — запас 4 pt
+                    fills = [(q.x0, q.y0 - 4, q.x1, q.y1 + 4, GM.tint(dr["fill"]))
+                             for dr in page.get_drawings() for q in [fitz.Rect(dr["rect"])]
+                             if GM.tint(dr.get("fill")) and q.width >= GM.LINE and q.height >= GM.LINE]
+                docx_struct.cell_fills(blk["rows"], lambda pg: fills)
+                regs.append({"rect": r, "ids": {s["id"] for s in inside}, "block": blk})
         for i, (r, img) in enumerate(figs):
             if i in used or any(r.intersects(g["rect"]) for g in regs):
                 continue
@@ -1434,6 +1536,26 @@ def load(src, segs, text=False):
         y > s["loc"]["bbox"][3] and t == norm(s["text"]) for y, t in lower.get(s["page"], ())))]
     if not content:
         return [], {"width": W, "height": H, "pages": len(doc), "artifacts": {"chars": [], "imgs": []}}
+    if text:
+        # верхний индекс оригинала — знаки тем же кеглем, приподнятые над строкой («10⁻⁴»: «-4» на 3,9 pt выше,
+        # 01-02FMP0BIGT): в сегменте он плоский («10-4»), в переводе — индексом (docx_build._put_runs, loc["sup"])
+        sup = {}
+        for pno in {s["page"] for s in content}:
+            for bl in doc[pno].get_text("dict")["blocks"]:
+                for ln in bl.get("lines", []):
+                    sp = [x for x in ln["spans"] if x["text"].strip()]
+                    if len(sp) < 2:
+                        continue
+                    base = Counter(round(x["origin"][1], 1) for x in sp).most_common(1)[0][0]
+                    for a, x in zip(sp, sp[1:]):
+                        m, t = re.search(r"(\d+)\s*$", a["text"]), x["text"].strip()
+                        if m and len(t) <= 4 and abs(a["origin"][1] - base) < 0.5 \
+                                and base - x["origin"][1] > GM.SUP_RISE * x["size"]:
+                            mid = (fitz.Rect(x["bbox"]).tl + fitz.Rect(x["bbox"]).br) / 2
+                            seg = next((s for s in content if s["page"] == pno and fitz.Rect(s["loc"]["bbox"]).contains(mid)), None)
+                            if seg:
+                                sup.setdefault(seg["id"], []).append((m.group(1), t))
+        content = [dict(s, loc=dict(s["loc"], sup=sup[s["id"]])) if s["id"] in sup else s for s in content]
     size = round(median(s["loc"].get("size") or 10 for s in content) * 2) / 2
     font = FAMILY.get(Counter(s["loc"].get("family") for s in content).most_common(1)[0][0], "Arial")
     left = sorted(s["loc"]["bbox"][0] for s in content)[len(content) // 10]
@@ -1460,7 +1582,7 @@ def load(src, segs, text=False):
     flow = [s for s in content if s["id"] not in taken]
     marks = {}          # текстовый слой: маркер пункта — свой сегмент слева от текста пункта (layout.frags_from_text)
     if text:            # только в потоке: «-» в ячейке таблицы — значение (НГТУ)
-        bullet = [s for s in flow if re.fullmatch(r"\s*[•▪◦·●○■□o–\-\uf020-\uf0ff]\s*", s["text"])]
+        bullet = [s for s in flow if re.fullmatch(rf"\s*[{PT.MARKERS}o\uf020-\uf0ff]\s*", s["text"])]
         # маркер — если справа на той же строке ближе 40 pt есть пункт; иначе «-» — значение («Revision: ⇥ -»);
         # строка пункта — первая строка его сегмента: у пункта в несколько строк середина всего сегмента ниже маркера,
         # и маркер Symbol Eskom не узнавался (текст пункта — по ширине знака, а не на своём месте, 20.10)
@@ -1806,7 +1928,8 @@ def layout(src, blocks, segs, info):
         head["font"], head["size"] = info.get("font"), info.get("size")
     head_bottom = max((s["loc"]["bbox"][3] for s in headz), default=36)
     foot_top = min((s["loc"]["bbox"][1] for s in footz), default=H - 36)
-    return {"page_sizes": __import__("docx_struct")._page_sizes(src),
+    return {"page_sizes": GM.page_sizes(src),
+            "page_bg": GM.page_bgs(src),
             "W": W, "H": H, "left": left, "right": max(right, 20), "top": max(top - 4, head_bottom + 6),
             "bottom": max(H - bottom - 4, H - foot_top + 6), "header": 24, "footer": 18,
             "head_imgs": [], "head_lines": [], "head_grid": head,

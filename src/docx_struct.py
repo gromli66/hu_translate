@@ -19,10 +19,53 @@ import re
 import unicodedata
 from collections import Counter
 
+import geom as GM
+import patterns as PT
+
 HEAD = {"H1": 1, "H2": 2, "H3": 3, "H4": 4, "H5": 5, "H6": 6}
 SKIP = {"Artifact"}
 PAGE_MARK = "\ue000"           # знаки номера листа в колонтитуле образцового листа (layout) — там ставится поле PAGE
 INLINE = {"Link", "Span", "Reference", "Annot", "Quote", "Code", "BibEntry"}
+# элементы-блоки (load.block): внутри элемента нестандартного типа они обходятся, а не сливаются в один абзац
+BLOCK = set(HEAD) | {"P", "Caption", "BlockQuote", "Figure", "L", "Table", "TOC", "Note", "Sect", "Div", "Part", "Art"}
+
+
+def _nested_marked_content():
+    """pdfplumber 0.11 помнит только последний тег отмеченного содержимого: вложенный тег без MCID (/Span с ActualText
+    у PDFMaker, /Lang, /OC) внутри «/P <</MCID n>> BDC» обнулял MCID — знаки внутри него пропадали из дерева разметки
+    молча (ни в абзаце, ни среди артефактов), а знаки после его EMC до конца /P шли без тега — артефактами (колонтитул).
+    Стек тегов: вложенный тег без MCID наследует MCID внешнего, внутри Artifact — тоже артефакт, EMC возвращает
+    внешний. Без вложенных тегов (обычный экспорт Word) — как прежде. Ставится один раз на класс — для всех разборов
+    pdfplumber процесса одинаково (docx_struct, docx_profile)."""
+    from pdfplumber.page import PDFPageAggregatorWithMarkedContent as Agg
+    from pdfplumber.utils import decode_text
+    if getattr(Agg, "_hut_stack", False):
+        return
+
+    def begin_tag(self, tag, props=None):
+        stack = self.__dict__.setdefault("_hut_mc", [])
+        name = decode_text(tag.name)
+        mcid = props["MCID"] if isinstance(props, dict) and "MCID" in props else None
+        if mcid is None and stack:
+            if stack[-1][0] in SKIP:
+                name = stack[-1][0]
+            elif name not in SKIP:
+                mcid = stack[-1][1]
+        stack.append((name, mcid))
+        self.cur_tag, self.cur_mcid = name, mcid
+
+    def end_tag(self):
+        stack = self.__dict__.setdefault("_hut_mc", [])
+        if stack:
+            stack.pop()
+        self.cur_tag, self.cur_mcid = stack[-1] if stack else (None, None)
+    Agg.begin_tag, Agg.end_tag, Agg._hut_stack = begin_tag, end_tag, True
+
+
+try:
+    _nested_marked_content()
+except ImportError:                                 # без pdfplumber разметка не читается вовсе (load сообщит)
+    pass
 
 
 # начертание в имени шрифта PDF — и по-английски, и по-местному: Word 2016 с венгерским интерфейсом пишет
@@ -459,14 +502,12 @@ def join_tables(bs):
     for b in bs:
         if b["k"] == "list":
             b = dict(b, items=[join_tables(it) for it in b["items"]])
-        # пометка о переносе («Folytatás a következő oldalon.») между таблицей и её продолжением без шапки на следующем
-        # листе — прочь: в DOCX таблица переносится сама (ÜFK, 16.10)
-        if b["k"] == "table" and len(out) >= 2 and out[-1]["k"] == "p" and out[-2]["k"] == "table" \
-                and len(text_of(out[-1]["runs"]).strip()) < 60 and b["rows"] and out[-2]["rows"] \
-                and not all(c["th"] for c in b["rows"][0]) \
-                and (out[-2].get("geom") or {}).get("page", 0) <= (out[-1].get("geom") or {}).get("page", -1) \
-                < (b.get("geom") or {}).get("page", 0):
-            out.pop()
+        # пометка о переносе листа оригинала («… folytatás a következő oldalon …») — прочь везде, и между таблицей и её
+        # продолжением на следующем листе (ÜFK, 16.10: тогда таблица склеивается, в DOCX она переносится сама): посреди
+        # страницы перевода она стояла с текстом дальше (3PR10, аудит 30.10). Прочий короткий текст между таблицами —
+        # текст (подпись, заголовок), не пометка: правило «до 60 знаков — прочь» его теряло
+        if b["k"] == "p" and PT.CONT_MARK.fullmatch(text_of(b.get("runs") or [])):
+            continue
         prev = out[-1] if out else None
         rep = 0
         if prev is not None and prev["k"] == "table" and b["k"] == "table" and prev["rows"] and b["rows"]:
@@ -514,14 +555,43 @@ def join_tables(bs):
     return out
 
 
-def split_at_zones(blocks, runs):
+def closed_sheets(blocks):
+    """Листы, которые оригинал закрывает своей строкой: последний текст листа, одинаковый (без знаков и пробелов) у
+    четверти листов документа и не меньше трёх, — подпись листа формы «A lapot kitöltötte (dátum, aláírás): ……»,
+    «Megjegyzés:»; строка с кодом («02TD81S203 ZÁR», 02VE25) последней на двух-трёх листах — случай, не подпись. Такой
+    лист — единица вёрстки:
+    следующий лист оригинала начинается с нового листа перевода (split_at_zones), а не под подписью посреди страницы
+    (30PR132GT, 30BOXFELTEL, 30KBFPRBIGT: два листа на одной странице, аудит 30.10). → {лист от 1}."""
+    last = {}
+
+    def walk(bs):
+        for b in bs:
+            if b["k"] == "list":
+                for it in b["items"]:
+                    walk(it)
+            elif b["k"] == "table":
+                for r in b["rows"]:
+                    for c in r:
+                        walk(c.get("blocks") or [])
+            elif b.get("runs"):
+                g, t = b.get("geom") or {}, text_of(b["runs"]).strip()
+                if t and g.get("page") and g.get("top") is not None and g["top"] >= last.get(g["page"], (-1.0, ""))[0]:
+                    last[g["page"]] = (g["top"], t)
+    walk(blocks)
+    key = lambda t: re.sub(r"[\W_]+", "", t).lower()
+    n = Counter(key(t) for _, t in last.values())
+    return {pn for pn, (_, t) in last.items() if len(key(t)) >= 6 and n[key(t)] >= max(3, 0.25 * len(last))}
+
+
+def split_at_zones(blocks, runs, closed=()):
     """Раздел с другой шапкой (серия листов со своим колонтитулом, layout → variants) начинается между блоками, а таблица
     через лист (join_tables) — один блок: её режет там, где у листа другая серия; у следующей части — копия строк, что
-    оригинал повторял на каждом листе (шапка таблицы)."""
+    оригинал повторял на каждом листе (шапка таблицы). closed — листы, закрытые подписью (closed_sheets): таблицу
+    режет и после них, а следующий лист — с нового листа (break)."""
     zone = lambda pn: next((i for i, z in enumerate(runs or []) if z["from"] <= pn <= z["to"]), None)
     out = []
     for b in blocks:
-        if not runs or b["k"] != "table" or not b.get("split"):
+        if not (runs or closed) or b["k"] != "table" or not b.get("split"):
             out.append(b)
             continue
         rows = b["rows"]
@@ -532,14 +602,28 @@ def split_at_zones(blocks, runs):
             last = min((x["geom"]["page"] for c in r for x in c["blocks"] if (x.get("geom") or {}).get("page")),
                        default=last)
             pages.append(last)
-        cuts = [i for i in range(max(rep, 1), len(rows)) if zone(pages[i]) != zone(pages[i - 1])]
+        cuts = [i for i in range(max(rep, 1), len(rows)) if zone(pages[i]) != zone(pages[i - 1])
+                or pages[i] != pages[i - 1] and pages[i - 1] in closed]
         for a, z in zip([0] + cuts, cuts + [len(rows)]):
             head = rows[:rep] if a else []
             part = dict(b, rows=head + rows[a:z], geom=dict(b["geom"], page=pages[a]) if b.get("geom") else b.get("geom"))
             if len(ys) == len(rows) + 1:                    # линии строк — своей части; у повтора шапки — свои
                 part["frame"] = dict(b["frame"], ys=ys[:z + 1] if not a else ys[:rep + 1] + [
                     round(ys[rep] + y - ys[a], 1) for y in ys[a + 1:z + 1]] if rep else ys[a:z + 1])
+            if a and pages[a - 1] in closed:
+                part.update({"break": True, "sheet": pages[a]})
             out.append(part)
+    # первый блок листа после закрытого — с нового листа (sheet — лист оригинала, с которого он начат: свой раздел и
+    # номер листа, docx_build)
+    page = lambda b: (b.get("geom") or {}).get("page") if b["k"] != "list" else next(
+        ((p.get("geom") or {}).get("page") for it in b["items"] for p in it if (p.get("geom") or {}).get("page")), None)
+    top = 0
+    for b in out:
+        pn = page(b)
+        if pn and pn > top:
+            if pn - 1 in closed:
+                b.update({"break": True, "sheet": pn})
+            top = pn
     return out
 
 
@@ -1208,6 +1292,15 @@ def relist(bs):
     return out
 
 
+def _rgb(col):
+    """Цвет pdfplumber — серый числом или (g,), RGB — (r, g, b) — в [r, g, b] (доли 0…1); прочее — None."""
+    if isinstance(col, (int, float)):
+        col = (col,)
+    if isinstance(col, (list, tuple)) and len(col) in (1, 3):
+        return [float(c) for c in (tuple(col) * 3 if len(col) == 1 else col)]
+    return None
+
+
 def load(path):
     """Блоки размеченного PDF. Возвращает (блоки, сведения о листе: поля, колонтитулы)."""
     import pdfplumber
@@ -1339,13 +1432,7 @@ def load(path):
         for y in sorted((float(o["top"]) + float(o["bottom"])) / 2 for o in horiz):
             if not ys or y - ys[-1] > 2:
                 ys.append(y)
-        def hexcol(col):
-            if isinstance(col, (int, float)):
-                col = (col,)
-            if isinstance(col, (list, tuple)) and len(col) in (1, 3):
-                v = [float(c) for c in (tuple(col) * 3 if len(col) == 1 else col)]
-                return "%02X%02X%02X" % tuple(int(round(c * 255)) for c in v)
-            return None
+        hexcol = lambda col: GM.hex_rgb(_rgb(col)) if _rgb(col) else None
         out = {"xs": [round(x, 1) for x in xs], "ys": [round(y, 1) for y in ys]}   # линии строк — высота пустых строк
         if vert:
             out["line"] = Counter(hexcol(o.get("non_stroking_color")) for o in vert).most_common(1)[0][0]
@@ -1461,11 +1548,9 @@ def load(path):
                 col = o.get("non_stroking_color")
                 if not o.get("fill") or x1 - x0 < 5 or t1 - t0 < 5 or (x1 - x0) * (t1 - t0) > 0.3 * area:
                     continue
-                v = [float(c) for c in ((col,) * 3 if isinstance(col, (int, float)) else
-                                        tuple(col) * 3 if isinstance(col, (list, tuple)) and len(col) == 1 else
-                                        col if isinstance(col, (list, tuple)) and len(col) == 3 else ())]
-                if len(v) == 3 and min(v) < 0.97:
-                    out.append((x0, t0, x1, t1, "%02X%02X%02X" % tuple(int(round(c * 255)) for c in v)))
+                v = _rgb(col)
+                if v and min(v) < GM.WHITE:
+                    out.append((x0, t0, x1, t1, GM.hex_rgb(v)))
             fill_of[pn] = out
         return fill_of[pn]
 
@@ -1542,7 +1627,11 @@ def load(path):
             # ссылка/фрагмент рядом с абзацем, а не внутри него (перекрёстная ссылка Word «5.6.4.7 fejezet)» в пункте
             # списка) — часть соседнего абзаца, где бы ни оказалась на листе
             return [{"k": "p", "runs": _runs(items(el)), "geom": geom(el), "inline": True}]
-        if el.mcids and t not in ("Document", "Sect", "Div", "Part", "Art"):
+        # элемент нестандартного типа со своим текстом — абзацем; но если в нём блоки (таблица, список, абзацы в рамке
+        # текста), одним абзацем из всего текста поддерева терялась их структура: таблица шла строкой. Тогда — как
+        # обёртка: свой текст абзацем, затем вложенные блоки
+        if el.mcids and t not in ("Document", "Sect", "Div", "Part", "Art") \
+                and not any(c.type in BLOCK for c in el.children):
             out.append({"k": "p", "runs": _runs(items(el)), "geom": geom(el)})
             return out
         if el.mcids and t != "Document":
@@ -2326,14 +2415,6 @@ def cell_edges(rows, thin):
                 a["edges"]["right"] = b["edges"]["left"] = a["edges"]["right"] or b["edges"]["left"]
 
 
-def _page_sizes(path):
-    """Размеры листов оригинала (ширина, высота) с учётом поворота (/Rotate): альбомные листы — альбомными разделами
-    (docx_build.Builder._page)."""
-    import fitz
-    with fitz.open(str(path)) as d:
-        return [(round(pg.rect.width, 1), round(pg.rect.height, 1)) for pg in d]
-
-
 def _zone_keys(texts):
     """Тексты колонтитулов листов без счётчика листов: число, что у большинства листов своё («Oldalszám:» 3, 4, 5 …), —
     «#»; число с немногими значениями (версия 0 или 1, идентификатор) остаётся — листы с разной версией различимы.
@@ -2357,7 +2438,7 @@ def layout(path, blocks, content=None):
     import pdfplumber
     from statistics import median
     pdf = pdfplumber.open(path)
-    cbots = {}
+    cbots, ctops = {}, {}
     if content:
         for pg in pdf.pages:
             bx = content.get(pg.page_number) or []
@@ -2369,6 +2450,7 @@ def layout(path, blocks, content=None):
                              and b[1] - 2 <= float(c["top"]) and float(c["bottom"]) <= b[3] + 2 for b in bx)
                 c["mcid"] = -1 if inside else None
             cbots[pg.page_number] = max((b[3] for b in bx), default=0.0)
+            ctops[pg.page_number] = min((b[1] for b in bx), default=0.0)
     cbot = (lambda pg: cbots.get(pg.page_number, 0.0)) if content else (lambda pg: None)
     W, H = float(pdf.pages[0].width), float(pdf.pages[0].height)
     def flat(bs):
@@ -2410,7 +2492,23 @@ def layout(path, blocks, content=None):
         """Знаки вне тела листа pg: (шапки — выше тела, подвала — от верха подвала, верх подвала)."""
         art = [c for c in pg.chars if c.get("mcid") is None and _upright(c)]
         ft = _foot_top(art, _drawn(pg.rects + pg.lines), H, cbot(pg))
-        return [c for c in art if c["top"] < body_top], [c for c in art if c["top"] >= ft], ft
+        head = [c for c in art if c["top"] < body_top]
+        # шапка этого листа ниже обычной (GF(246) л. 17–19: вторая строка «Megnevezés … Oldalszám» на 107 pt при
+        # верхе тела документа 107) — строки вне тела, что идут сплошь под шапкой до первой строки тела листа, тоже её:
+        # иначе строка не шла ни в шапку, ни в тело, и «Наименование»/«Номер страницы» пропадали (аудит 30.10)
+        if head and ctops.get(pg.page_number, 0) > body_top:
+            bot = max(float(c["bottom"]) for c in head)
+            # и только внутри рамки шапки — выше её нижней линии: «10/6. Melléklet» под рамкой (1SZ01) — не шапка
+            # (в шапке «10/6» становилось полем «номер/всего»: «Приложение 42/115»)
+            frame = min((float(r["top"]) for r in _drawn(pg.rects + pg.lines)
+                         if float(r["bottom"]) - float(r["top"]) < GM.LINE
+                         and float(r["x1"]) - float(r["x0"]) > 0.5 * W and float(r["top"]) > bot - 1), default=body_top)
+            for c in sorted((c for c in art if body_top <= c["top"] < min(ctops[pg.page_number], frame)),
+                            key=lambda c: c["top"]):
+                if float(c["top"]) - bot <= float(c["bottom"]) - float(c["top"]) + 2:
+                    head.append(c)
+                    bot = max(bot, float(c["bottom"]))
+        return head, [c for c in art if c["top"] >= ft], ft
 
     # колонтитулы листов текстового слоя (PDF без разметки) — по тексту вместе с цифрами, кроме счётчика листов: версия
     # «1» на одних листах и «0» на других, «3PR10» и «3PR10/INFO» — не один колонтитул на документ. Образец тела — лист
@@ -2422,8 +2520,26 @@ def layout(path, blocks, content=None):
     zone_text = lambda pg: "".join(c["text"] for c in zone_chars(pg))
     zkeys, counter = {}, set()
     base_key = None
+    sheet_no = {}
     if content and len(pdf.pages) > 2:
-        zkeys, counter = _zone_keys({pg.page_number: zone_text(pg) for pg in pdf.pages})
+        texts = {pg.page_number: zone_text(pg) for pg in pdf.pages}
+        zkeys, counter = _zone_keys(texts)
+        # номер листа оригинала — число счётчика в его колонтитуле («Oldalszám: 13»): раздел перевода, начатый на этом
+        # листе, нумерует с него (docx_build), а не подряд по листам перевода (номера уезжали на +2…+5, аудит 30.10).
+        # По словам, не по знакам подряд: «08:28» и номер «2» рядом давали «282» (30RL2126GT); номера должны расти
+        # по листам — иначе счётчик не тот, нумерация как была
+        words = {pg.page_number: " ".join(w["text"] for w in sorted(_words(zone_chars(pg)) if zone_chars(pg) else [],
+                                                                   key=lambda w: (round(float(w["top"]) / 3), float(w["x0"]))))
+                 for pg in pdf.pages}
+        _, wcount = _zone_keys(words)
+        for pn, t in words.items():
+            ps = re.split(r"(\d+)", t)
+            n = next((int(ps[i]) for i in range(1, len(ps), 2) if ps[i - 1][-10:] in wcount), None)
+            if n is not None:
+                sheet_no[pn] = n
+        pairs = [(sheet_no[p], sheet_no[p + 1]) for p in sheet_no if p + 1 in sheet_no]
+        if not pairs or sum(b == a + 1 for a, b in pairs) < 0.6 * len(pairs):
+            sheet_no = {}
         common = Counter(zkeys[pn] for pn in range(2, len(pdf.pages) + 1)).most_common(1)[0]
         # разных текстов — не больше половины листов; иначе счётчик листов не нашёлся (у каждого листа свой текст), и
         # раздельных колонтитулов нет
@@ -2517,14 +2633,20 @@ def layout(path, blocks, content=None):
     for x in list(_paras(blocks)) + [b for b in blocks if b["k"] == "h"]:
         if (x.get("geom") or {}).get("page"):
             est[x["geom"]["page"]] += len(text_of(x.get("runs") or []).strip())
-    # подвала нет — низ тела по последнему блоку листов (80-й процентиль): поле по умолчанию (100 pt) отнимало у
-    # каждого листа МТ-ЦАСУТП-14 три строки (60 листов → 69, 16.10)
+    # подвала нет — низ тела по самому низкому краю тела листов: поле по умолчанию (100 pt) отнимало у каждого листа
+    # МТ-ЦАСУТП-14 три строки (60 листов → 69, 16.10); 80-й процентиль — у пятой части листов оригинала тело ниже
+    # поля, а где раздел начинается с нового листа (3SZ17: листы кончаются на 240…735 pt), поле выходило 7 см (30.10)
     lasts = {}
     for g in body:
         lasts[g["page"]] = max(lasts.get(g["page"], 0), g.get("bottom") or g["top"])
-    bots_ = sorted(lasts.values())
+    if content:
+        # текстовый слой: низ текста тела каждого листа (cbots), кроме сканов (OCR — до края листа); таблица через
+        # лист — одним блоком с местом первого листа, и по блокам низ знали 2 листа из 13 (30RR2126GT); в документе
+        # из одного-двух листов (лист изменений) — по ним: поле по умолчанию уводило хвост таблицы на второй лист
+        own = {pn: v for pn, v in cbots.items() if v and not scanned(pdf.pages[pn - 1])}
+        lasts = {pn: v for pn, v in own.items() if pn > 2} or own or lasts
     foot_top = min([float(c["top"]) for c in foot_chars] + [i["top"] for i in foot_imgs],
-                   default=bots_[len(bots_) * 4 // 5] + 14 if bots_ else H - 100)
+                   default=max(lasts.values()) + 14 if lasts else H - 100)
     foot_bottom = max([float(c["bottom"]) for c in foot_chars] + [i["bottom"] for i in foot_imgs], default=H - 40)
     # шапки нет — пустой абзац шапки (её расстояние + строка) должен уместиться в верхнее поле: при поле 24 pt и
     # расстоянии 36 pt тело уезжало на каждом листе вниз на 2–3 строки (ТЭ357: 66 листов → 85, 16.10)
@@ -2532,7 +2654,7 @@ def layout(path, blocks, content=None):
                    [max(6.0, min(36.0, body_top - 4 - 18))])
     sig = lambda chars: re.sub(r"\s+", " ", re.sub(r"\d+\.?", "", "".join(c["text"] for c in chars))).strip()
     body_sig = sig(foot_chars)
-    out = {"page_sizes": _page_sizes(path),
+    out = {"page_sizes": GM.page_sizes(path), "page_bg": GM.page_bgs(path),
            "W": W, "H": H, "left": left, "right": max(right, 20), "top": body_top - 4,
            "bottom": H - foot_top + 12, "header": head_top, "footer": max(H - foot_bottom - 6, 18),
            **fields,
@@ -2625,6 +2747,8 @@ def layout(path, blocks, content=None):
                 runs.append({"from": pg.page_number, "to": pg.page_number, "key": k})
         if runs:
             out["variants"] = [dict({"from": r["from"], "to": r["to"]}, **zones(pdf.pages[r["from"] - 1], own=True)[0]) for r in runs]
+    if page_tok is not None or base_key is not None:
+        out["sheet_no"] = sheet_no
     out["font_class"] = font_classes(path)
     return out
 
@@ -2828,39 +2952,39 @@ def _foot_top(arts, rects, H, cbot=None):
         # текстовый слой: пробел — не краска, пробел в конце строки тела выходит за её рамку и считался подвалом
         # (32RDGT: верх подвала на 509 pt, нижнее поле 344 pt, 20.10). У размеченного — как было: у HSE без подвала
         # поле считалось по пробелу-артефакту, без него лист переполнялся (регрессия A/B)
-        low = [float(c["top"]) for c in arts if float(c["top"]) > max(cbot, H * 0.6) and c["text"].strip()]
-        if low:
-            top = min(low)
-            border = [float(r["top"]) for r in rects if float(r["bottom"]) - float(r["top"]) < 3
-                      and max(cbot, H * 0.6) < float(r["top"]) <= top]
-            return round(min(border) if border else top) - 1
-    # текстовый слой без знаков ниже тела — и здесь пробел не краска: пробел в конце строки таблицы (443 pt при низе
-    # тела 470) становился «подвалом», нижнее поле — 165 pt вместо ~100, на листе 4–5 строк таблицы вместо 6
-    # (таблица решений OAH: 154 листа → 211, 23.10)
-    rows = sorted({round(float(c["top"])) for c in arts if float(c["top"]) > H * 0.7
-                   and (cbot is None or c["text"].strip())}, reverse=True)
-    rr = [r for r in rects if float(r["top"]) > H * 0.7]
+        low = [float(c["top"]) for c in arts if float(c["top"]) > max(cbot, H * GM.FOOT_TEXT) and c["text"].strip()]
+        if not low:
+            # знаков ниже тела нет — подвала нет: линии рядов таблицы у низа листа (шаг меньше 15 pt) склеивались в
+            # «подвал из одних линий» от 0,7 листа, пробелы в концах строк под ним — в его знаки, нижнее поле 9 см
+            # (3PR10, 3SZ17, 30TKBSZ36BIGT: тело кончалось на 70 % листа, аудит 30.10)
+            return H
+        top = min(low)
+        border = [float(r["top"]) for r in rects if float(r["bottom"]) - float(r["top"]) < GM.LINE
+                  and max(cbot, H * GM.FOOT_TEXT) < float(r["top"]) <= top]
+        return round(min(border) if border else top) - 1
+    rows = sorted({round(float(c["top"])) for c in arts if float(c["top"]) > H * GM.FOOT_TAGGED}, reverse=True)
+    rr = [r for r in rects if float(r["top"]) > H * GM.FOOT_TAGGED]
     if not rows:                                # подвал из одних линий (рамка без текста)
         ys = sorted({round(float(r["top"])) for r in rr}, reverse=True)
         if not ys:
             return H
         top = ys[0]
         for y in ys[1:]:
-            if top - y > 15:
+            if top - y > GM.FOOT_GAP:
                 break
             top = y
         return top - 1
     vs = [(float(r["top"]), float(r["bottom"])) for r in rr
-          if float(r["x1"]) - float(r["x0"]) < 3 and float(r["bottom"]) - float(r["top"]) > 5]
+          if float(r["x1"]) - float(r["x0"]) < GM.LINE and float(r["bottom"]) - float(r["top"]) > 5]
     top = rows[0]
     for y in rows[1:]:
         linked = any(a <= y + 12 and b2 >= top - 6 for a, b2 in vs)
-        if top - y > 15 and not linked:
+        if top - y > GM.FOOT_GAP and not linked:
             break
         top = y
     # линия рамки — ближайшая над текстом (и вплотную к ней — двойная/толстая): самая верхняя в 12 pt брала низ
     # таблицы тела, кончившейся над штампом, — лишняя пустая строка штампа (синтетика, 16.10)
-    border = sorted({float(r["top"]) for r in rr if float(r["bottom"]) - float(r["top"]) < 3
+    border = sorted({float(r["top"]) for r in rr if float(r["bottom"]) - float(r["top"]) < GM.LINE
                      and top - 12 <= float(r["top"]) <= top}, reverse=True)
     for i in range(1, len(border)):
         if border[i - 1] - border[i] > 2:           # низ таблицы тела в 2.5 pt над штампом — не его линия
@@ -2948,6 +3072,14 @@ def _zone_grid(chars, rects):
     for x in xs:
         if not cols or x - cols[-1] > 8:
             cols.append(x)
+    # вертикаль у края рамки (двойная линия) — граница, а не столбец: пустой узкий столбец у края делал шапку 3SZ17
+    # сеткой «475 | 18 pt», и «Azonosító:3SZ17 … Verziószám: 0» шло одной ячейкой (аудит 30.10)
+    mids = [(float(w["x0"]) + float(w["x1"])) / 2 for w in words]
+    empty = lambda a, b: not any(a <= x <= b for x in mids)
+    while len(cols) >= 3 and cols[-1] - cols[-2] < GM.EDGE_COL and empty(cols[-2], cols[-1]):
+        cols.pop(-2)
+    while len(cols) >= 3 and cols[1] - cols[0] < GM.EDGE_COL and empty(cols[0], cols[1]):
+        cols.pop(1)
     # внутренние линии — только настоящие вертикали; концы отрезков рамки (у штампа UTS рамка сверху разбита на
     # куски в точках 160 и 448) — места столбцов, но не линии: сетка рисовалась там, где её нет (16.10)
     vx = [(float(r["x0"]) + float(r["x1"])) / 2 for r in rects

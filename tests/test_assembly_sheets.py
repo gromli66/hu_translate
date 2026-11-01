@@ -12,14 +12,16 @@ from test_struct_docx import LAYOUT, PROFILE, png
 from test_text_forms import _segs
 
 
-def _sheets_pdf(path, pages=5, head=None, labels=False, pieces=False):
+def _sheets_pdf(path, pages=5, head=None, labels=False, pieces=False, bg=()):
     """Листы бланка с одной и той же сеткой: рамка во весь лист, внутри — две вертикали ниже и короче рамки (столбцы),
     линия под шапкой, подвал-рамка; шапка листа и строки в ячейках. head(pno) → (версия, лист); labels — подписи строк
     вверху таблицы («Berendezés alfanumerika» — на каждом листе одни и те же); pieces — вертикали столбцов рисованы по
-    строкам: стопка отрезков в 11 pt, как рамку таблицы Word."""
+    строкам: стопка отрезков в 11 pt, как рамку таблицы Word; bg — листы с жёлтой заливкой во весь лист (ÜTJ)."""
     doc = fitz.open()
     for pno in range(pages):
         pg = doc.new_page(width=595, height=842)
+        if pno in bg:
+            pg.draw_rect(pg.rect, color=None, fill=(1, 1, 0.8))
         sh = pg.new_shape()
         sh.draw_rect(fitz.Rect(60, 90, 540, 700))
         sh.draw_line((60, 130), (540, 130))
@@ -112,11 +114,39 @@ def test_sheets_with_other_version_get_own_header_section(tmp_path):
     B.Builder(B.Memory([(s["text"], s["text"]) for s in segs]), lambda img: png(), PROFILE).build(
         blocks, str(out), dict(LAYOUT, **{k: v for k, v in L.items() if k in (
             "head_grid", "variants", "page_marked", "page_tok", "stamp", "stamp_widths", "stamp_box", "stamp_inner",
-            "stamp_paras", "stamp_aligns", "stamp_merge", "head_rule", "head_imgs", "head_lines", "first_is_body")}))
+            "stamp_paras", "stamp_aligns", "stamp_merge", "head_rule", "head_imgs", "head_lines", "first_is_body",
+            "sheet_no")}))
     doc = Document(str(out))
     heads = ["".join(t.text for t in s.header._element.iter(qn("w:t"))) for s in doc.sections]
     assert len(heads) >= 3 and any("Verziószám: 1" in h for h in heads) and "Verziószám: 0" in heads[0]
     assert all("PAGE" in sec.header._element.xml for sec in doc.sections)       # номер листа — полем в каждой шапке
+    # раздел серии нумерует с номера своего листа оригинала, а не подряд по листам перевода (аудит 30.10)
+    assert L["sheet_no"][4] == 4 and L["sheet_no"][6] == 6
+    starts = [(s._sectPr.find(qn("w:pgNumType")) is not None and s._sectPr.find(qn("w:pgNumType")).get(qn("w:start")))
+              for s in doc.sections]
+    assert "4" in starts and "6" in starts
+
+
+def test_sheet_background_fill_is_background_of_its_section(tmp_path):
+    """Заливка во весь лист (жёлтые листы ÜTJ 30HU375GT, 01-02FMP0BIGT) — фоном раздела этих листов: картинка за
+    текстом в шапке раздела; у разделов белых листов фона нет (аудит 30.10: закрашены были только ячейки)."""
+    src = tmp_path / "bg.pdf"
+    ver = {0: 0, 1: 0, 2: 0, 3: 1, 4: 1, 5: 0, 6: 0}
+    segs = _sheets_pdf(src, pages=7, head=lambda pno: (ver[pno], pno + 1), bg={3, 4})
+    blocks, info = DL.load(str(src), segs, text=True)
+    L = D.layout(str(src), blocks, content=info.get("content_boxes"))
+    assert L["page_bg"] == [None, None, None, "FFFFCC", "FFFFCC", None, None]
+    blocks = D.split_at_zones(blocks, L["variants"])
+    out = tmp_path / "bg.docx"
+    B.Builder(B.Memory([(s["text"], s["text"]) for s in segs]), lambda img: png(), PROFILE).build(
+        blocks, str(out), dict(LAYOUT, **{k: v for k, v in L.items() if k in (
+            "head_grid", "variants", "page_marked", "page_tok", "stamp", "stamp_widths", "stamp_box", "stamp_inner",
+            "stamp_paras", "stamp_aligns", "stamp_merge", "head_rule", "head_imgs", "head_lines", "first_is_body",
+            "sheet_no", "page_bg")}))
+    doc = Document(str(out))
+    bg = ["behindDoc=\"1\"" in s.header._element.xml for s in doc.sections]
+    yellow = [any("Verziószám: 1" in t.text for t in s.header._element.iter(qn("w:t"))) for s in doc.sections]
+    assert any(bg) and bg == yellow                     # фон — ровно у раздела жёлтых листов (серия версии 1)
 
 
 def test_text_lost_in_docx_is_reported_with_its_count(tmp_path):
