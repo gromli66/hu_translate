@@ -839,9 +839,13 @@ class Builder:
                 PW, PH = pt(sec.page_width, self.L["W"]), pt(sec.page_height, self.L["H"])
                 w = min(w, PW - pt(sec.left_margin, self.L["left"]) - pt(sec.right_margin, self.L["right"]))
                 # и не выше поля набора без места под подпись: снимок во весь лист уводил «Рисунок 17» на следующий
-                # лист (ИН-1065, 18.10)
+                # лист (ИН-1065, 18.10); место под подпись — только если в оригинале под рисунком на его листе было
+                # тело (24 pt и больше): снимок листа целиком (схема GF(135)/(246)) ужимался до 80 % ради подписи,
+                # которой нет (E7, 02.11)
                 h = (float(img.get("bottom") or 0) - float(img.get("top") or 0)) * w / w0 if w0 > 0 else 0
-                room = PH - pt(sec.top_margin, self.L["top"]) - pt(sec.bottom_margin, self.L["bottom"]) - 48
+                below = PH - pt(sec.bottom_margin, self.L["bottom"]) - float(img.get("bottom") or 0)
+                room = PH - pt(sec.top_margin, self.L["top"]) - pt(sec.bottom_margin, self.L["bottom"]) - \
+                    (48 if below >= 24 else 0)
                 if h > room > 100:
                     w *= room / h
             par.add_run().add_picture(io.BytesIO(data), width=Pt(w))

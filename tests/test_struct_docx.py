@@ -89,6 +89,19 @@ def png():
     return fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 4, 4), False).tobytes("png")
 
 
+def test_whole_sheet_picture_keeps_no_caption_room(tmp_path):
+    """Снимок листа целиком (схема GF(135)/(246), E7 02.11) ужимался ради 48 pt «под подпись», которой нет: место под
+    подпись — только если в оригинале под рисунком на его листе было тело (24 pt и больше; «Рисунок 17» ИН-1065)."""
+    fig = lambda top, bottom: {"k": "p", "figure": True, "runs": [{"img": {"png": png(), "x0": 62, "x1": 535,
+                                                                          "top": top, "bottom": bottom}}],
+                               "geom": {"page": 1, "top": top, "bottom": bottom, "x0": 62, "x1": 535, "first_x0": 62}}
+    out = tmp_path / "f.docx"
+    B.Builder(B.Memory([]), lambda img: png(), PROFILE).build([fig(119, 715), fig(100, 660)], str(out),
+                                                              dict(LAYOUT, first_is_body=True))
+    w = [round(s.width.pt) for s in Document(str(out)).inline_shapes]
+    assert w == [471, 466]                  # во весь лист — по ширине поля; с телом ниже — с местом под подпись
+
+
 def test_builder_follows_profile(tmp_path):
     icon = {"k": "p", "runs": [{"img": {"x0": 300, "x1": 310, "top": 100, "bottom": 110}}],
             "geom": {"page": 2, "top": 100, "x0": 300, "x1": 310, "first_x0": 300}}
