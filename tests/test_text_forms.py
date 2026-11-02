@@ -1091,3 +1091,28 @@ def test_flowchart_with_quad_diamonds_and_long_links_is_one_figure(tmp_path):
     assert len(figs) == 1 and not any(b["k"] == "table" for b in blocks)
     x0, y0, x1, y1 = figs[0]
     assert x0 <= 130 and x1 >= 540 and y0 <= 120 and y1 >= 600      # и петля слева, и рамка «Telefonon…» справа
+
+
+def test_sheet_signature_box_is_framed_cell_and_stamp_does_not_cut_words(tmp_path):
+    """Подпись листа в рамке «A lapot kitöltötte (név, dátum, aláírás):» (30HU*75GT): прямоугольник вокруг строки во
+    всю ширину без внутренних линий — таблица в одну ячейку (абзацем рамка пропадала); рамка повыше или поуже — не
+    таблица, как прежде. В подвале-штампе концы отрезков линии таблицы над подписью (120, 453 pt) — не столбцы, если
+    режут слово: подпись рвалась «Лист / заполн / ил» в ячейке 49 pt."""
+    import pdfplumber
+    import docx_struct as S
+    box = lambda x0, y0, x1, y1: ([(y0, x0, x1), (y1, x0, x1)], [(x0, y0, y1), (x1, y0, y1)])
+    for (x0, y0, x1, y1), ok in (((71, 729, 553, 755), True), ((71, 600, 553, 700), False), ((71, 729, 300, 755), False)):
+        hs, vs = box(x0, y0, x1, y1)
+        got = DL._tables(hs, vs)
+        assert bool(got) == ok and (not ok or [round(x) for x in got[0][0]] == [x0, x1])
+    src = tmp_path / "f.pdf"
+    doc = fitz.open()
+    doc.new_page(width=595, height=842).insert_text((76, 745), "A lapot kitöltötte (név, dátum, aláírás):", fontsize=10,
+                                                    fontname="tiro")
+    doc.save(str(src))
+    p = pdfplumber.open(str(src)).pages[0]
+    r = lambda x0, x1, top, bottom: {"x0": x0, "x1": x1, "top": top, "bottom": bottom}
+    rects = [r(a, b, 706, 706.5) for a, b in ((71, 120), (120, 453), (453, 553))]       # линия таблицы — по ячейкам
+    rects += [r(71, 553, 729, 729.5), r(71, 553, 755, 755.5), r(71, 71.5, 729, 755), r(553, 553.5, 729, 755)]
+    g = S._zone_grid(p.chars, rects)
+    assert g["rows"][0]["cells"][0] == "A lapot kitöltötte (név, dátum, aláírás):" and g["widths"][0] > 300

@@ -3126,6 +3126,10 @@ def _zone_grid(chars, rects):
         cols.pop(-2)
     while len(cols) >= 3 and cols[1] - cols[0] < GM.EDGE_COL and empty(cols[0], cols[1]):
         cols.pop(1)
+    # место столбца, что режет слово, — не столбец: концы отрезков нижней линии таблицы над подписью листа (30HU375GT:
+    # 120 и 453 pt) делили «A lapot kitöltötte (név, dátum, aláírás):» на ячейки по 49 и 333 pt — «Лист / заполн / ил»
+    cols = [cols[0]] + [c for c in cols[1:-1] if not any(float(w["x0"]) + 1 < c < float(w["x1"]) - 1 for w in words)] \
+        + cols[-1:] if len(cols) >= 2 else cols
     # внутренние линии — только настоящие вертикали; концы отрезков рамки (у штампа UTS рамка сверху разбита на
     # куски в точках 160 и 448) — места столбцов, но не линии: сетка рисовалась там, где её нет (16.10)
     vx = [(float(r["x0"]) + float(r["x1"])) / 2 for r in rects

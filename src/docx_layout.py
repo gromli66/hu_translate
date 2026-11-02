@@ -564,7 +564,11 @@ def _tables(hs, vs):
             and max(hi) - min(hi) <= 6 else []
         if edges:
             x0, x1 = edges
-        if x1 - x0 < 60 or y1 - y0 < 15 or not any(x0 + 3 < v[0] < x1 - 3 for v in gv):
+        # рамка без внутренних вертикалей — не таблица; кроме рамки вокруг строки во всю ширину текста (подпись листа
+        # «A lapot kitöltötte (név, dátum, aláírás):» 30HU*75GT — прямоугольник 482 × 26 pt): абзацем она теряла рамку,
+        # теперь — таблица в одну ячейку (с текстом внутри — _regions)
+        line_box = y1 - y0 <= 40 and x1 - x0 >= 300
+        if x1 - x0 < 60 or y1 - y0 < 15 or not line_box and not any(x0 + 3 < v[0] < x1 - 3 for v in gv):
             continue
         ys = _cluster([h[0] for h in hh] + [y0, y1])
         ys = [y for i, y in enumerate(ys) if i == 0 or y - ys[i - 1] >= GM.DOUBLE]  # двойная линия — одна
@@ -589,7 +593,7 @@ def _tables(hs, vs):
         # было ни верха, ни низа, «M» стоял вне рамки таблицы
         gh = gh + [h for h in hs if h not in gh and ys[0] - 4 <= h[0] <= ys[-1] + 4 and any(abs(h[0] - y) <= 2 for y in ys)
                    and any(xs[c] - 2 <= h[1] and h[2] <= xs[c + 1] + 2 for c in range(len(xs) - 1))]
-        if len(ys) >= 2 and len(xs) >= 3:
+        if len(ys) >= 2 and (len(xs) >= 3 or line_box and len(xs) == 2):
             out.append((xs, ys, gh, gv))
     return out
 
