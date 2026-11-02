@@ -8,6 +8,7 @@
 - для вставки перевода рамка абзаца расширяется вправо/вниз до соседей, линеек и полей."""
 import re
 import fitz
+from lines import hyphen_break, join_lines      # перенос слова — одна функция для всех читателей (E4)
 
 GAP = 30.0          # выключка по ширине в узких ячейках даёт пробелы до ~25 pt
 
@@ -387,16 +388,6 @@ def mid_phrase(prev, nxt):
     return len(prev.split()) >= 3 and bool(re.search(r"[^\W\d_]$|,$", prev)) and nxt[:1].isalpha() and nxt[:1].islower()
 
 
-HYPHEN = re.compile(r"[^\W\d_]-$")
-
-
-def hyphen_break(prev, nxt):
-    """Слово разорвано переносом строки: строка кончается буквой и дефисом (не «–»), следующая начинается буквой.
-    Обе строки — одна фраза, что бы ни стояло между ними («oltó-» / «berendezés» в блоке схемы, «KI-» / «KAPCSOLVA»,
-    «pa-» / «lacknyomás»): иначе слово переводилось двумя кусками."""
-    return bool(HYPHEN.search(prev.rstrip())) and nxt.lstrip()[:1].isalpha()
-
-
 ORDINAL = re.compile(r"\b\d+(?:\.\d+)*\.$")
 
 
@@ -613,38 +604,6 @@ def column_order(pars, g):
         else:
             zone.append(p)
     return out + sorted(zone, key=lambda p: (side(p), p["bbox"][1]))
-
-
-CAPS_WRAP = re.compile(r"(?:^|[^\w-])([A-ZÁÉÍÓÖŐÚÜŰ]{2,})-$")     # слово из двух и более прописных, дефис в конце строки
-CAPS_HEAD = re.compile(r"([A-ZÁÉÍÓÖŐÚÜŰ]{2,})(?![\w-])")           # строка начинается словом из прописных
-
-
-def caps_wrap(out, ln):
-    """«KI-» + «KAPCSOLVA», «REND-» + «BEN.»: слово из прописных, разорванное переносом. Обе части от двух букв и одна из
-    них не короче четырёх; пара коротких аббревиатур («RO-ROP», «ÜBO-ÜBO», «RP-UL») — составная, дефис остаётся."""
-    a, b = CAPS_WRAP.search(out), CAPS_HEAD.match(ln)
-    return bool(a and b) and (len(a.group(1)) >= 4 or len(b.group(1)) >= 4)
-
-
-def join_lines(lines):
-    out = ""
-    for ln in lines:
-        ln = ln.strip()
-        if not ln:
-            continue
-        if not out:
-            out = ln
-        elif out.endswith("-") and re.match(r"(?:és|vagy|illetve|ill\.|и|или|либо|and|or)\s", ln, re.I):
-            out += " " + ln                                 # «fűtő- és hűtőrendszer»: дефис перед союзом — не перенос
-        elif out.endswith("-") and ln[:1].islower():
-            # дефис — часть слова: после прописной или цифры, и в составном через дефис («loss-of-» + «coolant», Eskom)
-            keep = re.search(r"[A-ZÁÉÍÓÖŐÚÜŰ0-9]-$", out) or re.search(r"\w-\w+-$", out)
-            out = (out if keep else out[:-1]) + ln
-        elif caps_wrap(out, ln):
-            out = out[:-1] + ln                             # слово из прописных, разорванное переносом: «KI-» + «KAPCSOLVA»
-        else:
-            out += " " + ln
-    return out
 
 
 def avail_rects(pars, hs, vs, page_rect):

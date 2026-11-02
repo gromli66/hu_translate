@@ -721,14 +721,14 @@ def _stroke(gray, box, dpi):
 
 
 def _dehyphen(words):
-    """Склейка переносов на концах строк Tesseract (внутри абзаца Tesseract)."""
+    """Склейка переносов на концах строк Tesseract (внутри абзаца Tesseract) — по общим правилам переноса (lines.glue)."""
+    from lines import glue
     out = []
     for w in words:
-        if out and out[-1]["t"].endswith("-") and out[-1]["line"] != w["line"] and out[-1]["key"] == w["key"] \
-                and w["t"][:1].islower():
-            prev = out[-1]
-            keep = re.search(r"[A-ZÁÉÍÓÖŐÚÜŰ0-9]-$", prev["t"])
-            out[-1] = dict(prev, t=(prev["t"] if keep else prev["t"][:-1]) + w["t"])
+        prev = out[-1] if out else None
+        word = glue(prev["t"], w["t"]) if prev and prev["line"] != w["line"] and prev["key"] == w["key"] else None
+        if word:
+            out[-1] = dict(out[-1], t=word)
         else:
             out.append(dict(w))
     return out
