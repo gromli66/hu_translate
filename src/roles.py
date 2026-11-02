@@ -195,11 +195,13 @@ def _line_of(bb, lines):
     return best
 
 
-def apply(pars, lines, labels, join_lines):
+def apply(pars, lines, labels, join_lines, apart=None):
     """Абзацы листа (layout.group) по меткам портала: абзац делится на строке, которую портал начал новым абзацем
     (правила склеивали соседние абзацы — полнота границ 0,77), и склеивается со следующим, если портал продолжает им
     тот же абзац строкой подряд (ложные разрывы правил). Абзацу — роль первой строки: p["role"] (heading, list,
-    caption; колонтитулы и таблицы — правилами, роль не ставится). Колонтитулы и таблицы по меткам не трогаются."""
+    caption; колонтитулы и таблицы — правилами, роль не ставится). Колонтитулы и таблицы по меткам не трогаются.
+    apart(кусок выше, кусок ниже) — граница ряда таблицы (rows.Rows.apart): через неё метка портала не склеивает —
+    ряды «YA-K7 ⇥ …» / «YA-K8 ⇥ …» шли одним абзацем (3PR10, E5)."""
     if not labels:
         return pars
     keep = lambda lab: lab is not None and lab["role"] not in ("header", "table")
@@ -229,7 +231,8 @@ def apply(pars, lines, labels, join_lines):
                     and not first[2]["new"] and keep(next((x[2] for x in last if x[1] is not None), None)) \
                     and first[0]["bbox"][1] > last[-1][0]["bbox"][1] + 1 \
                     and min(first[0]["bbox"][2], max(x[0]["bbox"][2] for x in last)) \
-                    - max(first[0]["bbox"][0], min(x[0]["bbox"][0] for x in last)) > 0:
+                    - max(first[0]["bbox"][0], min(x[0]["bbox"][0] for x in last)) > 0 \
+                    and not (apart and apart(last[-1][0], first[0])):
                 last += piece
                 continue
         merged.append(list(piece))
