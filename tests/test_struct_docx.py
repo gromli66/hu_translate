@@ -1913,3 +1913,12 @@ def test_join_tables_with_different_grid_stay_separate_even_with_repeated_header
     assert len(S.join_tables([a, other])) == 2                       # столбцов разное число — две таблицы
     same = mk([51, 151, 299, 502], [head(3), body(3)], 2)
     assert len(S.join_tables([mk(three, [head(3), body(3)], 1), same])) == 1
+
+
+def test_cell_pad_is_not_the_empty_space_to_the_sheet_frame():
+    """Поле ячейки оригинала — до 14 pt: у бланка без горизонталей между строками «до линии снизу» выходило до рамки
+    листа (491 pt у 30RA+SGT TU), и каждая строка таблицы шла на свой лист; слева — нижняя четверть, сверху/снизу — медиана."""
+    assert D._cell_pad("bottom", [491.0, 491.0, 3.0]) == 3.0
+    assert D._cell_pad("bottom", [491.0, 72.0]) is None
+    assert D._cell_pad("top", [2.0, 4.0, 6.0]) == 4.0
+    assert D._cell_pad("left", [2.0, 3.0, 5.0, 30.0]) == 2.0

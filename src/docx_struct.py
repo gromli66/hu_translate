@@ -1292,6 +1292,16 @@ def relist(bs):
     return out
 
 
+def _cell_pad(side, vals):
+    """Поле ячейки таблицы оригинала по расстояниям «текст — линия ячейки»: больше CELL_PAD_MAX — не поле (слева —
+    отступ текста: вложенный пункт, выравнивание; сверху и снизу — пустое место до линии, которой у строки нет: бланк
+    без горизонталей между строками мерил до рамки листа — 72 и 491 pt у 30RA+SGT TU, и каждая строка таблицы с таким
+    полем шла на свой лист, 549 листов при 28); слева — нижняя четверть (отступ бывает и больше поля), сверху и снизу —
+    медиана. Нет значений — None."""
+    v = sorted(x for x in vals if x <= GM.CELL_PAD_MAX)
+    return round(v[len(v) // 4 if side == "left" else len(v) // 2], 1) if v else None
+
+
 def _rgb(col):
     """Цвет pdfplumber — серый числом или (g,), RGB — (r, g, b) — в [r, g, b] (доли 0…1); прочее — None."""
     if isinstance(col, (int, float)):
@@ -1462,11 +1472,9 @@ def load(path):
                     pads["left"].append(cg["x0"] - lx[-1])
                 if above and below:
                     pads["top"].append(cg["top"] - above[-1]); pads["bottom"].append(below[0] - cg["bottom"])
-        # больше 14 pt — отступ текста в ячейке (вложенный пункт, выравнивание), а не поле
-        pads["left"] = [v for v in pads["left"] if v <= 14] or pads["left"][:0]
         for k, v in pads.items():
-            if v:                                           # поле слева — нижняя четверть: отступ бывает и больше поля
-                v.sort(); out["pad_" + k] = round(v[len(v) // 4 if k == "left" else len(v) // 2], 1)
+            if _cell_pad(k, v) is not None:
+                out["pad_" + k] = _cell_pad(k, v)
         return out
 
     def toc_info(el):
