@@ -388,7 +388,7 @@ def test_role_labels_reach_every_paragraph_of_page(tmp_path, monkeypatch):
     monkeypatch.setattr(R, "doc_labels", lambda path, pages, workers=4: lab(pages))
     monkeypatch.setattr(R, "frag_labels", lambda frags, size, workers=4: lab(frags))
 
-    def apply(pars, lines_, labels, join_lines):
+    def apply(pars, lines_, labels, join_lines, apart=None):
         for p in pars:
             p["role"] = "heading" if p["text"].startswith("1.") else "body"
         return pars
