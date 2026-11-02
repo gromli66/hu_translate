@@ -1870,6 +1870,30 @@ def test_rows_split_by_ink_not_by_tall_monospace_boxes():
     assert pairs == [(["A 30UJ04 ZÁRNI"], ["ZÁRVA"]), (["A 30UJ05 NYITNI"], ["NYITVA"]), (["Szivattyút indítani"], ["ÜZEMEL"])]
 
 
+def test_code_with_taller_mark_in_same_grid_row_is_one_row():
+    """30KBFSZBIGT л. 4 (печать 0c7da1a): в строке сетки код кеглем 12 и значок «□» кеглем 18 — по «чернилам» значок
+    начинается на 2 pt выше кода, и код-метка открывал свою полосу: каждая строка резалась на пустую и строку с
+    текстом (26 строк → 48, листы 9 → 11). Метка — своя полоса, только если чужой текст выше на полстроки."""
+    import docx_layout as DL
+    ys = [225.2 + 23.5 * k for k in range(4)]
+    gh = [(y, 60, 470) for y in ys]
+    gv = [(x, ys[0], ys[-1]) for x in (60, 150, 210, 235, 345, 470)]
+    t = (DL._cluster([v[0] for v in gv]), ys, gh, gv)
+
+    def seg(text, x0, y0, x1, y1, size):
+        return {"id": 0, "page": 0, "text": text, "loc": {"bbox": [x0, y0, x1, y1], "frags": [[x0, y0, x1, y1]],
+                                                          "size": size, "bold": False, "align": "left"}}
+    segs = []
+    for k in range(3):
+        y = 23.5 * k
+        segs += [seg(f"30RR11S00{k}", 77, 228.5 + y, 143, 245.1 + y, 12), seg("NYITVA", 154, 228.5 + y, 202, 245.1 + y, 12),
+                 seg("", 214, 227.1 + y, 230, 247 + y, 18), seg("Kábel, lakat, tábla", 241, 228.5 + y, 336, 245.1 + y, 12),
+                 seg("", 346, 227.1 + y, 362, 247 + y, 18)]
+    b = DL._table_block(t, segs, 0, None, "Times New Roman", 12, False)
+    text = lambda c: "".join(r.get("t", "") for p in c["blocks"] for r in p.get("runs") or [])
+    assert [text(r[0]) for r in b["rows"]] == ["30RR11S000", "30RR11S001", "30RR11S002"]
+
+
 def test_label_column_splits_table_row_into_sub_rows():
     """Таблица-бланк без внутренних горизонталей (31RDGT): номер, текст и отметка — каждый против своего; строка сетки
     режется по горизонтальным полосам абзацев (отметка «O» — против своего кода, не против метки), линий между

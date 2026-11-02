@@ -940,7 +940,10 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields
                            put.get((r, ci), []), key=lambda s: (round(s["loc"]["bbox"][1] / 3), s["loc"]["bbox"][0]))))
         strips = []                                             # [верх, низ, {ячейки}, метка]
         for a, z, ci, anchor in spans:
-            if strips and a < strips[-1][1] - 2 and not (anchor and a > strips[-1][0] + 2):
+            # метка — своя полоса, если чужой абзац начался выше на полстроки метки, а не на 2 pt: по «чернилам»
+            # значок «□» кеглем 18 в той же строке начинается на 2,15 pt выше кода кеглем 12, и каждая строка
+            # сетки резалась на пустую полосу и строку с текстом (30KBFSZBIGT: 26 строк → 48, листы 9 → 11)
+            if strips and a < strips[-1][1] - 2 and not (anchor and a > strips[-1][0] + max(2.0, 0.5 * (z - a))):
                 strips[-1][1] = max(strips[-1][1], z)
                 strips[-1][2].add(ci)
             else:
