@@ -2456,12 +2456,16 @@ class Builder:
                     restart = True
             # лист оригинала, закрытый подписью (docx_struct.closed_sheets), — свой раздел: номер листа — его, не
             # подряд по листам перевода
-            if b.get("sheet") and page and not in_title and not in_front and made is None and sheet_no.get(page):
-                sec = made = self.doc.add_section(WD_SECTION.NEW_PAGE)
-                self.fresh = True
+            if b.get("sheet") and page and not in_title and not in_front and sheet_no.get(page):
+                if made is None:
+                    sec = made = self.doc.add_section(WD_SECTION.NEW_PAGE)
+                    self.fresh = True
                 # раздел — листы оригинала до следующего раздела: перелившийся на лишний лист — мельче кеглем
-                # (docx_fit, как альбомный: 30KBFPRBIGT, строки «ПЛОМБИРОВАНИЕ, ВЫВЕШИВАНИЕ ПЛАКАТА» в две строки)
-                starts.append((len(self.doc.sections) - 1, page, "sheet"))
+                # (docx_fit, как альбомный: 30KBFPRBIGT, строки «ПЛОМБИРОВАНИЕ, ВЫВЕШИВАНИЕ ПЛАКАТА» в две строки);
+                # и первый лист тела, чей раздел открыт концом титула или вводной части: его перелив шёл с номером
+                # следующего листа, без «(прод.)» (3PR10 путь А: «3, 4, 4»)
+                if not starts or starts[-1][0] != len(self.doc.sections) - 1:
+                    starts.append((len(self.doc.sections) - 1, page, "sheet"))
             if zones and page and not in_title and not in_front:
                 zk = next((i for i, z in enumerate(zones) if z["from"] <= page <= z["to"]), None)
                 if zk != zcur:
