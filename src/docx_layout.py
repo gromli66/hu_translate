@@ -1463,6 +1463,12 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
                     pua[ch] = _pua_glyph(page, s["loc"]["bbox"]) or ch
             # поля ввода — внутри одной ячейки сетки, не на её линиях и не во всю ячейку
             fields = [f for f in marks[pno][1] if _in_cell(f, xs_, ys_, whole=True)]
+            # рамка вокруг строки (одна ячейка) — таблицей только в теле листа и не вокруг заголовка: рамка шапки (выше
+            # полосы колонтитула) и заголовок в рамке или на плашке («7. Vezérlő táblák feliratai.» 3SZ23 — полужирный)
+            # — как прежде, иначе заголовок переставал быть заголовком (ред-тим 02.11)
+            if len(xs_) == 2 and (r.y1 < GM.HEAD_EDGE * page.rect.height or any(
+                    s["loc"].get("bold") or s["loc"].get("role") == "heading" for s in inside)):
+                continue
             if inside:
                 used |= set(mine)
                 blk = _table_block(t, inside + glyphs, pno, bold, font, size, mono, [figs[i] for i in mine], pua, fields)
