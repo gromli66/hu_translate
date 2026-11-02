@@ -1848,6 +1848,28 @@ def test_scan_scheme_of_arrows_and_short_labels_is_figure(tmp_path):
     assert sum("3/2" in x for x in texts) == 3
 
 
+def test_rows_split_by_ink_not_by_tall_monospace_boxes():
+    """3SZ17 стр. 7 (NIGHT2_EYES п. 13): рамка моноширинной строки выше шага строк (16 pt при шаге 11) — рамки абзацев
+    соседних рядов «Деятельность | Состояние» перекрывались, и ряды склеивались в одну строку DOCX. Края полосы — по
+    «чернилам» строк: каждое действие со своим состоянием — своя подстрока."""
+    import docx_layout as DL
+    gh = [(90, 60, 560), (300, 60, 560)]
+    gv = [(60, 90, 300), (380, 90, 300), (560, 90, 300)]
+    t = (DL._cluster([v[0] for v in gv]), [90, 300], gh, gv)
+
+    def seg(text, x0, y0, x1, lines=1):
+        frags = [[x0, y0 + 11 * k - 2.5, x1, y0 + 11 * k + 13.5] for k in range(lines)]   # рамка строки 16 pt, шаг 11
+        return {"id": 0, "page": 0, "text": text, "loc": {"bbox": [x0, frags[0][1], x1, frags[-1][3]], "frags": frags,
+                                                          "size": 9, "bold": False, "align": "left", "family": "monospace"}}
+    segs = []
+    for k, (act, st) in enumerate((("A 30UJ04 ZÁRNI", "ZÁRVA"), ("A 30UJ05 NYITNI", "NYITVA"), ("Szivattyút indítani", "ÜZEMEL"))):
+        segs += [seg(act, 70, 100 + 24 * k, 370, 2), seg(st, 400, 111 + 24 * k, 450)]
+    b = DL._table_block(t, segs, 0, None, "Courier New", 9, True)
+    text = lambda c: ["".join(r.get("t", "") for r in p["runs"]) for p in c["blocks"]]
+    pairs = [(text(r[0]), text(r[1])) for r in b["rows"] if any(text(c) for c in r)]
+    assert pairs == [(["A 30UJ04 ZÁRNI"], ["ZÁRVA"]), (["A 30UJ05 NYITNI"], ["NYITVA"]), (["Szivattyút indítani"], ["ÜZEMEL"])]
+
+
 def test_label_column_splits_table_row_into_sub_rows():
     """Таблица-бланк без внутренних горизонталей (31RDGT): номер, текст и отметка — каждый против своего; строка сетки
     режется по горизонтальным полосам абзацев (отметка «O» — против своего кода, не против метки), линий между

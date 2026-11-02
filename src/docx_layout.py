@@ -924,7 +924,17 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields
     # склеивали все строки таблицы в одну — коды и места разъезжались; такой абзац — в полосу своей середины
     bands = []
     for r, cells in enumerate(grid):
-        spans = sorted((min(g["loc"]["bbox"][1] for g in group), max(g["loc"]["bbox"][3] for g in group), ci,
+        # края абзаца — по «чернилам»: середина первой (последней) строки ∓ 0,4 кегля, а не рамка: рамка моноширинной
+        # строки выше шага строк (15–19 pt при шаге 10–11), рамки абзацев соседних рядов перекрывались, и ряды
+        # «Деятельность | Состояние» склеивались в одну строку DOCX блоками по 3–4 (3SZ17 стр. 7, NIGHT2_EYES п. 13)
+        # (фрагмент на несколько строк — край не дальше половины кегля от его края: отметка против нижней строки
+        # такого абзаца — в его полосе)
+        def ink(g, top):
+            f = (g["loc"].get("frags") or [g["loc"]["bbox"]])[0 if top else -1]
+            sz = g["loc"].get("size") or (f[3] - f[1]) / 1.2
+            mid = (f[1] + f[3]) / 2
+            return min(mid - 0.4 * sz, f[1] + 0.5 * sz) if top else max(mid + 0.4 * sz, f[3] - 0.5 * sz)
+        spans = sorted((min(ink(g, True) for g in group), max(ink(g, False) for g in group), ci,
                         ci == 0 and bool(PT.ROW_ANCHOR.fullmatch(" ".join(g["text"] for g in group).strip())))
                        for ci in range(len(cells)) for group in _lines(sorted(
                            put.get((r, ci), []), key=lambda s: (round(s["loc"]["bbox"][1] / 3), s["loc"]["bbox"][0]))))
