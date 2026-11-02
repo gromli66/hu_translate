@@ -860,7 +860,7 @@ def fit(work, prj=None, limit=0.7):
         if not d["file"].lower().endswith(".pdf"):
             continue
         with tempfile.TemporaryDirectory() as tmp:
-            info = build_pdf(d["file"], Path(tmp) / "trial.pdf", d["segs"], d["res"])
+            info = build_pdf(d["file"], Path(tmp) / "trial.pdf", d["segs"], d["res"], check=False)   # пробная: сверка листов не нужна
         by_id = {str(s["id"]): s for s in d["segs"]}
         done = 0
         for it in info.get("shrunk", []):

@@ -328,7 +328,7 @@ def _foreign_ink(page, plates, dpi=150):
     return out, room
 
 
-def build_pdf(src, out, segs, res, progress=None):
+def build_pdf(src, out, segs, res, progress=None, check=True):
     import fitz
     import figures as FIG
     import pagefit as PF
@@ -518,7 +518,7 @@ def build_pdf(src, out, segs, res, progress=None):
                 shrink += [{"page": pno + 1, "id": it[0]["id"], "scale": round(scale * min(k, 1.0), 2)} for it in mem]
         for r, png in ink:
             page.insert_image(r, stream=png, overlay=True)
-        if ocr and FIG.enabled():                       # коды и числа перевода читаются на листе вторым распознаванием
+        if ocr and FIG.enabled() and check:      # коды и числа перевода читаются на листе вторым распознаванием
             warn = FIG.verify_page(page, [TAG.sub("", pdf_text(r)) for _, r in todo], pno)
             if warn:
                 (verify if warn[1] else notes).append(warn[0])

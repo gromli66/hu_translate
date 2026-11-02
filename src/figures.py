@@ -109,6 +109,35 @@ def on_rule(r, rules, long=40):
                                   for x, a, b in vs)
 
 
+def _linked(fa, a, fb, b):
+    """Фигуры (fa, fb — «фигура», а не подпись) соединены: фигура с фигурой — ближе SCHEME_LINK, подпись с фигурой — ближе
+    SCHEME_CAPTION; подписи — одного ряда (до SCHEME_ROW_GAP между ними) или строки одной подписи друг под другом."""
+    if fa or fb:
+        m = GM.SCHEME_LINK if fa and fb else GM.SCHEME_CAPTION
+        return (a + (-m, -m, m, m)).intersects(b)
+    h = min(a.height, b.height)
+    return min(a.y1, b.y1) - max(a.y0, b.y0) >= 0.5 * h and max(a.x0, b.x0) - min(a.x1, b.x1) <= GM.SCHEME_ROW_GAP         or min(a.x1, b.x1) > max(a.x0, b.x0) and max(a.y0, b.y0) - min(a.y1, b.y1) <= 0.6 * h
+
+
+def _candidates(items):
+    """Пары индексов (i < j) возможных соседей — сеткой: фигура ищет соседей в радиусе SCHEME_LINK (подпись рядом найдёт
+    её сама), подпись — в радиусе SCHEME_ROW_GAP (подписи одного ряда). Прямой перебор всех пар на листе с тысячами фигур
+    (карта, схема КИП) — десятки секунд."""
+    cell = 32.0
+    grid = {}
+    for i, (_, r) in enumerate(items):
+        for cx in range(int(r.x0 // cell), int(r.x1 // cell) + 1):
+            for cy in range(int(r.y0 // cell), int(r.y1 // cell) + 1):
+                grid.setdefault((cx, cy), []).append(i)
+    pairs = set()
+    for i, (shape, r) in enumerate(items):
+        m = GM.SCHEME_LINK if shape else max(GM.SCHEME_ROW_GAP, GM.SCHEME_CAPTION)
+        for cx in range(int((r.x0 - m) // cell), int((r.x1 + m) // cell) + 1):
+            for cy in range(int((r.y0 - m) // cell), int((r.y1 + m) // cell) + 1):
+                pairs.update((min(i, j), max(i, j)) for j in grid.get((cx, cy), ()) if j != i)
+    return sorted(pairs)
+
+
 def scheme_regions(page, pno, drawings, segs, masked, tabs, figs, rules=((), ())):
     """Схемы листа: [(рамка, img)], img — область листа ({"clip", "page_number"}: сборка снимет её с переведённого PDF,
     надписи — переводом). Схема — связная группа фигур (замкнутые рамки, ромбы, линии-связки) и коротких подписей:
@@ -133,7 +162,10 @@ def scheme_regions(page, pno, drawings, segs, masked, tabs, figs, rules=((), ())
           and not any(r.intersects(o) for o in off)
           and not any((b + (-2, -2, 2, 2)).contains(r) for b in sb)
           and (bool(masked) or r.y1 >= GM.HEAD_EDGE * H and r.y0 <= GM.FOOT_EDGE * H)]
-    items = [(True, r) for r in rs] + [(False, b) for b in sb]
+    # подпись-абзац (длиннее SCHEME_PARAGRAPH знаков) и строка шире полулиста — текст рядом со схемой: в группу не входит
+    # (подводка над схемой и тело под ней не втягиваются), но мешает, если задевает её край или стоит внутри (ниже)
+    items = [(True, r) for r in rs] + [(False, b) for s, b in zip(segs, sb)
+                                       if len(s["text"].strip()) <= GM.SCHEME_PARAGRAPH and b.width <= GM.SCHEME_CAPTION_W * W]
     up = list(range(len(items)))
 
     def root(i):
@@ -141,18 +173,9 @@ def scheme_regions(page, pno, drawings, segs, masked, tabs, figs, rules=((), ())
             up[i] = up[up[i]]
             i = up[i]
         return i
-    for i, (fa, a) in enumerate(items):
-        for j in range(i + 1, len(items)):
-            fb, b = items[j]
-            if fa or fb:
-                m = GM.SCHEME_LINK if fa and fb else GM.SCHEME_CAPTION
-                near = (a + (-m, -m, m, m)).intersects(b)
-            else:                                               # подписи — одного ряда или строки одной подписи
-                h = min(a.height, b.height)
-                near = min(a.y1, b.y1) - max(a.y0, b.y0) >= 0.5 * h and max(a.x0, b.x0) - min(a.x1, b.x1) <= GM.SCHEME_ROW_GAP \
-                    or min(a.x1, b.x1) > max(a.x0, b.x0) and max(a.y0, b.y0) - min(a.y1, b.y1) <= 0.6 * h
-            if near:
-                up[root(i)] = root(j)
+    for i, j in _candidates(items):
+        if _linked(*items[i], *items[j]):
+            up[root(i)] = root(j)
     comps = {}
     for i, it in enumerate(items):
         comps.setdefault(root(i), []).append(it)
@@ -187,12 +210,15 @@ def clamp_zones(R, head, foot, hs, W):
     листа. Линия рамки — ниже текста шапки (или выше текста подвала) не дальше GM.FRAME_GAP и от половины листа шириной.
     Вызывается ПОСЛЕ полей снимка: поле в 4 pt иначе возвращало бы текст колонтитула."""
     wide = [y for y, a, b in hs if b - a >= 0.5 * W]
+    y0, y1 = R.y0, R.y1
     if head:
         bottom = max(h[3] for h in head)
-        R.y0 = max(R.y0, bottom + 2, *(y + 2 for y in wide if bottom - 1 <= y <= bottom + GM.FRAME_GAP))
+        y0 = max(y0, bottom + 2, *(y + 2 for y in wide if bottom - 1 <= y <= bottom + GM.FRAME_GAP))
     if foot:
         top = min(f[1] for f in foot)
-        R.y1 = min(R.y1, top - 2, *(y - 2 for y in wide if top - GM.FRAME_GAP <= y <= top + 1))
+        y1 = min(y1, top - 2, *(y - 2 for y in wide if top - GM.FRAME_GAP <= y <= top + 1))
+    if y1 - y0 >= GM.CLAMP_MIN:                                      # от снимка осталась полоска — колонтитул не тот
+        R.y0, R.y1 = y0, y1
     return R
 
 
@@ -218,16 +244,14 @@ FORM_PAGES = 2                      # бланк — отдельный доку
 
 def known_form(segs):
     """Форма документа — "nyilv" | "ciml" | "modj" или None: заголовок формы — отдельный короткий сегмент документа не
-    длиннее FORM_PAGES листов (раздел «MÓDOSÍTÁS JEGYZÉK» внутри инструкции — не бланк: его строки — текст инструкции)."""
-    if not segs or max(s["page"] or 0 for s in segs) >= FORM_PAGES:
+    длиннее FORM_PAGES листов (раздел «MÓDOSÍTÁS JEGYZÉK» внутри инструкции — не бланк: его строки — текст инструкции).
+    Листы должны быть известны (у сегментов DOCX page = None — длину не проверить, формы нет) и форма — одна: титул одной
+    формы и лист другой в одном документе — не бланк."""
+    if not segs or any(s["page"] is None for s in segs) or max(s["page"] for s in segs) >= FORM_PAGES:
         return None
-    for s in segs:
-        t = s["text"].strip()
-        if len(t) <= TITLE_MAX:
-            for form, rx in FORM_TITLES.items():
-                if rx.search(t):
-                    return form
-    return None
+    found = {form for s in segs if len(s["text"].strip()) <= TITLE_MAX
+             for form, rx in FORM_TITLES.items() if rx.search(s["text"])}
+    return found.pop() if len(found) == 1 else None
 
 
 def label_key(text):
@@ -256,10 +280,13 @@ def form_labels():
     return _labels["d"]
 
 
+PROTECTED = ("edited", "tm", "copied", "polish", "ru_pdf")      # перевод редактора, память, без перевода, шлифовка, сокращение для PDF
+
+
 def apply_form_labels(segs, res):
     """Подписи известной формы — по словарю: один перевод на подпись во всех документах формы (портал давал «Да»/«да»/
     «ДА», «Подпись:»/«Подпись: |»). Не трогаются перевод редактора (edited), память переводов (tm), сегмент без
-    изменения (copied). → (res, сколько подписей заменено, форма); res — новый словарь, исходный не меняется."""
+    изменения (copied), шлифованный (polish: словарь заказчика) и сокращённый для PDF (ru_pdf). → (res, сколько подписей заменено, форма); res — новый словарь, исходный не меняется."""
     form = known_form(segs)
     labels = form_labels().get(form) or {} if form else {}
     if not labels:
@@ -268,7 +295,7 @@ def apply_form_labels(segs, res):
     for s in segs:
         r = res.get(str(s["id"]))
         k = label_key(s["text"])
-        if not r or not r.get("ru") or r.get("edited") or r.get("tm") or r.get("copied") or k not in labels:
+        if not r or not r.get("ru") or k not in labels or any(r.get(f) for f in PROTECTED):
             continue
         if r["ru"] != labels[k]:
             out[str(s["id"])] = dict(r, ru=labels[k])
@@ -288,7 +315,8 @@ def drawn_text(ru):
 # флажок, и вместо него рисовались буквы (57 надписей в 36 документах корпуса). Флажок — пиксели оригинала: плашка и
 # перевод начинаются после него, а перевод — само «да»/«нет»
 CHECKBOX_WORD = re.compile(r"(?P<mark>\S{1,2})\s+(?P<word>igen|nem)", re.I)
-ARTICLES = {"a", "az", "és", "is", "ha", "ne", "de"}            # «a nem», «az igen» — слова, не флажок
+ARTICLES = {"a", "az"}                                          # «a nem», «Az igen» — слова, не флажок
+SHORT_WORDS = {"és", "is", "ha", "ne", "de", "ki", "be", "el", "le", "fel"}   # «Ki nem»; ЗАГЛАВНЫМИ («KI igen») — флажок
 YES_NO = {"igen": "да", "nem": "нет"}
 
 
@@ -299,11 +327,12 @@ def split_checkboxes(segs, res):
     out_s, out_r = list(segs), dict(res)
     for i, s in enumerate(segs):
         loc, r = s["loc"], res.get(str(s["id"]))
-        if not loc.get("ocr") or len(loc.get("frags") or []) != 1 or not r or not r.get("ru")                 or r.get("edited") or r.get("tm"):
-            continue
+        if not loc.get("ocr") or len(loc.get("frags") or []) != 1 or not r or not re.search("[а-яё]", r.get("ru") or "", re.I)                 or r.get("edited") or r.get("tm"):
+            continue                                                  # «да»/«нет» — только для перевода на русский
         t = s["text"].strip()
         m = CHECKBOX_WORD.fullmatch(t)
-        if not m or m["mark"].lower() in ARTICLES:
+        low = m["mark"].lower() if m else ""
+        if not m or low in ARTICLES or low in SHORT_WORDS and m["mark"] != m["mark"].upper():
             continue
         x0, y0, x1, y1 = loc["frags"][0]
         cut = x0 + (x1 - x0) * len(m["mark"]) / len(t)
@@ -319,15 +348,31 @@ TOKEN = re.compile(r"[^\W_](?:[^\s]*[^\W_])?")
 _CONFUSED = str.maketrans({"O": "0", "I": "1", "L": "1", "S": "5", "B": "8", "Z": "2", "|": "1"})   # путаница распознавания
 
 
+_LOOKALIKE = str.maketrans("АВСЕНКМОРТХ", "ABCEHKMOPTX")        # кириллица, похожая на латиницу: «В2» вместо «B2» (rus+eng)
+
+
 def _tok(w):
-    """Слово для сверки: заглавные, без знаков по краям; «O», «l», «I» в слове с цифрой — как «0», «1»."""
+    """Слово для сверки: заглавные, без знаков по краям, кириллические двойники латиницы — латиницей; в слове с цифрой
+    «O», «I», «L», «S», «B», «Z» — как «0», «1», «1», «5», «8», «2» (путаница распознавания)."""
     w = w.strip(".,;:()[]{}|/-–—_«»\"'“”„\\").upper()
-    return w.translate(_CONFUSED) if re.search(r"\d", w) else w
+    if re.search(r"\d", w):
+        w = w.translate(_LOOKALIKE).translate(_CONFUSED)
+    return w
+
+
+def code_map(text):
+    """Коды и числа текста (слова с цифрой, от двух знаков) — то, что при рисовании не должно потеряться:
+    {слово для сверки: слово как в тексте} — для сообщения глазами находимо."""
+    out = {}
+    for w in TOKEN.findall(text):
+        t = _tok(w)
+        if re.search(r"\d", t) and len(t) >= 2:
+            out.setdefault(t, w.strip(".,;:()[]{}|"))
+    return out
 
 
 def codes_of(text):
-    """Коды и числа текста (слова с цифрой, от двух знаков) — то, что при рисовании не должно потеряться."""
-    return {t for t in (_tok(w) for w in TOKEN.findall(text)) if re.search(r"\d", t) and len(t) >= 2}
+    return set(code_map(text))
 
 
 def _near(a, b):
@@ -341,10 +386,12 @@ def _near(a, b):
 
 
 def missing_codes(expected, seen_words):
-    """Какие из expected (codes_of) не найдены среди слов seen_words (второе распознавание листа после рисования)."""
-    seen = {_tok(w) for w in seen_words}
+    """Какие из expected (codes_of) не найдены среди слов seen_words (второе распознавание листа после рисования): слово
+    совпало, или различается одним знаком, или длинный код (от 5 знаков) распознан частями («30YCGT» → «30Y» «CGT»)."""
+    seen = [_tok(w) for w in seen_words]
     blob = "".join(seen)
-    return sorted(e for e in expected if e not in seen and e not in blob and not any(_near(e, w) for w in seen))
+    return sorted(e for e in expected if e not in seen and not (len(e) >= 5 and e in blob)
+                  and not any(_near(e, w) for w in seen))
 
 
 def ocr_words(page, dpi=200, lang="rus+eng"):
@@ -373,21 +420,28 @@ def ocr_words(page, dpi=200, lang="rus+eng"):
 
 def verify_page(page, drawn, pno):
     """Сверка листа после рисования: коды и числа нарисованного перевода (drawn — [текст]) должны читаться на листе
-    вторым распознаванием. → (строка, громко) или None (всё на месте, нечего сверять или нет Tesseract). Громко —
-    не найдено от VERIFY_LOST кодов и от VERIFY_SHARE проверенных (info["verify"] → «ВНИМАНИЕ» сборки); меньше —
-    просто сведения (info["verify_notes"]): Tesseract ошибается на мелкой печати и сам, 37 из 65 листов корпуса теряли
-    по одному слову. Предупреждение не меняет лист: расхождение — повод посмотреть глазами (закрыто рамкой, налезло)."""
-    want = set()
+    вторым распознаванием. → (строка, громко) или None (всё на месте, нечего сверять, нет Tesseract или сверка не
+    удалась: справочная проверка не роняет сборку). Громко — не найдено от VERIFY_LOST кодов и от VERIFY_SHARE
+    проверенных (info["verify"] → «ВНИМАНИЕ» сборки); меньше — просто сведения (info["verify_notes"]): Tesseract
+    ошибается на мелкой печати и сам, 37 из 65 листов корпуса теряли по одному слову. Лист не меняется: расхождение —
+    повод посмотреть глазами (закрыто рамкой, налезло)."""
+    want = {}
     for t in drawn:
-        want |= codes_of(t)
+        for k, w in code_map(t).items():
+            want.setdefault(k, w)
     if not want:
         return None
-    words = ocr_words(page)
-    if words is None:
+    try:
+        words = ocr_words(page)
+        if words is None:
+            return None
+        lost = missing_codes(set(want), words)
+    except Exception as e:                                           # noqa: BLE001 — справочная проверка, сборку не роняет
+        print(f"figures: сверка листа {pno + 1} не удалась: {type(e).__name__}: {e}"[:200], flush=True)
         return None
-    lost = missing_codes(want, words)
     if not lost:
         return None
+    shown = [want[k] for k in lost]
     msg = (f"лист {pno + 1} скана: после рисования перевода не найдено при втором распознавании {len(lost)} из "
-           f"{len(want)} кодов и чисел — {', '.join(lost[:12])}{' …' if len(lost) > 12 else ''}")
+           f"{len(want)} кодов и чисел — {', '.join(shown[:12])}{' …' if len(shown) > 12 else ''}")
     return msg, len(lost) >= GM.VERIFY_LOST and len(lost) >= GM.VERIFY_SHARE * len(want)

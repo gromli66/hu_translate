@@ -40,6 +40,13 @@ def collect(files):
     return labels
 
 
+def caps(t):
+    """Подпись набрана заглавными (все буквы) — перевод должен быть набран так же, и наоборот (голосование смешивало
+    «Nukleáris biztonságot érinti:» и «NUKLEÁRIS BIZTONSÁGOT ÉRINTI:» — подпись строчными получала заглавный перевод)."""
+    letters = [c for c in t if c.isalpha()]
+    return all(c.isupper() for c in letters) if len(letters) >= 4 else None         # «Ф. И. О.», «ÜBO» — не в счёт
+
+
 def build(labels, min_docs=4, share=0.75):
     out = {}
     for form, texts in labels.items():
@@ -51,7 +58,7 @@ def build(labels, min_docs=4, share=0.75):
             for c in docs.values():
                 votes.update(c)
             ru, n = votes.most_common(1)[0]
-            if n >= share * sum(votes.values()) and ru and hu not in DROP:
+            if n >= share * sum(votes.values()) and ru and hu not in DROP and (None in (caps(hu), caps(ru)) or caps(hu) == caps(ru)):
                 rows[hu] = ru
         out[form] = dict(sorted(rows.items()))
     return out

@@ -304,3 +304,84 @@ def test_build_pdf_keeps_checkbox_pixels_and_draws_only_yes_no(tmp_path, monkeyp
             assert dark > 20 and text == "нет"                                  # флажок цел, «CI» не рисуется
         else:
             assert text == "CI нет"                                              # прежнее: на месте флажка — буквы «CI»
+
+
+# ---------------------------------------------------------------- по ревью: схема, формы, сверка
+def test_scheme_grid_equals_brute_force_pairs_and_is_fast():
+    import random
+    import time
+    rnd = random.Random(7)
+    items = []
+    for _ in range(400):
+        x, y = rnd.uniform(0, 500), rnd.uniform(0, 780)
+        items.append((rnd.random() < 0.8, fitz.Rect(x, y, x + rnd.uniform(1, 90), y + rnd.uniform(1, 30))))
+    brute = {(i, j) for i in range(len(items)) for j in range(i + 1, len(items))
+             if FIG._linked(*items[i], *items[j])}
+    assert brute and brute <= set(FIG._candidates(items))                  # сетка ничего не теряет
+    page = fitz.open().new_page(width=595, height=842)
+    sh = page.new_shape()
+    for _ in range(5000):                                                    # лист-карта: тысячи мелких фигур
+        x, y = rnd.uniform(0, 560), rnd.uniform(0, 800)
+        sh.draw_rect(fitz.Rect(x, y, x + 3, y + 3))
+        sh.finish(color=(0, 0, 0), width=0.2)
+    sh.commit()
+    t = time.time()
+    FIG.scheme_regions(page, 0, page.get_cdrawings(), [seg(0, "a", 10, 10, 30), seg(1, "b", 50, 10, 70)], [], [], [])
+    assert time.time() - t < 10                                              # было 109 с на 6000 фигур (прямой перебор пар)
+
+
+def test_text_near_scheme_does_not_join_or_spoil_it():
+    """Подводка-абзац над схемой и тело под ней — не подписи схемы: не втягиваются в группу и не отбрасывают её."""
+    page, segs = _arrows_page()
+    n = len(segs)
+    segs += [seg(n, "Hosszú bevezető szöveg " * 8, 96, 170, 500),                      # 190 знаков, в 20 pt над схемой
+             seg(n + 1, "Alatta a törzs első sora " * 3, 96, 345, 480),
+             seg(n + 2, "Alatta a törzs második sora " * 3, 96, 358, 480)]
+    got = FIG.scheme_regions(page, 0, page.get_cdrawings(), segs, segs, [], [])
+    assert len(got) == 1 and got[0][0].y0 > 190 and got[0][0].y1 < 340
+
+
+def test_clamp_zones_leaves_rect_alone_when_nothing_would_remain():
+    R = fitz.Rect(8, 57, 834, 70)
+    FIG.clamp_zones(R, [[739, 45, 802, 59]], [[300, 62, 400, 70]], [], 842)
+    assert (R.y0, R.y1) == (57, 70)                                           # от снимка осталась бы полоска — как есть
+
+
+def test_known_form_needs_known_pages_and_one_form():
+    t = lambda text, page: {"id": 0, "page": page, "text": text, "loc": {}}
+    assert FIG.known_form([t("NYILVÁNTARTÓ LAP", None), t("szöveg", None)]) is None          # DOCX: листов не знаем
+    assert FIG.known_form([t("NYILVÁNTARTÓ LAP", 0), t("OPERATÍV ÜZEMVITELI TESZTELÉSI UTASÍTÁS", 1)]) is None
+
+
+def test_form_labels_keep_polished_and_shortened_translations(monkeypatch):
+    monkeypatch.setitem(FIG._labels, "d", {"nyilv": {"Dátum:": "Дата:"}})
+    segs = [{"id": i, "page": 0, "text": t, "loc": {}} for i, t in enumerate(["NYILVÁNTARTÓ LAP", "Dátum:", "Dátum:"])]
+    res = {"0": {"ru": "ЛИСТ РЕГИСТРАЦИИ"}, "1": {"ru": "Число:", "polish": {"of": "Число:"}},
+           "2": {"ru": "Числа:", "ru_pdf": "Ч.:", "ru_pdf_of": "Числа:"}}
+    assert FIG.apply_form_labels(segs, res)[1] == 0
+
+
+def test_codes_survive_cyrillic_lookalikes_and_are_deterministic():
+    assert FIG._tok("B2") == FIG._tok("В2")                                   # латинская и кириллическая «В»
+    assert FIG.missing_codes(FIG.codes_of("Код B2"), ["В2"]) == []
+    assert FIG.code_map("Код 31UJ21S601")["31UJ215601"] == "31UJ21S601"        # в сообщении — как в тексте
+    for _ in range(3):
+        assert FIG.missing_codes({"36"}, ["Лист", "A3", "6B", "12"]) == ["36"]  # раньше зависело от PYTHONHASHSEED
+    assert FIG.missing_codes({"36"}, ["2036"]) == ["36"]                       # «36» — не часть «2036»
+    assert FIG.missing_codes({"30YCGT"}, ["30Y", "CGT"]) == []                 # длинный код, распознан частями
+
+
+def test_verify_page_survives_tesseract_errors(monkeypatch):
+    page = fitz.open().new_page()
+    monkeypatch.setattr(FIG, "ocr_words", lambda pg, **k: (_ for _ in ()).throw(ValueError("tsv")))
+    assert FIG.verify_page(page, ["30YCGT 2022-01-11"], 0) is None
+
+
+def test_checkbox_split_only_for_russian_translation():
+    seg_ = {"id": 0, "text": "CI nem", "loc": {"ocr": True, "frags": [[100, 10, 160, 20]], "bbox": [100, 10, 160, 20]}}
+    s2, r2 = FIG.split_checkboxes([seg_], {"0": {"ru": "CI no"}})              # перевод не русский — «да/нет» не пишем
+    assert s2[0]["text"] == "CI nem" and r2["0"]["ru"] == "CI no"
+    s2, _ = FIG.split_checkboxes([dict(seg_, text="Ki nem")], {"0": {"ru": "Кто не"}})
+    assert s2[0]["text"] == "Ki nem"                                           # «Ki nem» — слова
+    s2, _ = FIG.split_checkboxes([dict(seg_, text="KI igen")], {"0": {"ru": "ОТКЛ. да"}})
+    assert s2[0]["text"] == "igen"                                             # «KI» заглавными — флажок
