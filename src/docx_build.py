@@ -1122,8 +1122,6 @@ class Builder:
                 and (g.get("rest_x0") is None or abs(g["rest_x0"] - g["first_x0"]) <= 3):
             style = self._flush()
         par = tgt.add_paragraph(style=style)
-        if b.get("ragged"):                                 # без выключки по ширине («код + условие», docx_layout)
-            par.alignment = 0
         # в ячейке кегль — стилем таблицы (ужатым под ширину, «Table Text Small»)
         self._put_runs(par, runs, style_bold=style in ("Title UTS",),
                        size=self._own_size(runs, style) if tgt is self.doc else None)

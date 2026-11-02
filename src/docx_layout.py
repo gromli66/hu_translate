@@ -1640,8 +1640,6 @@ def load(src, segs, text=False):
     # рисунок без сегментов — перед первым сегментом листа ниже его верха
     taken = {i for regs in regions.values() for g in regs for i in g["ids"]}
     flow = [s for s in content if s["id"] not in taken]
-    if text:
-        flow = _split_lines(sorted(flow, key=lambda s: s["id"]), bold, right)
     marks = {}          # текстовый слой: маркер пункта — свой сегмент слева от текста пункта (layout.frags_from_text)
     if text:            # только в потоке: «-» в ячейке таблицы — значение (НГТУ)
         bullet = [s for s in flow if re.fullmatch(rf"\s*[{PT.MARKERS}o\uf020-\uf0ff]\s*", s["text"])]
@@ -1791,13 +1789,6 @@ def load(src, segs, text=False):
         indent = round(max(0.0, first[0] - left) / 9) * 9
         if indent >= 9 and loc.get("align") != "center":
             para["indent"] = min(indent, 90)                # отступ по оригиналу — уровнем стиля (сборщик)
-        # «код + условие» моноширинным в несколько строк (псевдотаблица из пробелов «Alfanumerika | Feltétel», 02VE25
-        # 5.1–5.2, NIGHT2_EYES п. 14) — висячим отступом за кодом и без выключки по ширине: по ширине русский текст
-        # шёл широкими пробелами, перенесённые строки — под код
-        cm = re.match(rf"({PT.EQUIP_CODE}\S*)\s+\S", text)
-        if cm and loc.get("family") == "monospace" and geom["lines"] > 1 and not para.get("indent"):
-            geom["rest_x0"] = first[0] + (len(cm.group(1)) + 1) * 0.6 * (loc.get("size") or size)
-            para["ragged"] = True
         blocks.append(para)
     # номер раздела из рамки отдельной строкой («1.1.») прямо перед заголовком с тем же номером («1.1. Срабатывание
     # АЗ…»): название из рамки снято как повтор, номер оставался строкой-сиротой над каждым разделом (3PR42, 19.10)
@@ -1885,71 +1876,6 @@ def _join(prev, runs, geom):
     g["bottom"] = max(g["bottom"], geom["bottom"])
     g["x1"] = max(g["x1"], geom["x1"])
     g["lines"] = (g.get("lines") or 1) + (geom.get("lines") or 1)
-
-
-def _split_lines(flow, bold, right):
-    """Строка с выключкой по ширине, разрезанная нарезкой по широким пробелам на куски (моноширинный текст: «02TD96S202
-    Nyitási feltétel, … 30TD97S202, ⇥ 30TD98S201, ⇥ 30TD98S202, …», 02VE25 л. 42, NIGHT2_EYES п. 14), — обратно в
-    абзац своего сегмента: кусками по табуляции оригинала строки начинались с середины, «zárva.» прижималось вправо.
-    Хозяин — моноширинный сегмент в несколько строк, первая — до правого края текста; кусок — на его последней строке,
-    правее и почти вплотную (зазор до трёх знаков), а когда строка уже разрезана, — и с левого края следующей строки
-    после строки до правого края. Текст — по строке конца куска, затем слева направо: кусок, перешедший на следующую
-    строку («40TD98S202, 02TD98S601 zárva.»), — после кусков своей первой строки. bold — выделение по сегментам
-    (_text_style): у склеенного — куски всех частей. right — правый край текста, если у сегмента нет своего (avail)."""
-    frs = lambda s: s["loc"].get("frags") or [s["loc"]["bbox"]]
-    mid = lambda f: (f[1] + f[3]) / 2
-    mono = lambda s: s["loc"].get("family") == "monospace"
-    edge = lambda s: (s["loc"].get("avail") or [None, None, right])[2]          # место сегмента: x0, y0, x1, y1
-    out, cur = [], None
-
-    def close():
-        if cur is None or len(cur["parts"]) == 1:
-            return
-        lines = sorted(cur["lines"], key=mid)
-        row = lambda f: min(range(len(lines)), key=lambda k: abs(mid(lines[k]) - mid(f)))
-        host, rest = cur["parts"][0], cur["parts"][1:]
-        parts = [host] + sorted(rest, key=lambda p: (row(frs(p)[-1]), frs(p)[0][0]))
-        bbox = [min(f[0] for f in lines), min(f[1] for f in lines), max(f[2] for f in lines), max(f[3] for f in lines)]
-        out[cur["at"]] = dict(host, text=" ".join(p["text"].strip() for p in parts),
-                              loc=dict(host["loc"], bbox=bbox, frags=[list(f) for f in lines]))
-        if any(p["id"] in bold for p in parts):
-            pieces = []
-            for p in parts:
-                if pieces:
-                    pieces[-1] = (pieces[-1][0].rstrip() + " ",) + tuple(pieces[-1][1:])
-                pieces += list(bold.get(p["id"]) or [(p["text"].strip(), False, False, "000000")])
-            bold[host["id"]] = pieces
-
-    for s in flow:
-        f0 = frs(s)[0]
-        if cur is not None and mono(s) and s["page"] == cur["parts"][0]["page"]:
-            lh, cw = f0[3] - f0[1], 0.6 * (s["loc"].get("size") or 10)
-            line = cur["line"]
-            low = max(cur["lines"], key=mid)
-            same = abs(mid(f0) - mid(line)) < 0.5 * lh and 0 <= f0[0] - line[2] <= 3.2 * cw
-            nxt = cur["split"] and 0.5 * lh < mid(f0) - mid(low) < 1.6 * lh and abs(f0[0] - cur["left"]) <= 3 \
-                and low[2] >= cur["right"] - 3
-            if same or nxt:
-                for f in frs(s):
-                    ln = next((x for x in cur["lines"] if abs(mid(x) - mid(f)) < 0.5 * lh), None)
-                    if ln is None:
-                        cur["lines"].append(list(f))
-                    else:
-                        ln[0], ln[1], ln[2], ln[3] = min(ln[0], f[0]), min(ln[1], f[1]), max(ln[2], f[2]), max(ln[3], f[3])
-                cur["line"] = next(x for x in cur["lines"] if abs(mid(x) - mid(f0)) < 0.5 * lh)
-                cur["split"] = True
-                cur["parts"].append(s)
-                continue
-        close()
-        cur = None
-        fr = frs(s)
-        if mono(s) and len(fr) >= 2 and edge(s) and fr[0][2] >= edge(s) - 3:
-            lines = [list(f) for f in fr]
-            cur = {"parts": [s], "lines": lines, "line": lines[-1], "left": fr[0][0], "right": edge(s), "split": False,
-                   "at": len(out)}
-        out.append(s)
-    close()
-    return out
 
 
 def _lines(segs):

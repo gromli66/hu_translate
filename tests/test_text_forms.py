@@ -1151,41 +1151,6 @@ def test_nested_list_in_cell_keeps_indent_and_subheading_underline(tmp_path):
     assert any(r.underline for p in t.rows[0].cells[1].paragraphs for r in p.runs if r.text == "Закрыты:")
 
 
-def test_justified_mono_line_cut_by_wide_spaces_is_one_paragraph_again(tmp_path):
-    """02VE25 л. 42 (NIGHT2_EYES п. 14): строка «код + условие» моноширинным с выключкой по ширине — нарезка резала её
-    по широким пробелам на коды-куски, и они шли табуляцией с середины строки, «zárva.» прижималось вправо. Куски —
-    обратно в абзац хозяина (кусок, перешедший на следующую строку, — после кусков своей первой строки); строка не до
-    правого края и однострочный хозяин (оглавление, «подпись ⇥ значение») — как были. Абзац «код + условие» — висячим
-    отступом за кодом и без выключки по ширине."""
-    seg = lambda i, t, *fr: {"id": i, "page": 0, "text": t, "loc": {
-        "bbox": [min(f[0] for f in fr), fr[0][1], max(f[2] for f in fr), fr[-1][3]], "frags": [list(f) for f in fr],
-        "family": "monospace", "size": 11, "avail": [71, fr[0][1], 531, fr[-1][3]], "align": "left"}}
-    flow = [seg(1, "02TD96S202 Nyitási feltétel, 4. VT útvonal kiválasztva, 30TD97S201, 30TD97S202,",
-                (71, 344, 531, 362), (71, 358, 150, 377)),
-            seg(2, "30TD98S201,", (166, 358, 245, 377)), seg(3, "30TD98S202,", (261, 358, 341, 377)),
-            seg(4, "40TD97S201,", (357, 358, 436, 377)), seg(5, "40TD97S202,", (452, 358, 531, 377)),
-            seg(6, "40TD98S201,", (71, 372, 150, 391)),
-            seg(7, "40TD98S202, 02TD98S601 zárva.", (166, 372, 245, 391), (71, 387, 190, 405)),
-            seg(8, "40TD98S203,", (261, 372, 341, 391)), seg(9, "02TD97S601,", (357, 372, 436, 391)),
-            seg(10, "Zárási feltétel, 02TD35S201 nyitva.", (71, 411, 302, 430)),
-            seg(11, "1.4. Tengelyelmozdulás", (71, 450, 250, 469)), seg(12, "13", (260, 450, 280, 469))]
-    out = DL._split_lines(flow, {}, 531)
-    assert [s["id"] for s in out] == [1, 10, 11, 12]
-    assert out[0]["text"].endswith("40TD97S202, 40TD98S201, 40TD98S203, 02TD97S601, 40TD98S202, 02TD98S601 zárva.")
-    assert len(out[0]["loc"]["frags"]) == 4 and out[0]["loc"]["frags"][1][2] == 531
-    narrow = [seg(1, "02TD96S202 Nyitási feltétel, 4. VT útvonal", (71, 344, 500, 362), (71, 358, 150, 377)),
-              seg(2, "30TD98S201,", (166, 358, 245, 377))]                     # первая строка не до правого края
-    assert [s["id"] for s in DL._split_lines(narrow, {}, 531)] == [1, 2]
-    par = {"k": "p", "seg": True, "ragged": True, "runs": [{"t": out[0]["text"], "font": "Courier New", "size": 11,
-                                                             "b": False, "i": False, "color": "000000", "body_mono": True}],
-           "geom": {"page": 1, "top": 344, "bottom": 405, "x0": 71, "x1": 531, "first_x0": 71, "rest_x0": 143.6,
-                    "size": 11, "lines": 4}}
-    docx = tmp_path / "m.docx"
-    B.Builder(B.Memory([]), lambda img: png(), PROFILE).build([par], str(docx), dict(LAYOUT, first_is_body=True))
-    q = next(q for q in Document(str(docx)).paragraphs if q.text.startswith("02TD96S202"))
-    assert q.alignment == 0 and q.style.paragraph_format.first_line_indent.pt < 0
-
-
 def test_whole_sheet_cell_keeps_center_gaps_and_hanging_items(tmp_path):
     """01-02FMP0BIGT л. 2 (NIGHT2_EYES п. 15): лист бланка — одна большая ячейка. Заголовок по середине ячейки — по
     центру, пустая строка над абзацем — зазором (не больше строки текста), пункт «1. …», перенесённые строки которого
