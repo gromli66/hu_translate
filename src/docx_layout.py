@@ -240,6 +240,27 @@ def _text_style(doc, segs):
     return out
 
 
+def _underlined(doc, segs):
+    """Подчёркнутые сегменты текстового слоя (подзаголовки «Zárva vannak az alábbi armatúrák:», «1-es hurok:» 30HU175GT
+    — подчёркивание терялось): под каждой строкой сегмента — тонкая (до 1,2 pt) горизонталь в нижних 4 pt её рамки, от
+    начала строки (±2 pt) и на 80 % её ширины и больше, но не длиннее строки больше чем на 10 pt (линия ячейки таблицы
+    под строкой — от края ячейки, во всю её ширину и ниже рамки знаков). → {id}."""
+    out, by_page = set(), {}
+    for s in segs:
+        by_page.setdefault(s["page"], []).append(s)
+    for pno, ss in by_page.items():
+        hs = [r for r in (dr["rect"] for dr in doc[pno].get_cdrawings()) if r[3] - r[1] <= 1.2 and r[2] - r[0] >= 6]
+        if not hs:
+            continue
+
+        def under(f):
+            w = f[2] - f[0]
+            return any(f[3] - 4 <= (h[1] + h[3]) / 2 <= f[3] - 0.5 and f[0] - 2 <= h[0] and h[2] <= f[2] + 10
+                       and min(h[2], f[2]) - max(h[0], f[0]) >= 0.8 * w for h in hs)
+        out |= {s["id"] for s in ss if all(under(f) for f in s["loc"].get("frags") or [s["loc"]["bbox"]])}
+    return out
+
+
 def _pixel_style(doc, segs, layer=None):
     """Полужирные и курсивные слова по картинке листа (300 dpi). Текстовый слой для этого не годится: у 3SZ19
     полужирная строка оглавления «Turbina csapágy fehérfém…» лежит в нём только как «Turbina csapág», остальное
@@ -844,7 +865,8 @@ def _runs_of(group, bold, font, size, mono, right=None):
             t, b, it = pc[:3]
             runs.append({"t": t, "font": font, "size": size, "b": b, "i": it, "color": pc[3] if len(pc) > 3 else "000000",
                          "body_mono": mono, **({"box": f"b{g['id']}"} if g["loc"].get("box") else {}),
-                         **({"sup": g["loc"]["sup"]} if g["loc"].get("sup") else {})})
+                         **({"sup": g["loc"]["sup"]} if g["loc"].get("sup") else {}),
+                         **({"u": True} if g["loc"].get("u") else {})})
         last = runs[-1]
         if i + 1 < len(group):
             last["t"] += "\t"
@@ -938,7 +960,7 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields
                 runs = _runs_of(group, bold, font, size, mono)
                 for ru in runs if pua else ():               # значки частной области — знаком по виду (_pua_glyph)
                     ru["t"] = "".join(pua.get(ch, ch) for ch in ru["t"])
-                paras.append({"k": "p", "runs": runs, "geom": gg, "seg": True})
+                paras.append({"k": "p", "runs": runs, "geom": gg, "seg": True, "align": group[0]["loc"].get("align")})
                 geom = gg if geom is None else dict(geom, x0=min(geom["x0"], gg["x0"]), x1=max(geom["x1"], gg["x1"]),
                                                      bottom=gg["bottom"], lines=geom["lines"] + gg["lines"])
             for img in (pics.get((r, ci), []) if first else []):
@@ -1577,6 +1599,8 @@ def load(src, segs, text=False):
                             if seg:
                                 sup.setdefault(seg["id"], []).append((m.group(1), t))
         content = [dict(s, loc=dict(s["loc"], sup=sup[s["id"]])) if s["id"] in sup else s for s in content]
+        und = _underlined(doc, content)                     # подчёркнутый подзаголовок — подчёркнутым (_runs_of)
+        content = [dict(s, loc=dict(s["loc"], u=True)) if s["id"] in und else s for s in content]
     size = round(median(s["loc"].get("size") or 10 for s in content) * 2) / 2
     font = FAMILY.get(Counter(s["loc"].get("family") for s in content).most_common(1)[0][0], "Arial")
     left = sorted(s["loc"]["bbox"][0] for s in content)[len(content) // 10]

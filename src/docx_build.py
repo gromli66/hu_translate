@@ -1524,6 +1524,16 @@ class Builder:
         # вместе с шапкой при поле тела 659 pt: шапка колонтитула в три строки). Потолок высоты строки — поле тела минус 60 pt
         row_cap = (self.L["H"] - self.L["top"] - self.L["bottom"] - 60) if self.L else None
         row_ys = fr.get("ys") or []
+        # левый край текста столбца — по абзацам всех его ячеек (строка, разрезанная на подстроки, — тоже): от него —
+        # отступ вложенного абзаца ячейки (ниже)
+        col_x0 = {}
+        for row in rows:
+            if all("span" in c for c in row):
+                for i, c in enumerate(row):
+                    a = sum(q["span"] for q in row[:i])
+                    for x in c["blocks"]:
+                        if x["k"] == "p" and (x.get("geom") or {}).get("x0") is not None:
+                            col_x0[a] = min(col_x0.get(a, x["geom"]["x0"]), x["geom"]["x0"])
         for ri, row in enumerate(rows):
             if all("span" in c for c in row):               # ячейки по сетке линий (docx_layout) — места известны
                 starts = [sum(c["span"] for c in row[:i]) for i in range(len(row))]
@@ -1625,9 +1635,15 @@ class Builder:
                                 self._img_run(first, r["img"])
                         else:
                             self._put_runs(first, x["runs"])
-                        used = True
+                        used, par = True, first
                     else:
-                        self.paragraph(x, style, tgt=dc)
+                        par = self.paragraph(x, style, tgt=dc)
+                    # абзац ячейки правее её текста (коды под «1-es hurok:» 30HU175GT — на 19 pt) — с тем же отступом:
+                    # все абзацы ячейки шли от её края, вложенность перечня терялась; выключка по центру — нет, и не
+                    # больше дюйма (сдвиг в полстолбца — не отступ)
+                    ind = ((x.get("geom") or {}).get("x0") or 0) - col_x0.get(starts[ci], self._tab_base or 0)
+                    if par is not None and al in (None, "left") and x.get("align") == "left" and 6 <= ind <= 72:
+                        par.paragraph_format.left_indent = Pt(round(ind, 1))
                 room = self._room.get(starts[ci]) if spans[ci][1] == spans[ci][0] else None
 
                 def widest(par, eff, whole=False):

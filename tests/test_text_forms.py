@@ -1116,3 +1116,36 @@ def test_sheet_signature_box_is_framed_cell_and_stamp_does_not_cut_words(tmp_pat
     rects += [r(71, 553, 729, 729.5), r(71, 553, 755, 755.5), r(71, 71.5, 729, 755), r(553, 553.5, 729, 755)]
     g = S._zone_grid(p.chars, rects)
     assert g["rows"][0]["cells"][0] == "A lapot kitöltötte (név, dátum, aláírás):" and g["widths"][0] > 300
+
+
+def test_nested_list_in_cell_keeps_indent_and_subheading_underline(tmp_path):
+    """30HU175GT стр. 5: коды под «1-es hurok:» — на 19 pt правее текста ячейки, подзаголовки «Zárva vannak az alábbi
+    armatúrák:», «1-es hurok:» подчёркнуты линией 0,5 pt. В DOCX абзацы ячейки шли от её края, подчёркивание терялось:
+    теперь вложенный абзац — с отступом от края текста столбца (строка, разрезанная на подстроки, — тоже), подчёркнутый
+    подзаголовок — подчёркнутым; линия ячейки под строкой — не подчёркивание."""
+    d = fitz.open()
+    pg = d.new_page(width=595, height=842)
+    pg.insert_text((123.5, 301), "Zárva vannak az alábbi armatúrák:", fontsize=10, fontname="tiro")
+    pg.draw_rect(fitz.Rect(123.5, 301.9, 262.3, 302.4), color=None, fill=(0, 0, 0))
+    pg.insert_text((123.5, 401), "30TY12S001", fontsize=10, fontname="tiro")
+    pg.draw_rect(fitz.Rect(120, 404.5, 453, 405), color=None, fill=(0, 0, 0))      # линия ячейки под строкой
+    seg = lambda i, y, x1: {"id": i, "page": 0, "text": "x", "loc": {"bbox": [123.5, y - 11.4, x1, y + 2.9]}}
+    assert DL._underlined(d, [seg(1, 301, 264.8), seg(2, 401, 178)]) == {1}
+    g = lambda x0, top: {"page": 1, "top": top, "bottom": top + 10, "x0": x0, "x1": x0 + 100, "first_x0": x0, "size": 10,
+                         "lines": 1}
+    run = lambda t, u=False: dict({"t": t, "font": "Times New Roman", "size": 10, "b": False, "i": False,
+                                   "color": "000000"}, **({"u": True} if u else {}))
+    para = lambda t, x0, top, u=False: {"k": "p", "runs": [run(t, u)], "geom": g(x0, top), "seg": True, "align": "left"}
+    edges = {"top": True, "bottom": True, "left": True, "right": True}
+    cell = lambda ps: {"blocks": ps, "th": False, "geom": ps[0]["geom"] if ps else None, "span": 1, "edges": edges}
+    rows = [[cell([para("1.1.2.", 84, 290)]), cell([para("Zárva vannak:", 123.5, 290, True), para("1-es hurok:", 123.5, 302)])],
+            [cell([]), cell([para("30YA11S201", 142, 314), para("30TY12S001", 142, 326)])]]
+    tab = {"k": "table", "rows": rows, "borders": True, "frame": {"xs": [71, 120, 453], "ys": [288, 312, 340]},
+           "geom": {"page": 1, "top": 288, "bottom": 340, "x0": 71, "x1": 453, "first_x0": 71, "size": 10}}
+    out = tmp_path / "n.docx"
+    mem = B.Memory([("Zárva vannak:", "Закрыты:"), ("1-es hurok:", "Петля 1:")])
+    B.Builder(mem, lambda img: png(), PROFILE).build([tab], str(out), dict(LAYOUT, first_is_body=True))
+    t = Document(str(out)).tables[0]
+    ind = {p.text: p.paragraph_format.left_indent for c in t._cells for p in c.paragraphs if p.text}
+    assert ind["Закрыты:"] is None and ind["Петля 1:"] is None and round(ind["30YA11S201"].pt) == 18
+    assert any(r.underline for p in t.rows[0].cells[1].paragraphs for r in p.runs if r.text == "Закрыты:")
