@@ -164,6 +164,24 @@ def test_phrase_continuing_past_anchor_rows_is_not_cut():
     items = [_fr(f"pont szövege {i}", (90, 100 + 12 * i, 200, 112 + 12 * i)) for i in range(1, 5)]
     rw = RW.Rows(nums + items + prose, [])
     assert rw.apart(prose[0], prose[1]) is None and rw.apart(prose[1], prose[2]) is None
+    # строки без продолжения фразы («…2,5» / «bar és …») рядом с нумерованным столбцом левой колонки: через просвет
+    # колонок (layout.gutter) якоря не берутся
+    cols = [_fr("A nyomás értéke legyen 2,5", (320, 112, 560, 124)), _fr("bar és 3,0 bar között.", (320, 124, 500, 136))]
+    assert RW.Rows(nums + items + cols, []).apart(cols[0], cols[1]) == "якорь"
+    assert RW.Rows(nums + items + cols, [], gutter=300).apart(cols[0], cols[1]) is None
+
+
+def test_underline_on_white_plate_is_not_cell_edge():
+    """Подчёркнутая строка на белой плашке (30RL2126GT: плашка под каждым куском строки) или на полосе заливки: концы
+    подчёркивания упираются в стороны плашки — это не вертикальные линейки ячейки, абзац не рвётся."""
+    import layout as LY
+    import rows as RW
+    a = _fr("A tűzjelzést az adott helyiséghez tartozó", (100, 100, 400, 112))
+    b = _fr("piros led jelzi az oltóközpontban.", (100, 111, 330, 123))
+    for kind in ("soft", "edge"):
+        sides = [LY._mark((100, 112, 100), kind == "soft", kind == "edge"), LY._mark((100, 112, 400), kind == "soft", kind == "edge")]
+        assert RW.Rows([a, b], [(100, 400, 110.5)], sides).apart(a, b) is None
+    assert RW.Rows([a, b], [(100, 400, 110.5)], [(100, 112, 100), (100, 112, 400)]).apart(a, b) == "линейка"
 
 
 def test_anchor_centred_in_multiline_cell_does_not_split_it():

@@ -52,8 +52,10 @@ def _mid(b):
 
 
 def _cell_edge(r, vs):
-    """Горизонтальная линейка упирается концом в вертикальную — граница ячейки таблицы, а не подчёркивание."""
-    return any(min(abs(v[2] - r[0]), abs(v[2] - r[1])) <= 2 and v[0] - 2 <= r[2] <= v[1] + 2 for v in vs)
+    """Горизонтальная линейка упирается концом в вертикальную — граница ячейки таблицы, а не подчёркивание. Стороны белой
+    подложки и заливки (soft, edge) не в счёт: подчёркнутая строка на плашке упирается в её край."""
+    return any(min(abs(v[2] - r[0]), abs(v[2] - r[1])) <= 2 and v[0] - 2 <= r[2] <= v[1] + 2
+               and not getattr(v, "soft", False) and not getattr(v, "edge", False) for v in vs)
 
 
 def _of_line(r, L):
@@ -87,10 +89,11 @@ def rule_between(hs, a, b, soft=True, vs=()):
 
 
 class Rows:
-    """Границы рядов листа: frags — куски строк листа ({t, bbox, size}), hs, vs — линейки (layout.rules)."""
+    """Границы рядов листа: frags — куски строк листа ({t, bbox, size}), hs, vs — линейки (layout.rules), gutter — x
+    просвета двух колонок сплошного текста (layout.gutter) или None: через него якоря не берутся."""
 
-    def __init__(self, frags, hs, vs=()):
-        self.hs, self.vs = hs, vs
+    def __init__(self, frags, hs, vs=(), gutter=None):
+        self.hs, self.vs, self.gutter = hs, vs, gutter
         self.frags = sorted(frags, key=lambda f: (round(f["bbox"][1] / 3), f["bbox"][0]))     # порядок layout.group
         flag = [is_anchor(f["t"]) for f in self.frags]
         self.anchors = []
@@ -108,12 +111,13 @@ class Rows:
                 self.anchors.append(tuple(b))
 
     def _own(self, b):
-        """Якорь столбца якорей слева на уровне строки b (перекрывает больше половины её рамки)."""
+        """Якорь столбца якорей слева на уровне строки b (перекрывает больше половины её рамки), не за просветом колонок:
+        нумерованный столбец левой колонки — не ряды для текста правой."""
         h = b[3] - b[1]
         best, ov = None, 0.5 * h
         for A in self.anchors:
             o = min(b[3], A[3]) - max(b[1], A[1])
-            if A[2] <= b[0] - 3 and o > ov:
+            if A[2] <= b[0] - 3 and o > ov and not (self.gutter is not None and A[2] < self.gutter < b[0]):
                 best, ov = A, o
         return best
 

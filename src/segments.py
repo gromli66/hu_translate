@@ -969,6 +969,7 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
             from layout import gutter, column_order
             g = gutter(group(frags, hs, vs, rows=rw), page.rect.width)
             if g is not None:
+                rw = Rows(frags, hs, vs, gutter=g)      # нумерованный столбец левой колонки — не ряды для правой
                 vs = list(vs) + [(0, page.rect.height, g)]
             pars = group(frags, hs, vs, rows=rw)
             if labels.get(pno) and labels[pno][1]:
