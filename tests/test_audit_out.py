@@ -55,6 +55,18 @@ def test_repeat_by_table_rows_is_not_a_defect():
     tail = ["A301"] * 9 + ["Привод крана Привод крана Привод крана"]  # законные ряды пропущены, поиск идёт дальше
     r = A.find_repeat(" ".join(tail), legit=A.row_values(tail, {"a301": 9}))
     assert r == ("Привод крана", 3)
+    codes = ["JM03 JM03 JM03"] * 3                                    # в каждом абзаце — три ряда, слитые нарезкой
+    assert A.find_repeat(" ".join(codes), legit=A.row_values(codes, {A.norm(codes[0]): 3})) is not None
+
+
+def test_row_counts_from_the_cells_own_sheets():
+    """Сегменты считаются на листах самой ячейки (окно из двух соседних листов, где её абзацы находятся лучше всего), а
+    не где угодно в документе: размноженное сборкой «Не используется» ×3 не прячется за тремя такими строками на
+    других листах (ред-тим 02.11)."""
+    page_n = {"a301": {30: 40}, "ga01": {30: 1}, "неиспользуется": {3: 1, 12: 3}, "клапан": {3: 1}}
+    assert A.cell_counts(["A301"] * 40 + ["GA01"], page_n) == {"a301": 40, "ga01": 1}
+    cnt = A.cell_counts(["Клапан"] + ["Не используется"] * 3, page_n)
+    assert cnt == {"клапан": 1, "неиспользуется": 1}
 
 
 # ---------------------------------------------------------------- 1. потеря содержимого
@@ -376,6 +388,29 @@ def test_figure_rects_scheme_not_table_grid():
     _scheme(pg)
     figs = A.figure_rects(pg)
     assert len(figs) == 1 and figs[0].contains(pymupdf.Rect(352, 552, 448, 598)) and figs[0].y0 > 250   # с рамкой надписи
+
+
+def test_figure_rects_not_text_outlines_table_marks_or_page_frames():
+    """Ред-тим 02.11: знаки текста контурами (3PR42 — весь лист кривыми), кружок-отметка у сетки таблицы, рамка листа со
+    скруглёнными углами и линии во всю высоту — не рисунок (иначе снимок листа и потеря текста таблицы не замечались)."""
+    import pymupdf
+    doc = pymupdf.open()
+    pg = doc.new_page(width=595, height=842)
+    for k in range(20):                                             # «буквы» — кривые внутри рамок строк текста
+        pg.draw_circle((100 + 12 * k, 300), 3)
+    assert A.figure_rects(pg, [[90, 290, 350, 310]]) == []
+    pg = doc.new_page(width=595, height=842)
+    for r in range(6):                                              # таблица по ячейкам и кружок-отметка у линии
+        for c in range(3):
+            pg.draw_rect(pymupdf.Rect(80 + 130 * c, 150 + 30 * r, 210 + 130 * c, 180 + 30 * r))
+    pg.draw_circle((210, 165), 7)
+    figs = A.figure_rects(pg)
+    assert len(figs) == 1 and A.figure_share(figs[0], pg) < 0.01   # рисунок — сам кружок с запасом, не таблица
+    pg = doc.new_page(width=595, height=842)
+    pg.draw_rect(pymupdf.Rect(20, 20, 575, 822), radius=0.05)        # рамка листа со скруглёнными углами
+    pg.draw_line((30, 20), (30, 822))
+    pg.draw_circle((300, 400), 5)
+    assert all(A.figure_share(f, pg) < 0.01 for f in A.figure_rects(pg))
 
 
 @needs_font

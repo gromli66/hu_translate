@@ -66,6 +66,7 @@ RATIO_SHEETS = 1.3          # листов перевода / оригинала
 EMPTY_TABLE_SHARE = 0.7     # доля площади листа — пустые строки таблицы (красный); от HALF_EMPTY_SHARE — жёлтый
 HALF_EMPTY_SHARE = 0.4
 BIG_IMAGE_SHARE = 0.25      # доля площади листа — одна картинка/снимок
+HEAD_EDGE, FOOT_EDGE = 0.14, 0.86   # полосы колонтитулов: выше / ниже этой доли высоты листа (как geom.HEAD_EDGE у сборки)
 SHOW = 8                    # сколько примеров печатать в одном замечании
 
 _TAG = re.compile(r"</?f\d+>")
@@ -265,46 +266,65 @@ def find_repeat(text, min_chars=10, min_reps=3, max_words=30, cap=20000, legit=N
 
 def row_values(paras, seg_count):
     """legit для find_repeat по ячейке из абзацев paras: повтор — ряды таблицы, если каждое его повторение — целые
-    абзацы (значение — своей строкой, а не «a a a» в одной) и каждый абзац — перевод своего сегмента: одинаковых
-    сегментов на двух соседних листах (seg_count: norm(перевод) → сколько) не меньше, чем таких абзацев в повторе.
-    INFO-таблица 3PR10: «A301» в 40 рядах столбца — 40 сегментов, а не повтор фразы; значения, слитые нарезкой в один
-    сегмент («126-128 бар» ×6 одним абзацем, «сигнал 11GB02» ×3 в каждом из семи), — повтор, как прежде."""
+    абзацы, ни один абзац сам не повтор («JM03 JM03 JM03» — ряды, слитые нарезкой) и каждый абзац — перевод своего
+    сегмента: одинаковых сегментов на листах ячейки (seg_count: norm(перевод) → сколько) не меньше, чем таких абзацев
+    в повторе. INFO-таблица 3PR10: «A301» в 40 рядах столбца — 40 сегментов, а не повтор фразы; значения, слитые
+    нарезкой в один сегмент («126-128 бар» ×6 одним абзацем, «сигнал 11GB02» ×3 в каждом из семи), — повтор."""
     bounds, k = [0], 0
     for t in paras:
         k += len(_words(t))
         bounds.append(k)
 
+    def folded(t):                                       # слова абзаца — k ≥ 2 раза одна и та же последовательность
+        w = _words(t)
+        return any(len(w) % q == 0 and w == w[:q] * (len(w) // q) for q in range(1, len(w) // 2 + 1))
+
     def legit(a, p, reps):
         if any(a + j * p not in bounds for j in range(reps + 1)):
             return False
-        inside = [norm(t) for t in paras[bounds.index(a):bounds.index(a + reps * p)] if norm(t)]
-        return all(seg_count.get(t, 0) >= n for t, n in Counter(inside).items())
+        run = paras[bounds.index(a):bounds.index(a + reps * p)]
+        inside = [norm(t) for t in run if norm(t)]
+        return not any(folded(t) for t in run) and all(seg_count.get(t, 0) >= n for t, n in Counter(inside).items())
     return legit
+
+
+def cell_counts(paras, page_n):
+    """Сколько сегментов с переводом каждого абзаца ячейки на её листах оригинала: окно из двух соседних листов (ряды
+    одной таблицы — на листе или через перенос листа), где есть больше всего разных абзацев ячейки (при равенстве — больше
+    их строк). page_n: norm(перевод) → {лист: сегментов}. → {norm(абзац): сколько}."""
+    need = Counter(norm(t) for t in paras if norm(t))
+    pages = {p for t in need for p in page_n.get(t, ())}
+    win = lambda t, p: page_n.get(t, {}).get(p, 0) + page_n.get(t, {}).get(p + 1, 0)
+    best = max(sorted(pages), key=lambda p: (sum(win(t, p) > 0 for t in need), sum(min(n, win(t, p)) for t, n in need.items())),
+               default=None)
+    return {} if best is None else {t: win(t, best) for t in need}
 
 
 def check_repeats(d):
     if not d.docx:
         return d.skip("2 повтор фразы", "нет DOCX")
     out, seen = [], set()
-    # перевод → сколько сегментов им напечатано на двух соседних листах оригинала (ряды одной таблицы — на листе или
-    # через перенос листа): одинаковый исходник сборка переводит по памяти одним вариантом (у повторов в res бывает и
-    # иной), поэтому считаются все сегменты с исходником, у которого есть такой перевод
+    # перевод → {лист: сколько сегментов им напечатано}: одинаковый исходник сборка переводит по памяти одним вариантом
+    # (у повторов в res бывает и иной), поэтому считаются все сегменты с исходником, у которого есть такой перевод;
+    # сегменты без листа (DOCX-исходник) не считаются — к ячейке их не привязать
     src_n, ru_src = defaultdict(Counter), defaultdict(set)
     for s in (d.js or {}).get("segs", ()):
         r = d.js["res"].get(str(s["id"])) or {}
-        src_n[norm(s.get("text"))][s.get("page") or 0] += 1
+        if s.get("page") is not None:
+            src_n[norm(s.get("text"))][s["page"]] += 1
         ru_src[norm(r.get("ru") or s.get("text"))].add(norm(s.get("text")))
-    seg_count = {}
+    page_n = {}
     for k, v in ru_src.items():
         n = Counter()
         for t in v:
-            n.update(src_n[t])
-        seg_count[k] = max(n[p] + n[p + 1] for p in n)
+            n.update(src_n.get(t, {}))
+        if n:
+            page_n[k] = n
     for ps in d.docx.unit_paras():
         u = " ".join(ps)
         if len(u) < 30:
             continue
-        r = find_repeat(u, legit=row_values(ps, seg_count) if seg_count and len(ps) > 1 else None)
+        r = find_repeat(u, legit=row_values(ps, cell_counts(ps, page_n)) if page_n and len(ps) > 1 else None)
         if r and r[0] not in seen:
             seen.add(r[0])
             pg = (d.pdf.find_pages(r[0]) if d.pdf else [])
@@ -663,54 +683,83 @@ def image_share(page, min_area=400):
     return min(1.0, area / (page.rect.width * page.rect.height))
 
 
-def figure_rects(page, tol=4.0):
-    """Векторные рисунки листа (схема, блок-схема): связные — касанием ±tol pt — наборы контуров и картинок, где есть
-    кривая или косой отрезок; сетка таблицы (только оси) рисунком не считается, рамка во всю ширину листа ничего не
-    связывает. → [Rect]. Сборка кладёт такой рисунок картинкой с переведёнными надписями (docx_layout._scheme_figures),
-    в оригинале изображений там нет — без этого проверки 1 и 8 считали надписи потерянными, а рисунок — снимком листа
-    (3FI18 стр. 7, 26–27)."""
-    items = []
-    for dr in page.get_drawings():
-        r = pymupdf.Rect(dr["rect"])
-        if r.width < 0.5 and r.height < 0.5:
-            continue
-        r += (-0.5, -0.5, 0.5, 0.5)                     # отрезок по оси — прямоугольник нулевой ширины: пустой, не касается
-        items.append((r, any(it[0] == "c" or it[0] == "l" and abs(it[1].x - it[2].x) > 1 and abs(it[1].y - it[2].y) > 1
-                             for it in dr["items"])))
-    if not any(b for _, b in items):
-        return []
-    items += [(pymupdf.Rect(i["bbox"]), False) for i in page.get_image_info()]
-    wide = 0.8 * page.rect.width
-    parent = list(range(len(items)))
+def _components(rects, tol):
+    """Связные (касание ±tol) наборы прямоугольников: [[номер, …], …]; заметание по x — без перебора всех пар (листы с
+    тысячами контуров: 3PR42 — по 3000)."""
+    parent = list(range(len(rects)))
 
     def find(i):
         while parent[i] != i:
             parent[i] = parent[parent[i]]
             i = parent[i]
         return i
-    for i, (a, _) in enumerate(items):
-        if a.width > wide:
-            continue
-        ga = a + (-tol, -tol, tol, tol)
-        for j in range(i + 1, len(items)):
-            if items[j][0].width <= wide and ga.intersects(items[j][0]):
+    order = sorted(range(len(rects)), key=lambda i: rects[i].x0)
+    active = []
+    for i in order:
+        a = rects[i]
+        active = [j for j in active if rects[j].x1 + tol >= a.x0]
+        for j in active:
+            b = rects[j]
+            if b.y0 - tol <= a.y1 and a.y0 - tol <= b.y1:
                 parent[find(i)] = find(j)
-    comp = {}
-    for i, (r, bent) in enumerate(items):
-        c = comp.setdefault(find(i), [pymupdf.Rect(r), False])
-        c[0] |= r
-        c[1] = c[1] or bent
-    return [r for r, bent in comp.values() if bent]
+        active.append(i)
+    groups = {}
+    for i in range(len(rects)):
+        groups.setdefault(find(i), []).append(i)
+    return list(groups.values())
 
 
-def figure_share(rects, page):
-    """Доля площади листа под областью векторных рисунков (прямоугольник, охватывающий их все)."""
-    if not rects:
-        return 0.0
-    u = pymupdf.Rect(rects[0])
-    for r in rects[1:]:
-        u |= r
-    return min(1.0, u.get_area() / (page.rect.width * page.rect.height))
+def figure_rects(page, text_boxes=(), tol=4.0, join=25.0):
+    """Векторные рисунки листа (схема, блок-схема) → [Rect]. Сборка кладёт такой рисунок картинкой с переведёнными
+    надписями (docx_layout._scheme_figures), в оригинале изображений там нет — без этого проверки 1 и 8 считали надписи
+    потерянными, а рисунок — снимком листа (3FI18 стр. 7, 26–27).
+    Рисунок — связные (касание ±tol pt) контуры и картинки, где есть «изгиб» не мельче 12 pt: кривая, косой отрезок, ромб.
+    Не рисунок: знаки текста, нарисованные контурами (внутри рамок сегментов text_boxes; 3PR42 — весь лист кривыми),
+    полосы колонтитулов, рамки во весь лист, сетка таблицы из одних осей. Область компоненты — её рамка, если изгибы
+    занимают от двадцатой её части; иначе — рамка изгибов с запасом 10 pt (кружок-отметка, задевший сетку таблицы, не
+    делает рисунком всю таблицу). Области ближе join pt — один рисунок (подписи схемы в своих рамках вокруг неё)."""
+    W, H = page.rect.width, page.rect.height
+    boxes = [pymupdf.Rect(b) + (-2, -2, 2, 2) for b in text_boxes]
+    rects, bent = [], []
+    for dr in page.get_drawings():
+        r = pymupdf.Rect(dr["rect"])
+        if r.width < 0.5 and r.height < 0.5 or r.width > 0.8 * W or r.height > 0.8 * H \
+                or r.y1 < HEAD_EDGE * H or r.y0 > FOOT_EDGE * H or any(b.contains(r) for b in boxes):
+            continue
+        r += (-0.5, -0.5, 0.5, 0.5)                     # отрезок по оси — прямоугольник нулевой ширины: пустой, не касается
+        rects.append(r)
+        # изгиб: кривая, косой отрезок, повёрнутый четырёхугольник (ромбы блок-схемы 3FI18 стр. 27–28 — «qu»)
+        bent.append(max(r.width, r.height) >= 12 and any(
+            it[0] == "c" or it[0] == "l" and abs(it[1].x - it[2].x) > 1 and abs(it[1].y - it[2].y) > 1
+            or it[0] == "qu" and (abs(it[1].ul.y - it[1].ur.y) > 1 or abs(it[1].ul.x - it[1].ll.x) > 1) for it in dr["items"]))
+    if not any(bent):
+        return []
+    n = len(rects)
+    rects += [pymupdf.Rect(i["bbox"]) for i in page.get_image_info()
+              if HEAD_EDGE * H <= i["bbox"][3] and i["bbox"][1] <= FOOT_EDGE * H]
+    regions = []
+    for g in _components(rects, tol):
+        bs = [rects[i] for i in g if i < n and bent[i]]
+        if not bs:
+            continue
+        c, b = pymupdf.Rect(rects[g[0]]), pymupdf.Rect(bs[0])
+        for i in g:
+            c |= rects[i]
+        for r in bs:
+            b |= r
+        regions.append(c if b.get_area() >= 0.05 * c.get_area() else b + (-10, -10, 10, 10))
+    out = []
+    for g in _components(regions, join):
+        u = pymupdf.Rect(regions[g[0]])
+        for i in g:
+            u |= regions[i]
+        out.append(u)
+    return out
+
+
+def figure_share(rect, page):
+    """Доля площади листа под областью рисунка."""
+    return min(1.0, rect.get_area() / (page.rect.width * page.rect.height))
 
 
 def check_images(d):
@@ -726,9 +775,10 @@ def check_images(d):
     bad = []
     for i, s in big:
         near = r2o.get(i) or {o for o in range(round(i / ratio) - 1, round(i / ratio) + 2) if 0 <= o < d.orig.n}
-        # векторный рисунок оригинала — картинкой в переводе законно, если картинка не намного больше рисунка (снимок
-        # всего листа со схемой в углу — по-прежнему снимок)
-        if any(0.02 < d._fig_share(o) and s <= 1.5 * d._fig_share(o) + 0.1 for o in near):
+        # векторный рисунок оригинала — картинкой в переводе законно, если картинка не намного больше рисунков листа
+        # (сумма их областей, а не рамка вокруг всех: два мелких значка по углам — не рисунок на весь лист); снимок всего
+        # листа со схемой в углу — по-прежнему снимок
+        if any(0.02 < f and s <= 1.5 * f + 0.1 for f in (sum(d._fig_shares(o)) for o in near)):
             continue
         if not any(x > 0.02 for x in so):               # в оригинале картинок нет вовсе
             bad.append((i, s))
@@ -856,35 +906,36 @@ class Doc:
     def _figs(self, i):
         key = ("figs", i)
         if key not in self._imgs:
-            self._imgs[key] = figure_rects(self.orig.doc[i])
+            text = [(s.get("loc") or {}).get("bbox") for s in (self.js or {}).get("segs", ()) if s.get("page") == i]
+            self._imgs[key] = figure_rects(self.orig.doc[i], [b for b in text if b])
         return self._imgs[key]
 
-    def _fig_share(self, i):
-        return figure_share(self._figs(i), self.orig.doc[i])
+    def _fig_shares(self, i):
+        return [figure_share(f, self.orig.doc[i]) for f in self._figs(i)]
 
     def in_picture(self, s):
         """Текст сегмента — внутри картинки-листа: страница оригинала с изображением, а соответствующий лист перевода
         почти целиком картинка (надписи нарисованы на ней — потерю по тексту DOCX не засчитываем; снимок ловит проверка 8).
         Или надпись внутри векторного рисунка оригинала (figure_rects), а рядом в переводе есть картинка не меньше
-        половины области рисунков этого листа."""
+        половины этого рисунка."""
         if not self.orig or not self.pdf:
             return False
         o = min(s.get("page") or 0, self.orig.n - 1)
         c = round(o * self.pdf.n / self.orig.n)         # листы-картинки не сопоставляются по тексту — берём ещё и соседей по пропорции
         m = self.page_map(by="o2r")
         rs = set(m.get(o, ())) | {r for r in range(c - 1, c + 2) if 0 <= r < self.pdf.n}
-        if not m.get(o) and m.get(o - 1) and m.get(o + 1):
+        if not m.get(o) and m.get(o - 1) and m.get(o + 1) and min(m[o + 1]) - max(m[o - 1]) <= 3:
             # и листы между сопоставленными соседями: у листа-картинки своих текстов нет, пропорция уходит на лист
             # (3FI18: блок-схема стр. 28 оригинала — лист 27 перевода, по пропорции 28–30)
             rs |= set(range(max(m[o - 1]), min(m[o + 1]) + 1))
         if self._img("orig", o) > 0.02 and any(self._img("ru", r) > BIG_IMAGE_SHARE for r in rs):
             return True
         bb = (s.get("loc") or {}).get("bbox")
-        if not bb or not self._figs(o):
+        if not bb:
             return False
         mid = pymupdf.Point((bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2)
-        return any(mid in f + (-4, -4, 4, 4) for f in self._figs(o)) \
-            and any(self._img("ru", r) >= 0.5 * self._fig_share(o) for r in rs)
+        return any(mid in f + (-4, -4, 4, 4) and any(self._img("ru", r) >= 0.5 * figure_share(f, self.orig.doc[o])
+                                                     for r in rs) for f in self._figs(o))
 
     def run(self):
         out = []
