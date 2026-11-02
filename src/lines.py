@@ -21,6 +21,13 @@ def hyphen_break(prev, nxt):
     return bool(HYPHEN.search(prev.rstrip())) and nxt.lstrip()[:1].isalpha()
 
 
+def mid_phrase(prev, nxt):
+    """Строка оборвалась на середине фразы: в ней ≥ 3 слов, она кончается буквой или запятой, следующая начинается
+    строчной буквой. Одиночные значения столбика («rendben» ×4) и пункты с точкой не подходят."""
+    prev, nxt = prev.rstrip(), nxt.lstrip()
+    return len(prev.split()) >= 3 and bool(re.search(r"[^\W\d_]$|,$", prev)) and nxt[:1].isalpha() and nxt[:1].islower()
+
+
 def caps_wrap(out, ln):
     """«KI-» + «KAPCSOLVA», «REND-» + «BEN.»: слово из прописных, разорванное переносом. Обе части от двух букв и одна из
     них не короче четырёх; пара коротких аббревиатур («RO-ROP», «ÜBO-ÜBO», «RP-UL») — составная, дефис остаётся."""

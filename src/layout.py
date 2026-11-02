@@ -8,8 +8,8 @@
 - для вставки перевода рамка абзаца расширяется вправо/вниз до соседей, линеек и полей."""
 import re
 import fitz
-from lines import hyphen_break, join_lines      # перенос слова — одна функция для всех читателей (E4)
-from rows import Rows, code_line                # граница ряда таблицы — до склейки строк в абзацы (E5)
+from lines import hyphen_break, join_lines, mid_phrase     # перенос слова — одна функция для всех читателей (E4)
+from rows import Rows, code_line                            # граница ряда таблицы — до склейки строк в абзацы (E5)
 
 GAP = 30.0          # выключка по ширине в узких ячейках даёт пробелы до ~25 pt
 
@@ -347,13 +347,6 @@ def _partner(frags, vs, bb, left=False):
     return any(f["bbox"][0] >= x1 + 5 and same(f) and not _vrule_in(vs, x1, f["bbox"][0], y0, y1) for f in frags)
 
 
-def mid_phrase(prev, nxt):
-    """Строка оборвалась на середине фразы: в ней ≥ 3 слов, она кончается буквой или запятой, следующая начинается
-    строчной буквой. Одиночные значения столбика («rendben» ×4) и пункты с точкой не подходят."""
-    prev, nxt = prev.rstrip(), nxt.lstrip()
-    return len(prev.split()) >= 3 and bool(re.search(r"[^\W\d_]$|,$", prev)) and nxt[:1].isalpha() and nxt[:1].islower()
-
-
 ORDINAL = re.compile(r"\b\d+(?:\.\d+)*\.$")
 
 
@@ -369,7 +362,7 @@ def group(frags, hs, vs=(), form=False, rows=None):
     """form=True (скан формы): строка, кончающаяся двоеточием, — подпись поля, к ней не приклеивается следующая.
     rows — границы рядов листа (rows.Rows по тем же кускам и линейкам): абзац не пересекает границу ряда (E5)."""
     page_right = max((f["bbox"][2] for f in frags), default=0)
-    rows = rows or Rows(frags, hs)
+    rows = rows or Rows(frags, hs, vs)
     frags = sorted(frags, key=lambda f: (round(f["bbox"][1] / 3), f["bbox"][0]))
     # слева на той же строке — номер пункта отдельным куском («1.6.» ⇥ «FOT szintcsökkenés» в оглавлении 3SZ19): кусок
     # начинает новый абзац — иначе название приклеивалось к названию пункта выше, а у «1.6.» оставалось пустым (17.10)

@@ -10,6 +10,8 @@
 Столбик отметок (○ □ O ✓ ☒ ◉) — каждая отметка сама по себе (FORM_MARK)."""
 import re
 
+from lines import hyphen_break, mid_phrase
+
 ANCHOR = re.compile(r"^\(?\d+(?:\.\d+)*\.?\)?$")
 FORM_MARK = re.compile(r"^[○□△▲◉☒✓✔✗✘■●O]$")
 
@@ -49,24 +51,27 @@ def _mid(b):
     return (b[1] + b[3]) / 2
 
 
-def _of_line(r, L, other):
-    """Линейка — подчёркивание строки L: в пределах её текста по ширине и её рамки по высоте и не обрамляет другую строку
-    с обеих сторон — или обрамляет, но выровнена с текстом L по краю. Линейка ячейки шапки «Beépítés helye» лежит и под
-    широким названием таблицы над ней («Segédenergiával működtetett armatúrák», 3PR10 INFO) — граница ряда; подчёркнутый
-    заголовок по центру в две строки («Reaktor és Készülék … ellenőrzési» / «terjedelme», 30PR132GT) — одна фраза."""
-    if not (L[0] - 2 <= r[0] and r[1] <= L[2] + 2 and L[1] - 0.5 <= r[2] <= L[3] + 0.5):
-        return False
-    return not (r[0] < other[0] - 2 and r[1] > other[2] + 2) or abs(r[0] - L[0]) <= 2 or abs(r[1] - L[2]) <= 2
+def _cell_edge(r, vs):
+    """Горизонтальная линейка упирается концом в вертикальную — граница ячейки таблицы, а не подчёркивание."""
+    return any(min(abs(v[2] - r[0]), abs(v[2] - r[1])) <= 2 and v[0] - 2 <= r[2] <= v[1] + 2 for v in vs)
 
 
-def rule_between(hs, a, b, soft=True):
+def _of_line(r, L):
+    """Линейка — подчёркивание строки L: в пределах её текста по ширине (±4 pt: хвостовой пробел подчёркнут) и её рамки
+    по высоте. Подчёркнутый заголовок по центру в две строки («Reaktor és Készülék … ellenőrzési» / «terjedelme»,
+    30PR132GT) — одна фраза."""
+    return L[0] - 4 <= r[0] and r[1] <= L[2] + 4 and L[1] - 0.5 <= r[2] <= L[3] + 0.5
+
+
+def rule_between(hs, a, b, soft=True, vs=()):
     """Горизонтальная линейка между строкой a и строкой b под ней: в промежутке их рамок (soft=False — стороны белой
-    подложки, layout.rules, не считаются) или между серединами строк, если она выходит за ширину их текста. Рамки
-    моноширинных строк выше шага (15–19 pt при шаге 10–11) накрывают линейку ряда, и она выпадала из проверки:
-    заголовок таблицы склеивался с шапкой столбца («2. Segédenergiával működtetett armatúrák Beépítés helye», 3SZ23 INFO;
-    «1.1 … Tevékenység», 3PR10), ячейки соседних рядов — в одну («Tüzivíz gömbcsap hajtás» ×3, 3FI18; «Bórsavkoncentráció
-    Átlátszóság», 02VE25). Не граница ряда — подчёркивание (_of_line) и сторона заливки без обводки (edge, layout.rules):
-    серая полоса под каждой строкой заголовка («10.1 UJ21 … jelzés» / «esetén», 3SZ23 л. 18)."""
+    подложки, layout.rules, не считаются) или между серединами строк, если это граница ячейки (упирается в вертикальную
+    линейку) или она выходит за ширину текста обеих строк. Рамки моноширинных строк выше шага (15–19 pt при шаге 10–11)
+    накрывают линейку ряда, и она выпадала из проверки: заголовок таблицы склеивался с шапкой столбца
+    («2. Segédenergiával működtetett armatúrák Beépítés helye», 3SZ23 INFO; «1.1 … Tevékenység», 3PR10), ячейки соседних
+    рядов — в одну («Tüzivíz gömbcsap hajtás» ×3, 3FI18; «Bórsavkoncentráció Átlátszóság», 02VE25). Не граница ряда —
+    подчёркивание (_of_line) и сторона заливки без обводки (edge, layout.rules): серая полоса под каждой строкой
+    заголовка («10.1 UJ21 … jelzés» / «esetén», 3SZ23 л. 18)."""
     ma, mb = _mid(a), _mid(b)
     for r in hs:
         rx0, rx1, y = r
@@ -75,27 +80,30 @@ def rule_between(hs, a, b, soft=True):
         hard = not getattr(r, "soft", False)
         if a[3] - 0.5 <= y <= b[1] + 0.5 and (soft or hard):
             return True
-        if hard and not getattr(r, "edge", False) and ma + 1 < y < mb - 1 and not _of_line(r, a, b) \
-                and not _of_line(r, b, a) and min(a[2], rx1) - max(a[0], rx0) > 5:
+        if hard and not getattr(r, "edge", False) and ma + 1 < y < mb - 1 and min(a[2], rx1) - max(a[0], rx0) > 5 \
+                and (_cell_edge(r, vs) or not (_of_line(r, a) or _of_line(r, b))):
             return True
     return False
 
 
 class Rows:
-    """Границы рядов листа: frags — куски строк листа ({t, bbox, size}), hs — горизонтальные линейки (layout.rules)."""
+    """Границы рядов листа: frags — куски строк листа ({t, bbox, size}), hs, vs — линейки (layout.rules)."""
 
-    def __init__(self, frags, hs):
-        self.frags, self.hs = frags, hs
-        cand = [f for f in frags if is_anchor(f["t"])]
+    def __init__(self, frags, hs, vs=()):
+        self.hs, self.vs = hs, vs
+        self.frags = sorted(frags, key=lambda f: (round(f["bbox"][1] / 3), f["bbox"][0]))     # порядок layout.group
+        flag = [is_anchor(f["t"]) for f in self.frags]
         self.anchors = []
-        for f in cand:
+        for f, ok in zip(self.frags, flag):
+            if not ok:
+                continue
             # столбец якоря — куски с тем же левым или правым краем или той же серединой (±3 pt; рамка куска бывает с
             # пробелами впереди: «32UJ21L501» с x0 = 71 вместо 114, 3SZ23 л. 26); якоря в нём преобладают. Коды внутри
             # текста столбца «Tevékenység» (3SZ23: «31(32)UJ21S603» под фразой) — содержание, а не якоря рядов
             b = f["bbox"]
-            col = [g for g in frags if abs(g["bbox"][0] - b[0]) <= 3 or abs(g["bbox"][2] - b[2]) <= 3
+            col = [k for k, g in enumerate(self.frags) if abs(g["bbox"][0] - b[0]) <= 3 or abs(g["bbox"][2] - b[2]) <= 3
                    or abs(g["bbox"][0] + g["bbox"][2] - b[0] - b[2]) <= 6]
-            n = sum(1 for g in col if is_anchor(g["t"]))
+            n = sum(1 for k in col if flag[k])
             if n >= 2 and 2 * n >= len(col):
                 self.anchors.append(tuple(b))
 
@@ -109,36 +117,34 @@ class Rows:
                 best, ov = A, o
         return best
 
-    def _above(self, b):
-        """Последний якорь столбца якорей слева выше строки b — ряд, которому строка принадлежит без своего якоря."""
-        up = [A for A in self.anchors if A[2] <= b[0] - 3 and _mid(A) < _mid(b) - 2]
-        return max(up, key=_mid) if up else None
-
     def new_row(self, fa, fb):
-        """Строка fb начинает новый ряд против строки fa над ней: у fb на её уровне свой якорь, у fa — другой, свой на
-        её уровне (значения столбца без кодов против столбца кодов: «-3,6m helyszín … 9,6m helyszín» шесть рядов одним
-        сегментом, 3SZ23 INFO; «126-128 bar», 3PR10 INFO) или унаследованный сверху (или никакого — шапка над первым
-        рядом) через зазор больше полутора кеглей (ряды «YA-K7 ⇥ …» / «YA-K8 ⇥ …», 3PR10). Якорь по центру многострочной ячейки («4.1.9.» против второй из трёх
-        строк, 30HU375GT) зазора не даёт — строки не делит."""
+        """Строка fb начинает новый ряд против строки fa над ней: у fb на её уровне свой якорь, а у fa — другой свой
+        (значения столбца без кодов против столбца кодов: «-3,6m helyszín … 9,6m helyszín» шесть рядов одним сегментом,
+        3SZ23 INFO; «126-128 bar», 3PR10 INFO) или своего нет, но между строками зазор больше полутора кеглей (ряды
+        «YA-K7 ⇥ …» / «YA-K8 ⇥ …», 3PR10; шапка над первым рядом). Не делят строки: якорь по центру многострочной ячейки
+        («4.1.9.» против второй из трёх строк, 30HU375GT) и фраза или слово, продолжающиеся на следующей строке при
+        обычном шаге, — ячейка во много рядов против столбца кодов, колонка текста рядом с нумерованным столбцом."""
         a, b = fa["bbox"], fb["bbox"]
         if _mid(b) - _mid(a) < 2:
             return False
         ob = self._own(b)
         if ob is None:
             return False
+        size = max(fa.get("size") or 0, fb.get("size") or 0)
         oa = self._own(a)
         if oa is not None:
-            return oa != ob
+            return oa != ob and not (_mid(b) - _mid(a) <= 1.3 * size
+                                     and (mid_phrase(fa["t"], fb["t"]) or hyphen_break(fa["t"], fb["t"])))
         # без своего якоря строка fa — в ряду якоря выше (или в шапке над первым рядом: «Elosztó helye» над «E601/II»,
         # 3FI18 л. 38): новый ряд — только через зазор рядов
-        return self._above(a) != ob and _mid(b) - _mid(a) > 1.5 * max(fa.get("size") or 0, fb.get("size") or 0)
+        return _mid(b) - _mid(a) > 1.5 * size
 
     def apart(self, fa, fb, soft=False):
         """Строки fa (выше) и fb — в разных рядах: причина («линейка», «якорь», «отметка») или None. soft=True — граница и
         сторона белой подложки (layout.group, строка не продолжает фразу); метки портала через подложку склеивают
         (roles.apply: 30RL2126GT — плашка под каждой строкой, «…akkor a» / «30RL21S001 zárva van.» рвались)."""
         a, b = fa["bbox"], fb["bbox"]
-        if rule_between(self.hs, a, b, soft):
+        if rule_between(self.hs, a, b, soft, self.vs):
             return "линейка"
         a1, a2 = row_anchor(self.frags, a), row_anchor(self.frags, b)
         if a1 is not None and a2 is not None and a1 != a2 or self.new_row(fa, fb):

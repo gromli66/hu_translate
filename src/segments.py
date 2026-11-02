@@ -956,14 +956,14 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
                 words, lost[pno] = ocr_words(_dehyphen(tw[pno]), r.get("text") or "", pixs.setdefault(pno, []))
                 frags = ocr_frags(words, vs, pixs[pno])
             # границы рядов таблиц — одни для правил и для меток портала (rows.py, E5)
-            rw = Rows(frags, hs)
+            rw = Rows(frags, hs, vs)
             pars = group(frags, hs, vs, form=True, rows=rw)
             if labels.get(pno) and labels[pno][1]:
                 from layout import join_lines
                 pars = R.apply(pars, labels[pno][0], labels[pno][1], join_lines, apart=rw.apart)
         else:
             frags = frags_from_text(page, vs)
-            rw = Rows(frags, hs)
+            rw = Rows(frags, hs, vs)
             # две колонки сплошного текста (E46): просвет — невидимой линейкой (строки через него не склеиваются, место
             # строки и перевода — до него), абзацы — колонка за колонкой
             from layout import gutter, column_order

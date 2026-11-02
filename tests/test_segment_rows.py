@@ -83,11 +83,14 @@ def test_values_column_is_cut_by_rows_of_codes_column():
 def test_row_rule_hidden_under_tall_frames_splits_title_from_column_header():
     """Название таблицы и шапка столбца под ним (3PR10 INFO): линейка ячейки шапки (y 84,5) лежит внутри обеих рамок
     (70,6–87,5 и 83,4–100,4) — прежде выпадала из проверки, и «Segédenergiával működtetett armatúrák Beépítés helye» шли
-    одним сегментом. Линейка обрамляет «Beépítés helye» с обеих сторон — граница, хотя она в пределах ширины названия."""
+    одним сегментом. Линейка упирается в вертикальные линейки ячейки — граница, хотя она в пределах ширины названия; та
+    же линейка без вертикальных — подчёркивание названия (не граница)."""
     import rows as RW
     a = _fr("Segédenergiával működtetett armatúrák", (178.1, 70.6, 396.3, 87.5), bold=True)
     b = _fr("Beépítés helye", (249.2, 83.4, 331.7, 100.4), bold=True)
-    assert RW.Rows([a, b], [(220.3, 360.6, 84.5)]).apart(a, b) == "линейка"
+    cell = [(84.5, 100.4, 219.6), (84.5, 100.4, 361.3)]                 # вертикальные линейки ячейки шапки
+    assert RW.Rows([a, b], [(220.3, 360.6, 84.5)], cell).apart(a, b) == "линейка"
+    assert RW.Rows([a, b], [(220.3, 360.6, 84.5)]).apart(a, b) is None
     assert RW.Rows([a, b], []).apart(a, b) is None
 
 
@@ -113,6 +116,13 @@ def test_underline_and_line_highlight_are_not_row_rules():
     edge = LY._mark((74.4, 559.9, 95.0), False, edge=True)
     assert RW.Rows([t1, t2], [edge]).apart(t1, t2) is None
     assert RW.Rows([t1, t2], [(74.4, 559.9, 95.0)]).apart(t1, t2) == "линейка"
+    # подчёркнута только середина первой строки заголовка по центру; подчёркивание на 3 pt шире текста (хвостовой пробел)
+    c1 = _fr("Reaktor és Készülék Karbantartó Osztály", (150, 100, 450, 114), bold=True)
+    c2 = _fr("terjedelme", (270, 112, 330, 126), bold=True)
+    assert RW.Rows([c1, c2], [(200, 380, 112.5)]).apart(c1, c2) is None
+    p1 = _fr("A tűzjelzést az adott helyiséghez tartozó", (100, 100, 400, 112))
+    p2 = _fr("piros led jelzi az oltóközpontban.", (100, 111, 330, 123))
+    assert RW.Rows([p1, p2], [(100, 403, 111)]).apart(p1, p2) is None
 
 
 def test_codes_inside_prose_column_are_not_row_anchors():
@@ -130,6 +140,30 @@ def test_codes_inside_prose_column_are_not_row_anchors():
     rw = RW.Rows(left + mid + right, [])
     assert rw.anchors == [] and rw.apart(right[0], right[1]) is None
     assert "Az oltási körhöz tartozó mágnes szelep nyitva, az oltás rendben működik." in _texts(left + mid + right)
+
+
+def test_phrase_continuing_past_anchor_rows_is_not_cut():
+    """Ячейка во много рядов против столбца кодов (описание на четыре строки, коды — по строке) и колонка текста рядом с
+    нумерованным столбцом: у каждой строки слева «свой» якорь, но фраза и слово продолжаются при обычном шаге строк —
+    не новый ряд (красная команда 02.11: «végre-» / «hajtani» резалось). Значения без продолжения фразы — режутся."""
+    import rows as RW
+    codes = [_fr(c, (72, 100 + 12 * i, 130, 112 + 12 * i)) for i, c in enumerate(("30UJ03S601", "31UJ20S601", "31UJ21S601",
+                                                                                    "31UJ21S602"))]
+    desc = [_fr("A tűzoltó oltóvíz-rendszer", (260, 100, 500, 112)),
+            _fr("elzáró szerelvényei, amelyeket a karbantartás", (260, 112, 500, 124)),
+            _fr("idején is zárt helyzetben kell végre-", (260, 124, 500, 136)),
+            _fr("hajtani és lakatolni.", (260, 136, 400, 148))]
+    names = [_fr(f"szelep {i}", (140, 100 + 12 * i, 200, 112 + 12 * i)) for i in range(4)]
+    rw = RW.Rows(codes + names + desc, [])
+    assert all(rw.apart(x, y) is None for x, y in zip(desc, desc[1:]))
+    assert len(_texts(codes + names + desc)) == 4 + 4 + 1
+    nums = [_fr(f"{i}.", (72, 100 + 12 * i, 84, 112 + 12 * i)) for i in range(1, 5)]
+    prose = [_fr("Az üzemeltető személyzet a próba előtt", (320, 112, 560, 124)),
+             _fr("ellenőrzi a rendszer állapotát, és a", (320, 124, 560, 136)),
+             _fr("hibákat a műszaknaplóban rögzíti.", (320, 136, 540, 148))]
+    items = [_fr(f"pont szövege {i}", (90, 100 + 12 * i, 200, 112 + 12 * i)) for i in range(1, 5)]
+    rw = RW.Rows(nums + items + prose, [])
+    assert rw.apart(prose[0], prose[1]) is None and rw.apart(prose[1], prose[2]) is None
 
 
 def test_anchor_centred_in_multiline_cell_does_not_split_it():
