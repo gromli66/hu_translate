@@ -1032,22 +1032,15 @@ class Builder:
             from docx.enum.text import WD_TAB_ALIGNMENT
             par.paragraph_format.tab_stops.add_tab_stop(Pt(self.L["W"] - self.L["right"] - self.left), WD_TAB_ALIGNMENT.RIGHT)
 
-    def _cell_par(self, par, x, prev, edges, al, right=False):
+    def _cell_par(self, par, x, edges, al, right=False):
         """Абзац ячейки текстового слоя — по своему месту на листе оригинала: лист бланка — одна большая ячейка
-        (01-02FMP0BIGT л. 2, NIGHT2_EYES п. 15), и заголовок по центру уходил влево, пустые строки между абзацами
-        пропадали (лист плотнее оригинала), пункт «1. …» шёл без висячего отступа. prev — место абзаца выше в ячейке,
-        edges — края ячейки на листе (линии столбцов), al — выключка столбца, right — строка столбца, выключенного в
-        оригинале вправо (table: общий правый край)."""
+        (01-02FMP0BIGT л. 2, NIGHT2_EYES п. 15), и заголовок по центру уходил влево, пункт «1. …» шёл без висячего
+        отступа. edges — края ячейки на листе (линии столбцов), al — выключка столбца, right — строка столбца,
+        выключенного в оригинале вправо (table: общий правый край). Пустые строки между абзацами ячейки — нет: зазоры
+        оригинала (до строки) у 30RL2126GT на 449 границах из 738 дали 49 листов при 46."""
         from docx.shared import Pt
         g = x.get("geom") or {}
         pf = par.paragraph_format
-        line = (g["bottom"] - g["top"]) / max(g.get("lines") or 1, 1) if g.get("top") is not None else 0
-        # зазор над абзацем — как в оригинале, если больше полкегля (пустая строка), но не больше строки текста:
-        # зазоры бланков в 25–30 pt раздували перевод на листы (как «pad» подстрок, 30TKBSZ36BIGT)
-        if prev and line and prev.get("page") == g.get("page") and prev.get("bottom") is not None:
-            gap = g["top"] - prev["bottom"]
-            if gap >= 0.4 * (g.get("size") or 10):
-                pf.space_before = Pt(round(min(gap, line), 1))
         if al not in (None, "left") or g.get("x0") is None:
             return
         # строка по середине ячейки, помеченная «по центру», — по центру («ÁLTALÁNOS INFORMÁCIÓK»)
@@ -1678,17 +1671,16 @@ class Builder:
                 if al:
                     style = self._aligned(style, al)
                 cell_x = (bounds[spans[ci][0]], bounds[spans[ci][1] + 1]) if len(bounds) == ncol + 1 else None
-                prev = None                                 # место предыдущего абзаца ячейки на листе оригинала
                 for x in cell["blocks"]:
                     if x["k"] == "list":
-                        self.list_(x, 0, dc); prev = None; continue
+                        self.list_(x, 0, dc); continue
                     if x["k"] == "table":
                         # таблица в ячейке (листовка из Word свёрстана таблицей в таблице) — вложенной таблицей; раньше
                         # пропускалась вместе с текстом (№09 партии 2: 94 % слов, 22.10)
                         keep = self._room, self._tab_base, getattr(self, "_cell_base", None)
                         self.table(x, tgt=dc)
                         self._room, self._tab_base, self._cell_base = keep
-                        used, prev = True, None
+                        used = True
                         continue
                     if x["k"] != "p" or not x["runs"]:
                         continue
@@ -1706,8 +1698,7 @@ class Builder:
                     if par is not None and al in (None, "left") and nest.get(id(x)):
                         par.paragraph_format.left_indent = Pt(round(nest[id(x)], 1))
                     elif par is not None and x.get("seg"):
-                        self._cell_par(par, x, prev, cell_x, al, id(x.get("geom")) in flush)
-                    prev = x.get("geom")
+                        self._cell_par(par, x, cell_x, al, id(x.get("geom")) in flush)
                 room = self._room.get(starts[ci]) if spans[ci][1] == spans[ci][0] else None
 
                 def widest(par, eff, whole=False):

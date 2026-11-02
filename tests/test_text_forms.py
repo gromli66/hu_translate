@@ -1151,10 +1151,10 @@ def test_nested_list_in_cell_keeps_indent_and_subheading_underline(tmp_path):
     assert any(r.underline for p in t.rows[0].cells[1].paragraphs for r in p.runs if r.text == "Закрыты:")
 
 
-def test_whole_sheet_cell_keeps_center_gaps_and_hanging_items(tmp_path):
+def test_whole_sheet_cell_keeps_center_and_hanging_items(tmp_path):
     """01-02FMP0BIGT л. 2 (NIGHT2_EYES п. 15): лист бланка — одна большая ячейка. Заголовок по середине ячейки — по
-    центру, пустая строка над абзацем — зазором (не больше строки текста), пункт «1. …», перенесённые строки которого
-    правее первой, — висячим отступом; строка вплотную под предыдущей — без зазора."""
+    центру, пункт «1. …», перенесённые строки которого правее первой, — висячим отступом; пустая строка над абзацем —
+    без зазора (зазоры оригинала раздували перевод на листы: 30RL2126GT 46 → 49)."""
     def para(t, x0, x1, top, lines=1, align="left", rest=None):
         g = {"page": 1, "top": top, "bottom": top + 13 * lines, "x0": x0, "x1": x1, "first_x0": x0, "size": 10,
              "lines": lines, **({"rest_x0": rest} if rest else {})}
@@ -1178,10 +1178,9 @@ def test_whole_sheet_cell_keeps_center_gaps_and_hanging_items(tmp_path):
     B.Builder(B.Memory([]), lambda img: png(), PROFILE).build([tab], str(out), dict(LAYOUT, first_is_body=True))
     got = {p.text[:6]: p for c in Document(str(out)).tables[0]._cells for p in c.paragraphs if p.text}
     assert got["ÁLTALÁ"].alignment == 1
-    assert round(got["A prób"].paragraph_format.space_before.pt) == 13           # зазор 16 pt — не больше строки
+    assert got["A prób"].paragraph_format.space_before is None and got["A prób"].alignment is None
     pf = got["1. A r"].paragraph_format
     assert round(pf.left_indent.pt) == 14 and round(pf.first_line_indent.pt) == -14
-    assert got["2. Min"].paragraph_format.space_before is None                     # вплотную под пунктом 1
 
 
 def test_column_lines_with_common_right_edge_are_flush_right(tmp_path):
