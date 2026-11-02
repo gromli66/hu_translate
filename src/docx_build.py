@@ -1032,11 +1032,12 @@ class Builder:
             from docx.enum.text import WD_TAB_ALIGNMENT
             par.paragraph_format.tab_stops.add_tab_stop(Pt(self.L["W"] - self.L["right"] - self.left), WD_TAB_ALIGNMENT.RIGHT)
 
-    def _cell_par(self, par, x, prev, edges, al):
+    def _cell_par(self, par, x, prev, edges, al, right=False):
         """Абзац ячейки текстового слоя — по своему месту на листе оригинала: лист бланка — одна большая ячейка
         (01-02FMP0BIGT л. 2, NIGHT2_EYES п. 15), и заголовок по центру уходил влево, пустые строки между абзацами
         пропадали (лист плотнее оригинала), пункт «1. …» шёл без висячего отступа. prev — место абзаца выше в ячейке,
-        edges — края ячейки на листе (линии столбцов), al — выключка столбца."""
+        edges — края ячейки на листе (линии столбцов), al — выключка столбца, right — строка столбца, выключенного в
+        оригинале вправо (table: общий правый край)."""
         from docx.shared import Pt
         g = x.get("geom") or {}
         pf = par.paragraph_format
@@ -1053,6 +1054,9 @@ class Builder:
         if edges and x.get("align") == "center" and (g.get("lines") or 1) == 1 \
                 and abs((g["x0"] - edges[0]) - (edges[1] - g["x1"])) < 6 and g["x0"] - edges[0] > 8:
             par.alignment = 1
+            return
+        if right:
+            par.alignment = 2
             return
         # пункт с меткой, перенесённые строки правее первой («1. A reaktor …» / «primerkör …») — висячим отступом
         hang = (g.get("rest_x0") or 0) - (g.get("first_x0") or 0)
@@ -1571,6 +1575,24 @@ class Builder:
                             nest[id(x)] = x0 - intro[a]
                             continue
                         intro[a] = x0 if text_of(x["runs"]).rstrip().endswith(":") else None
+        # строки столбца, выключенные в оригинале вправо: у трёх и больше абзацев столбца на листе общий правый край
+        # (±2 pt, и у последней строки), начала разные и правее левого края текста столбца на 20 pt и больше —
+        # перечень «A főkeringtető szivattyúk …», «30TH12S003» 30PR132GT л. 34 (NIGHT2_EYES п. 12) шёл влево
+        flush, col = set(), {}
+        for row in rows:
+            if all("span" in c for c in row):
+                for i, c in enumerate(row):
+                    for x in c["blocks"]:
+                        g = x.get("geom") or {}
+                        if x["k"] == "p" and x.get("seg") and g.get("x1") is not None:
+                            col.setdefault((sum(q["span"] for q in row[:i]), g.get("page")), []).append(x)
+        for xs in col.values():
+            left = min(x["geom"]["x0"] for x in xs)
+            for r in sorted({round(x["geom"]["x1"]) for x in xs}):
+                grp = [x for x in xs if abs(x["geom"]["x1"] - r) <= 2 and x["geom"]["x0"] - left >= 20
+                       and abs(x["geom"].get("last_x1", -99) - r) <= 2]
+                if len(grp) >= 3 and len({round(x["geom"]["x0"]) for x in grp}) >= 2:
+                    flush.update(id(x) for x in grp)
         for ri, row in enumerate(rows):
             if all("span" in c for c in row):               # ячейки по сетке линий (docx_layout) — места известны
                 starts = [sum(c["span"] for c in row[:i]) for i in range(len(row))]
@@ -1681,7 +1703,7 @@ class Builder:
                     if par is not None and al in (None, "left") and nest.get(id(x)):
                         par.paragraph_format.left_indent = Pt(round(nest[id(x)], 1))
                     elif par is not None and x.get("seg"):
-                        self._cell_par(par, x, prev, cell_x, al)
+                        self._cell_par(par, x, prev, cell_x, al, id(x) in flush)
                     prev = x.get("geom")
                 room = self._room.get(starts[ci]) if spans[ci][1] == spans[ci][0] else None
 

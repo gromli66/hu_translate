@@ -1219,6 +1219,34 @@ def test_whole_sheet_cell_keeps_center_gaps_and_hanging_items(tmp_path):
     assert got["2. Min"].paragraph_format.space_before is None                     # вплотную под пунктом 1
 
 
+def test_column_lines_with_common_right_edge_are_flush_right(tmp_path):
+    """30PR132GT л. 17, 34 (NIGHT2_EYES п. 12): перечень столбца «Megnevezés» выключен вправо — строки кончаются на
+    445 pt при разных началах; в переводе шёл влево. Три и больше абзаца столбца с общим правым краем (и у последней
+    строки), начатые правее левого края текста столбца на 20 pt и больше, — вправо; вводная строка у левого края и
+    строка с другим концом — как были."""
+    def para(t, x0, x1, top, last=None):
+        g = {"page": 1, "top": top, "bottom": top + 12, "x0": x0, "x1": x1, "first_x0": x0, "size": 10, "lines": 1,
+             "last_x1": x1 if last is None else last}
+        return {"k": "p", "runs": [{"t": t, "font": "Times New Roman", "size": 10, "b": False, "i": False,
+                                    "color": "000000"}], "geom": g, "seg": True, "align": "left"}
+    edges = {"top": True, "bottom": True, "left": True, "right": True}
+    cell = lambda ps: {"blocks": ps, "th": False, "span": 1, "edges": edges, "geom": dict(
+        ps[0]["geom"], x1=max(p["geom"]["x1"] for p in ps), lines=2) if ps else None}
+    body = [("A továbbiakban az ellenőrzés ki kell terjedjen az alábbiakra:", 140, 359, None),
+            ("A főkeringtető szivattyúk tömítő blokkjai", 293, 445, None),
+            ("A főelzáró tolózárak tömszelencéi", 319, 445, None), ("30TH12S003", 394, 445, None),
+            ("30TH12S451", 394, 445, None), ("Autonómköri szivattyúk, hőcserélők", 167, 445, 400)]
+    rows = [[cell([]), cell([para(t, a, z, 160 + 20 * k, last)]), cell([para("O", 507, 515, 160 + 20 * k)])]
+            for k, (t, a, z, last) in enumerate(body)]
+    tab = {"k": "table", "rows": rows, "borders": True, "frame": {"xs": [71, 123, 463, 530],
+                                                                  "ys": [150 + 20 * k for k in range(len(body) + 1)]},
+           "geom": {"page": 1, "top": 150, "bottom": 270, "x0": 71, "x1": 530, "first_x0": 71, "size": 10}}
+    out = tmp_path / "r.docx"
+    B.Builder(B.Memory([]), lambda img: png(), PROFILE).build([tab], str(out), dict(LAYOUT, first_is_body=True))
+    al = {p.text[:10]: p.alignment for c in Document(str(out)).tables[0]._cells for p in c.paragraphs if p.text}
+    assert [al[t[:10]] for t, *_ in body] == [None, 2, 2, 2, 2, None]
+
+
 def test_review_0211_narrowed_rules(tmp_path):
     """Ред-тим 02.11: отступ — только вложенному перечню под строкой с двоеточием (строка через линию столбца не сдвигает
     остальные); рамка вокруг полужирного заголовка — не таблица; пунктир под тесной ячейкой — не подчёркивание;

@@ -973,6 +973,8 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields
                 fr = group[0]["loc"].get("frags") or []
                 if len(group) == 1 and len(fr) > 1:         # начало первой строки и остальных (висячий отступ пункта)
                     gg.update(first_x0=fr[0][0], rest_x0=min(f[0] for f in fr[1:]))
+                if len(group) == 1 and fr:                  # конец последней строки (выключка вправо, docx_build)
+                    gg["last_x1"] = fr[-1][2]
                 runs = _runs_of(group, bold, font, size, mono)
                 for ru in runs if pua else ():               # значки частной области — знаком по виду (_pua_glyph)
                     ru["t"] = "".join(pua.get(ch, ch) for ch in ru["t"])
