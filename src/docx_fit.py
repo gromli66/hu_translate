@@ -227,8 +227,19 @@ def _fit(orig, ru, printer, tmp, want=None, any_span=False):
         over = {i: v for i, v in got.items() if (want.get(i) == 1 or any_span and want.get(i)) and v[1] > want[i]}
         if step == 0:
             info["over"] = len(over)
+            span0 = {i: v[1] for i, v in over.items()}
         if not over or step == 2:
             info["left"] = len(over)
+            # раздел, которому кегль не сократил ни листа, — прежним кеглем: мельче и на тех же листах — хуже, чем было
+            # (документ в один лист, где перевод длиннее на полстраницы, ред-тим 02.11)
+            idle = [i for i, v in over.items() if i in ks and v[1] >= span0.get(i, 0)]
+            if idle:
+                for i in idle:
+                    del ks[i]
+                info["kept"] = len(idle)
+                if ks:
+                    _shrink(ru, tmp / "ru_fitF.docx", ks)
+                    cur = tmp / "ru_fitF.docx"
             break
         for i, (_, span, fill) in over.items():
             need = (span - 1) + fill                # листов текста раздела
