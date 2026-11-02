@@ -2502,6 +2502,18 @@ def layout(path, blocks, content=None):
     body_top = tops_[len(tops_) // 5] if tops_ else 110
     if short:                                       # один лист: поля — не шире полей по умолчанию
         left, right, body_top = min(left, 62), min(right, 59), min(body_top, 110)
+        # и верх тела — не выше знаков и картинок вне тела у верха листа (шапка, не попавшая в сегменты): иначе она
+        # не шла ни в шапку (выше верха тела), ни в тело и пропадала молча (ред-тим 02.11)
+        # (прямые знаки не на строках тела — знак строки тела, вылезший за рамку сегмента, не шапка; картинки —
+        # логотип целиком у верха, а не скан во весь лист и не рисунок тела, ред-тим 02.11)
+        pg0, boxes = pdf.pages[0], content.get(1) or []
+        on_body = lambda c: any(b[1] - 2 <= float(c["bottom"]) and float(c["top"]) <= b[3] + 2 for b in boxes)
+        art = [float(c["bottom"]) for c in pg0.chars if c.get("mcid") is None and c["text"].strip() and _upright(c)
+               and float(c["top"]) < 110 and not on_body(c)]
+        art += [float(i["bottom"]) for i in pg0.images if float(i["bottom"]) <= 110
+                and (float(i["x1"]) - float(i["x0"])) * (float(i["bottom"]) - float(i["top"])) < 0.25 * W * H]
+        if art:
+            body_top = min(max(body_top, max(art) + 1), 110)
     page, page_tok, page_off, tok_boxes = _typical_page(pdf, body_top, H, cbot=cbot)
     # номер листа — помечен в знаках: полем станет он, а не такое же число рядом («Блок 3» на листе 3, синтетика)
     mark = lambda chars: [dict(c, text=PAGE_MARK) if c["text"].isdigit() and any(

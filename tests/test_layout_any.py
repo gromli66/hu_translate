@@ -368,6 +368,28 @@ def test_one_sheet_text_layer_document_measures_margins_on_its_sheet(tmp_path):
     assert D.layout(str(tmp_path / "b.pdf"), blocks, content=content)["top"] == 106
     blocks, content = sheet(tmp_path / "c.pdf", 72, pages=2)
     assert D.layout(str(tmp_path / "c.pdf"), blocks, content=content)["top"] == 106
+    # шапка вне тела (не в сегментах) ниже первого блока тела — остаётся шапкой: верх тела не выше её (ред-тим 02.11)
+    d = fitz.open()
+    pg = d.new_page(width=595.3, height=841.9)
+    pg.insert_text((70, 28), "lapszám: 1.", fontsize=9)
+    pg.insert_text((70, 50), "VALLALAT FEJLEC", fontsize=10)
+    pg.insert_text((70, 64), "Masodik sor", fontsize=10)
+    pg.draw_rect(fitz.Rect(70, 80, 540, 680))
+    d.save(str(tmp_path / "h.pdf"))
+    blocks = [{"k": "p", "runs": [{"t": "lapszám: 1."}], "geom": {"page": 1, "top": 20, "bottom": 30, "x0": 70, "x1": 120}},
+              {"k": "table", "rows": [], "geom": {"page": 1, "top": 80, "bottom": 680, "x0": 70, "x1": 540}}]
+    L = D.layout(str(tmp_path / "h.pdf"), blocks, content={1: [(70, 20, 120, 30), (70, 80, 540, 680)]})
+    assert "VALLALAT" in str(L.get("head_grid")) + str(L.get("head_lines"))
+    # скан во весь лист (текстовый слой поверх картинки) — не шапка: верх тела остаётся своим
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (60, 80), "white").save(buf, "PNG")
+    d = fitz.open(str(tmp_path / "a.pdf"))
+    d[0].insert_image(d[0].rect, stream=buf.getvalue(), overlay=False)
+    d.save(str(tmp_path / "s.pdf"))
+    blocks, content = sheet(tmp_path / "unused.pdf", 72)
+    assert D.layout(str(tmp_path / "s.pdf"), blocks, content=content)["top"] == 68
 
 
 def test_foot_top_text_layer_ignores_trailing_space():
