@@ -339,6 +339,8 @@ def build_pdf(src, out, segs, res, progress=None):
     n_shots, shot_err = SH.apply(doc, segs, res)
     # текст страницы — сегменты с рамками строк; надписи скриншотов и абзацы DOCX вписываются не здесь
     segs = [s for s in segs if "frags" in s["loc"]]
+    if FIG.enabled():                   # флажки бланка, прочитанные буквами, — пиксели оригинала (figures.split_checkboxes)
+        segs, res = FIG.split_checkboxes(segs, res)
     shrink = []
     sub = fitz.open()
     for k, pno in enumerate(pages):

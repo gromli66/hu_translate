@@ -259,3 +259,48 @@ def test_build_pdf_scan_page_strips_cell_line_and_reports_lost_code(tmp_path, mo
     monkeypatch.setenv("HU_U_FIG", "0")                                         # выключено — как раньше: «|» рисуется, сверки нет
     info = build_pdf(str(src), str(out), [s], {"0": {"ru": "Дата: 2022-01-11 |"}})
     assert "|" in fitz.open(out)[0].get_text() and "verify" not in info
+
+
+def test_split_checkboxes_cuts_mark_letters_and_keeps_articles_and_edits():
+    seg_ = lambda i, t: {"id": i, "text": t, "loc": {"ocr": True, "frags": [[100, 10, 160, 20]],
+                                                    "bbox": [100, 10, 160, 20], "avail": [100, 10, 300, 20]}}
+    segs = [seg_(0, "CI nem"), seg_(1, "a nem"), seg_(2, "X IGEN"), seg_(3, "igen"), seg_(4, "Fr igen"), seg_(5, "KI igen")]
+    res = {"0": {"ru": "CI нет"}, "1": {"ru": "не"}, "2": {"ru": "X ДА"}, "3": {"ru": "да"},
+           "4": {"ru": "Фр да", "edited": True}, "5": {"ru": "ОТКЛ. да"}}
+    s2, r2 = FIG.split_checkboxes(segs, res)
+    assert [x["text"] for x in s2] == ["nem", "a nem", "IGEN", "igen", "Fr igen", "igen"]
+    assert {k: v["ru"] for k, v in r2.items()} == {"0": "нет", "1": "не", "2": "ДА", "3": "да", "4": "Фр да", "5": "да"}
+    assert s2[0]["loc"]["frags"][0][0] == pytest.approx(120) and s2[0]["loc"]["avail"][0] == pytest.approx(120)
+    assert s2[1]["loc"]["frags"][0][0] == 100                                      # «a nem» — слова, не флажок
+    assert segs[0]["text"] == "CI nem" and res["0"]["ru"] == "CI нет"             # исходные не меняются
+
+
+def test_build_pdf_keeps_checkbox_pixels_and_draws_only_yes_no(tmp_path, monkeypatch):
+    import numpy as np
+    from PIL import Image, ImageDraw
+    from assemble import build_pdf
+    k = 150 / 72
+    im = Image.new("RGB", (round(595 * k), round(842 * k)), "white")
+    ImageDraw.Draw(im).rectangle([100 * k, 301 * k, 108 * k, 309 * k], outline="black", width=3)     # флажок «☐»
+    buf = io.BytesIO()
+    im.save(buf, "PNG")
+    src, out = tmp_path / "scan.pdf", tmp_path / "ru.pdf"
+    d = fitz.open()
+    d.new_page(width=595, height=842).insert_image(fitz.Rect(0, 0, 595, 842), stream=buf.getvalue())
+    d.save(src)
+    s = {"id": 0, "page": 0, "text": "CI nem",
+         "loc": {"bbox": [100, 300, 160, 312], "avail": [100, 300, 400, 312], "frags": [[100, 300, 160, 312]], "size": 10,
+                 "bold": False, "family": "serif", "ocr": True}}
+    monkeypatch.setattr(FIG, "ocr_words", lambda pg, **kw: None)
+    for flag in ("1", "0"):
+        monkeypatch.setenv("HU_U_FIG", flag)
+        out = tmp_path / ("ru%s.pdf" % flag)
+        build_pdf(str(src), str(out), [s], {"0": {"ru": "CI нет"}})
+        q = fitz.open(out)[0]
+        pm = q.get_pixmap(dpi=150, clip=fitz.Rect(99, 300, 109, 310), colorspace=fitz.csGRAY)
+        dark = int((np.frombuffer(pm.samples, np.uint8) < 100).sum())
+        text = q.get_text().strip()
+        if flag == "1":
+            assert dark > 20 and text == "нет"                                  # флажок цел, «CI» не рисуется
+        else:
+            assert text == "CI нет"                                              # прежнее: на месте флажка — буквы «CI»

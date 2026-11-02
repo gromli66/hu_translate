@@ -284,6 +284,37 @@ def drawn_text(ru):
     return t or ru
 
 
+# флажок бланка («☐ igen» / «☒ nem»), прочитанный распознаванием буквами: «CI нет», «X да», «Fr да» — плашка стирала
+# флажок, и вместо него рисовались буквы (57 надписей в 36 документах корпуса). Флажок — пиксели оригинала: плашка и
+# перевод начинаются после него, а перевод — само «да»/«нет»
+CHECKBOX_WORD = re.compile(r"(?P<mark>\S{1,2})\s+(?P<word>igen|nem)", re.I)
+ARTICLES = {"a", "az", "és", "is", "ha", "ne", "de"}            # «a nem», «az igen» — слова, не флажок
+YES_NO = {"igen": "да", "nem": "нет"}
+
+
+def split_checkboxes(segs, res):
+    """(segs, res) без флажков-букв: у надписи «<1–2 знака> igen|nem» (распознавание, одна строка) рамка начинается после
+    флажка — по доле знаков (знаков до слова / знаков надписи; «CI нет» — 2 из 6), а перевод — «да»/«нет» (регистр как
+    у слова). Не трогаются перевод редактора и память переводов. Новые списки; исходные не меняются."""
+    out_s, out_r = list(segs), dict(res)
+    for i, s in enumerate(segs):
+        loc, r = s["loc"], res.get(str(s["id"]))
+        if not loc.get("ocr") or len(loc.get("frags") or []) != 1 or not r or not r.get("ru")                 or r.get("edited") or r.get("tm"):
+            continue
+        t = s["text"].strip()
+        m = CHECKBOX_WORD.fullmatch(t)
+        if not m or m["mark"].lower() in ARTICLES:
+            continue
+        x0, y0, x1, y1 = loc["frags"][0]
+        cut = x0 + (x1 - x0) * len(m["mark"]) / len(t)
+        moved = lambda b: [max(cut, b[0])] + list(b[1:])
+        out_s[i] = dict(s, text=m["word"], loc=dict(loc, frags=[moved(loc["frags"][0])], bbox=moved(loc["bbox"]),
+                                                    **({"avail": moved(loc["avail"])} if "avail" in loc else {})))
+        ru = YES_NO[m["word"].lower()]
+        out_r[str(s["id"])] = dict(r, ru=ru.upper() if m["word"].isupper() else ru)
+    return out_s, out_r
+
+
 TOKEN = re.compile(r"[^\W_](?:[^\s]*[^\W_])?")
 _CONFUSED = str.maketrans({"O": "0", "I": "1", "L": "1", "S": "5", "B": "8", "Z": "2", "|": "1"})   # путаница распознавания
 
