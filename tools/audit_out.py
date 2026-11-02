@@ -606,8 +606,11 @@ def check_hungarian(d):
 
 # ---------------------------------------------------------------- 8. снимок листа вместо таблицы
 def image_share(page, min_area=400):
-    """Доля площади листа под картинками (без мелких значков)."""
-    area = sum(pymupdf.Rect(i["bbox"]).get_area() for i in page.get_image_info() if pymupdf.Rect(i["bbox"]).get_area() >= min_area)
+    """Доля площади листа под картинками (без мелких значков). Картинка в несколько пикселей — заливка, не снимок: фон
+    листа ÜTJ — картинка 1×1 жёлтого во весь лист за текстом (docx_build._page_bg), и текстовые листы 01-02FMP0BIGT,
+    30HU*75GT шли «листами-картинками на 100 %»."""
+    area = sum(pymupdf.Rect(i["bbox"]).get_area() for i in page.get_image_info()
+               if pymupdf.Rect(i["bbox"]).get_area() >= min_area and i["width"] * i["height"] > 4)
     return min(1.0, area / (page.rect.width * page.rect.height))
 
 

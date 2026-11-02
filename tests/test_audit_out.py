@@ -335,3 +335,23 @@ def test_with_job_json_output_unchanged_by_new_flag(tmp_path, capsys):
     assert plain == strict and "JSON задания не найден" not in plain.out and plain.err == ""
     a = json.loads((tmp_path / "a.json").read_text(encoding="utf-8"))
     assert list(a) == ["zz_audit_nojson_7f3a"] and (tmp_path / "a.json").read_text() == (tmp_path / "b.json").read_text()
+
+
+def test_page_background_fill_is_not_a_picture_page(tmp_path):
+    """Фон листа — картинка 1×1 цвета во весь лист за текстом (листы ÜTJ, docx_build._page_bg): заливка, не снимок;
+    настоящая картинка во весь лист — снимок."""
+    import io
+    import pymupdf
+    from PIL import Image
+
+    def png(w, h):
+        buf = io.BytesIO()
+        Image.new("RGB", (w, h), "#FFFF99").save(buf, "PNG")
+        return buf.getvalue()
+    doc = pymupdf.open()
+    for w, h in ((1, 1), (60, 80)):
+        pg = doc.new_page(width=595, height=842)
+        pg.insert_image(pg.rect, stream=png(w, h), overlay=False)
+        pg.insert_text((60, 70), "Text", fontsize=10)
+    assert A.image_share(doc[0]) == 0.0
+    assert A.image_share(doc[1]) > 0.9                              # картинка 60×80 — во весь лист с полями пропорций
