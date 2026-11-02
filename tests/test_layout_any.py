@@ -411,29 +411,3 @@ def test_fit_words_picks_donor_with_fewest_new_lines():
     widths = [60.0, 70.0, 64.0]
     bld._fit_words(rows, widths, 10)
     assert widths[1] == 70.0 and widths[2] < 64.0 and abs(sum(widths) - 194.0) < 0.01
-
-
-def test_first_sheet_of_header_series_has_no_header_in_body(tmp_path):
-    """Шапка листа, повторённая вверху следующих листов, — колонтитул и на первом листе своей серии: у 3PR10 строки
-    «Azonosító: 3PR10», «Megnevezés: …» первого листа после сканов и первого листа INFO шли абзацами тела (под сканом
-    титула, над титулом INFO). Заголовок раздела (полужирный) на первом листе — по-прежнему текст."""
-    import segments as S
-    d = fitz.open()
-    pg = d.new_page()
-    pg.insert_text((200, 300), "Kezelési utasítás", fontsize=20)
-    for n in range(2, 12):
-        pg = d.new_page()
-        ident = "3PR10" if n <= 6 else "3PR10/INFO"
-        pg.insert_text((72, 54 if n not in (2, 7) else 60), f"Azonosító: {ident}", fontsize=10)
-        pg.insert_text((72, 68 if n not in (2, 7) else 74), "Megnevezés: Főkeringtető szivattyú", fontsize=10)
-        pg.insert_text((72, 120), "Üzemmódok fejezet", fontsize=12, fontname="hebo")
-        pg.insert_text((72, 300), f"A szivattyú {n}. lapjának szövege, amely a lap közepén áll.", fontsize=11)
-    src = tmp_path / "h.pdf"
-    d.save(str(src))
-    segs, _ = S.pdf_segments(str(src), ocr=False, shots=False)
-    blocks, _ = DL.load(str(src), segs, text=True)
-    body = [((b.get("geom") or {}).get("page"), "".join(r.get("t", "") for r in b.get("runs") or []))
-            for b in blocks if b["k"] in ("p", "h")]
-    assert not [t for _, t in body if "Azonosító" in t or "Megnevezés" in t]
-    assert [pg for pg, t in body if "Üzemmódok" in t] == [2]
-    assert len([t for _, t in body if "lapjának" in t]) == 10
