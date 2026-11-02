@@ -215,23 +215,28 @@ def test_codes_and_numbers_checked_with_ocr_confusions():
 
 def test_verify_page_loud_only_for_real_loss_minor_as_note(monkeypatch):
     page = fitz.open().new_page()
-    drawn = ["Идентификатор: 30YCGT", "Дата: 2022-01-11"]
-    monkeypatch.setattr(FIG, "ocr_words", lambda pg, **k: ["Дата:"])                  # оба кода потеряны
+    drawn = ["Идентификатор: 30YCGT", "Дата: 2022-01-11", "Блок 3-В, лист 55"]
+    monkeypatch.setattr(FIG, "ocr_words", lambda pg, **k: ["Дата:"])                  # все четыре кода потеряны
     msg, loud = FIG.verify_page(page, drawn, 2)
-    assert loud and "лист 3" in msg and "2022-01-11" in msg and "30YCGT" in msg and "2 из 2" in msg
-    monkeypatch.setattr(FIG, "ocr_words", lambda pg, **k: ["30YCGT", "Дата:"])        # один из двух — 50 %, но одно слово
+    assert loud and "лист 3" in msg and "2022-01-11" in msg and "30YCGT" in msg and "4 из 4" in msg
+    monkeypatch.setattr(FIG, "ocr_words", lambda pg, **k: ["30YCGT", "Дата:", "55", "3-B"])   # потеряна одна дата
     msg, loud = FIG.verify_page(page, drawn, 2)
-    assert not loud and "1 из 2" in msg
+    assert not loud and "1 из 4" in msg and "2022-01-11" in msg
+    monkeypatch.setattr(FIG, "ocr_words", lambda pg, **k: ["30YCGT", "55"])               # два из четырёх — ещё сведения
+    assert FIG.verify_page(page, drawn, 2)[1] is False
     many = ["код %d%d" % (i, i) for i in range(10)]
     monkeypatch.setattr(FIG, "ocr_words", lambda pg, **k: [t for t in "11 22 33 44 55 66 77 88 99".split()])
     assert FIG.verify_page(page, many, 0)[1] is False                                  # одно слово из десяти — сведения
-    monkeypatch.setattr(FIG, "ocr_words", lambda pg, **k: ["11", "22", "33", "44", "55", "66", "77"])
-    assert FIG.verify_page(page, many, 0)[1] is True                                   # три из десяти — громко
-    monkeypatch.setattr(FIG, "ocr_words", lambda pg, **k: ["30YCGT", "2022-01-11"])
+    monkeypatch.setattr(FIG, "ocr_words", lambda pg, **k: ["11", "22", "33", "44", "55", "66"])
+    assert FIG.verify_page(page, many, 0)[1] is True                                   # четыре из десяти — громко
+    monkeypatch.setattr(FIG, "ocr_words", lambda pg, **k: ["30YCGT", "2022-01-11", "3-B", "55"])
     assert FIG.verify_page(page, drawn, 2) is None
     monkeypatch.setattr(FIG, "ocr_words", lambda pg, **k: None)                        # нет Tesseract — сверка пропущена
     assert FIG.verify_page(page, ["30YCGT"], 0) is None
     assert FIG.verify_page(page, ["Дата:", "Подпись:"], 0) is None                      # кодов в переводе нет
+    big = "A1" * 20000
+    monkeypatch.setattr(FIG, "ocr_words", lambda pg, **k: [])
+    assert len(FIG.verify_page(page, [big], 0)[0]) < 200                                # токен в сообщении обрезан
 
 
 def test_build_pdf_scan_page_strips_cell_line_and_reports_lost_code(tmp_path, monkeypatch):
@@ -252,10 +257,11 @@ def test_build_pdf_scan_page_strips_cell_line_and_reports_lost_code(tmp_path, mo
     info = build_pdf(str(src), str(out), [s], {"0": {"ru": "Дата: 2022-01-11 |"}})
     assert fitz.open(out)[0].get_text().strip() == "Дата: 2022-01-11"
     assert "2022-01-11" in info["verify_notes"][0] and "verify" not in info        # одно слово из одного — сведения, не тревога
-    s2 = dict(s, id=1, text="Verzió 30YCGT 2022-01-11", loc=dict(s["loc"], bbox=[60, 330, 180, 342],
+    s2 = dict(s, id=1, text="Verzió 30YCGT 2022-01-11 10135772", loc=dict(s["loc"], bbox=[60, 330, 180, 342],
               avail=[60, 330, 520, 342], frags=[[60, 330, 180, 342]]))
-    info = build_pdf(str(src), str(out), [s, s2], {"0": {"ru": "Дата: 2022-01-11"}, "1": {"ru": "Версия 30YCGT 2022-01-11"}})
-    assert info["verify"] and "30YCGT" in info["verify"][0]                        # два из двух — громко
+    info = build_pdf(str(src), str(out), [s, s2], {"0": {"ru": "Дата: 2022-01-11"},
+                                                    "1": {"ru": "Версия 30YCGT 2022-01-11 10135772"}})
+    assert info["verify"] and "30YCGT" in info["verify"][0]                        # три из трёх — громко
     monkeypatch.setenv("HU_U_FIG", "0")                                         # выключено — как раньше: «|» рисуется, сверки нет
     info = build_pdf(str(src), str(out), [s], {"0": {"ru": "Дата: 2022-01-11 |"}})
     assert "|" in fitz.open(out)[0].get_text() and "verify" not in info
@@ -270,7 +276,7 @@ def test_split_checkboxes_cuts_mark_letters_and_keeps_articles_and_edits():
     s2, r2 = FIG.split_checkboxes(segs, res)
     assert [x["text"] for x in s2] == ["nem", "a nem", "IGEN", "igen", "Fr igen", "igen"]
     assert {k: v["ru"] for k, v in r2.items()} == {"0": "нет", "1": "не", "2": "ДА", "3": "да", "4": "Фр да", "5": "да"}
-    assert s2[0]["loc"]["frags"][0][0] == pytest.approx(120) and s2[0]["loc"]["avail"][0] == pytest.approx(120)
+    assert s2[0]["loc"]["frags"][0][0] == pytest.approx(126) and s2[0]["loc"]["avail"][0] == pytest.approx(126)
     assert s2[1]["loc"]["frags"][0][0] == 100                                      # «a nem» — слова, не флажок
     assert segs[0]["text"] == "CI nem" and res["0"]["ru"] == "CI нет"             # исходные не меняются
 
@@ -385,3 +391,52 @@ def test_checkbox_split_only_for_russian_translation():
     assert s2[0]["text"] == "Ki nem"                                           # «Ki nem» — слова
     s2, _ = FIG.split_checkboxes([dict(seg_, text="KI igen")], {"0": {"ru": "ОТКЛ. да"}})
     assert s2[0]["text"] == "igen"                                             # «KI» заглавными — флажок
+
+
+def test_clamp_zones_keeps_body_title_between_header_text_and_line():
+    """Заголовок рисунка под шапкой с подчёркиванием — тело листа, а не рамка шапки: снимок остаётся с ним."""
+    R = fitz.Rect(8, 45, 834, 578)
+    FIG.clamp_zones(R, [[52, 34, 166, 47]], [], [(58, 40, 800)], 842, body=[[52, 49, 200, 56]])
+    assert R.y0 == 49                                                           # только над текстом шапки (47 + 2)
+    R = fitz.Rect(8, 45, 834, 578)
+    FIG.clamp_zones(R, [[52, 34, 166, 47]], [], [(58, 40, 800)], 842, body=[[52, 80, 200, 90]])
+    assert R.y0 == 60                                                           # тело ниже линии — линия была рамкой шапки
+
+
+def test_checkbox_edge_survives_when_gap_is_small(tmp_path, monkeypatch):
+    """Флажок 8×8 pt, зазор 3 pt, слово «igen»: плашка перевода не задевает границу флажка (красная команда)."""
+    import numpy as np
+    from PIL import Image, ImageDraw
+    from assemble import build_pdf
+    k = 150 / 72
+    im = Image.new("RGB", (round(595 * k), round(842 * k)), "white")
+    dr = ImageDraw.Draw(im)
+    dr.rectangle([100 * k, 301 * k, 108 * k, 309 * k], outline="black", width=2)
+    dr.rectangle([111 * k, 302 * k, 138 * k, 308 * k], fill="black")                 # слово «igen» (27 pt)
+    buf = io.BytesIO()
+    im.save(buf, "PNG")
+    src = tmp_path / "scan.pdf"
+    d = fitz.open()
+    d.new_page(width=595, height=842).insert_image(fitz.Rect(0, 0, 595, 842), stream=buf.getvalue())
+    d.save(src)
+    s = {"id": 0, "page": 0, "text": "CI igen",
+         "loc": {"bbox": [100, 300, 138, 310], "avail": [100, 300, 400, 310], "frags": [[100, 300, 138, 310]], "size": 10,
+                 "bold": False, "family": "serif", "ocr": True}}
+    monkeypatch.setattr(FIG, "ocr_words", lambda pg, **kw: None)
+    build_pdf(str(src), str(tmp_path / "ru.pdf"), [s], {"0": {"ru": "CI да"}})
+    pm = fitz.open(tmp_path / "ru.pdf")[0].get_pixmap(dpi=150, clip=fitz.Rect(99, 300, 109.5, 310), colorspace=fitz.csGRAY)
+    a = np.frombuffer(pm.samples, np.uint8).reshape(pm.height, pm.width)
+    cols = (a < 100).sum(0)
+    assert cols[:4].max() >= 6 and cols[15:20].max() >= 6                      # обе границы рамки флажка (x=100 и 108) целы
+
+
+def test_short_phrases_are_not_checkboxes_and_bars_are_linear():
+    import time
+    seg_ = lambda t: {"id": 0, "text": t, "loc": {"ocr": True, "frags": [[100, 10, 160, 20]], "bbox": [100, 10, 160, 20]}}
+    for t, ru in (("Én nem", "Я не"), ("ő nem", "Он не"), ("se nem", "ни не")):
+        assert FIG.split_checkboxes([seg_(t)], {"0": {"ru": ru}})[0][0]["text"] == t, t   # фраза, а не флажок
+    s2, r2 = FIG.split_checkboxes([seg_("CI Igen")], {"0": {"ru": "CI да"}})
+    assert r2["0"]["ru"] == "Да"                                               # регистр слова сохранён
+    t0 = time.time()
+    assert FIG.drawn_text("x" + " |" * 40000 + "x") == "x" + " |" * 40000 + "x" and time.time() - t0 < 2
+    assert FIG.label_key("| | Név: | |") == "Név:"

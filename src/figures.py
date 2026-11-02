@@ -203,21 +203,27 @@ def scheme_regions(page, pno, drawings, segs, masked, tabs, figs, rules=((), ())
 
 
 # ------------------------------------------------------------------ снимок листа
-def clamp_zones(R, head, foot, hs, W):
+def clamp_zones(R, head, foot, hs, W, body=()):
     """Рамка снимка листа не заходит в колонтитулы оригинала: их печатает DOCX сам, а нижняя линия рамки шапки и обрывок
     «Oldalszám: 17.» под ней оставались в снимке лишней линией, и снимок был выше поля листа — ужимался (схема GF).
     head, foot — рамки сегментов колонтитулов (вне тела) в зонах листа; hs — горизонтали листа [(y, x0, x1)]; W — ширина
-    листа. Линия рамки — ниже текста шапки (или выше текста подвала) не дальше GM.FRAME_GAP и от половины листа шириной.
-    Вызывается ПОСЛЕ полей снимка: поле в 4 pt иначе возвращало бы текст колонтитула."""
+    листа; body — рамки сегментов тела листа. Линия рамки — ниже текста шапки (или выше текста подвала) не дальше
+    GM.FRAME_GAP, от половины листа шириной, и между ней и текстом колонтитула нет текста тела (подчёркнутый заголовок
+    рисунка под шапкой — тело, а не рамка шапки). Вызывается ПОСЛЕ полей снимка: поле в 4 pt иначе возвращало бы текст
+    колонтитула. От снимка осталась полоска (< GM.CLAMP_MIN) — обрезки нет."""
     wide = [y for y, a, b in hs if b - a >= 0.5 * W]
     y0, y1 = R.y0, R.y1
     if head:
         bottom = max(h[3] for h in head)
-        y0 = max(y0, bottom + 2, *(y + 2 for y in wide if bottom - 1 <= y <= bottom + GM.FRAME_GAP))
+        frame = [y + 2 for y in wide if bottom - 1 <= y <= bottom + GM.FRAME_GAP
+                 and not any(b[3] > bottom and b[1] < y for b in body)]
+        y0 = max(y0, bottom + 2, *frame)
     if foot:
         top = min(f[1] for f in foot)
-        y1 = min(y1, top - 2, *(y - 2 for y in wide if top - GM.FRAME_GAP <= y <= top + 1))
-    if y1 - y0 >= GM.CLAMP_MIN:                                      # от снимка осталась полоска — колонтитул не тот
+        frame = [y - 2 for y in wide if top - GM.FRAME_GAP <= y <= top + 1
+                 and not any(b[1] < top and b[3] > y for b in body)]
+        y1 = min(y1, top - 2, *frame)
+    if y1 - y0 >= GM.CLAMP_MIN:
         R.y0, R.y1 = y0, y1
     return R
 
@@ -234,7 +240,6 @@ FORM_TITLES = {
     "modj": re.compile(r"M[ÓO]DOS[ÍI]T[ÁA]S\w*\s+JEGYZ[ÉE]K", re.I),
 }
 TITLE_MAX = 60                      # заголовок формы — короткая строка, а не ссылка на неё в тексте
-BORDER = re.compile(r"^(?:\s*\|)+\s*|(?:\s*\|)+\s*$")       # линии ячеек, прочитанные распознаванием как «|», — по краям
 LABELS_FILE = Path(__file__).resolve().parent / "form_labels.json"
 _labels = {}
 
@@ -254,9 +259,18 @@ def known_form(segs):
     return found.pop() if len(found) == 1 else None
 
 
+def strip_bars(text):
+    """Без пробелов и «|» по краям: линии ячеек, прочитанные распознаванием как знак (посреди строки «|» — текст)."""
+    while True:
+        t = text.strip().strip("|")
+        if t == text:
+            return t
+        text = t
+
+
 def label_key(text):
     """Подпись без «|» по краям и лишних пробелов — ключ словаря форм."""
-    return re.sub(r"\s+", " ", BORDER.sub("", text)).strip()
+    return re.sub(r"\s+", " ", strip_bars(text))
 
 
 def is_label(text):
@@ -307,8 +321,7 @@ def apply_form_labels(segs, res):
 def drawn_text(ru):
     """Перевод для рисования поверх скана без «|» по краям: линия ячейки, прочитанная как знак, рисовалась буквой
     («Дата: 2022-01-11 |»), хотя сама линия стёрта плашкой строки."""
-    t = BORDER.sub("", ru).strip()
-    return t or ru
+    return strip_bars(ru) or ru
 
 
 # флажок бланка («☐ igen» / «☒ nem»), прочитанный распознаванием буквами: «CI нет», «X да», «Fr да» — плашка стирала
@@ -320,14 +333,18 @@ SHORT_WORDS = {"és", "is", "ha", "ne", "de", "ki", "be", "el", "le", "fel"}   #
 YES_NO = {"igen": "да", "nem": "нет"}
 
 
+YES_NO_RU = re.compile(r"(?:\S{1,6}\s+)?(да|нет)", re.I)       # перевод надписи — «<значок> да|нет», а не фраза («Это не»)
+
+
 def split_checkboxes(segs, res):
-    """(segs, res) без флажков-букв: у надписи «<1–2 знака> igen|nem» (распознавание, одна строка) рамка начинается после
-    флажка — по доле знаков (знаков до слова / знаков надписи; «CI нет» — 2 из 6), а перевод — «да»/«нет» (регистр как
-    у слова). Не трогаются перевод редактора и память переводов. Новые списки; исходные не меняются."""
+    """(segs, res) без флажков-букв: у надписи «<1–2 знака> igen|nem» (распознавание, одна строка), перевод которой —
+    «<значок> да|нет», рамка начинается после флажка — на середине пробела между ним и словом (по доле знаков), а перевод —
+    «да»/«нет» (регистр как у слова). Не трогаются: перевод не на русский, редактора (edited), память (tm), слова-фразы
+    («a nem», «Ki nem»; заглавными «KI igen» — флажок). Новые списки; исходные не меняются."""
     out_s, out_r = list(segs), dict(res)
     for i, s in enumerate(segs):
         loc, r = s["loc"], res.get(str(s["id"]))
-        if not loc.get("ocr") or len(loc.get("frags") or []) != 1 or not r or not re.search("[а-яё]", r.get("ru") or "", re.I)                 or r.get("edited") or r.get("tm"):
+        if not loc.get("ocr") or len(loc.get("frags") or []) != 1 or not r or r.get("edited") or r.get("tm")                 or not YES_NO_RU.fullmatch((r.get("ru") or "").strip()):
             continue                                                  # «да»/«нет» — только для перевода на русский
         t = s["text"].strip()
         m = CHECKBOX_WORD.fullmatch(t)
@@ -335,12 +352,13 @@ def split_checkboxes(segs, res):
         if not m or low in ARTICLES or low in SHORT_WORDS and m["mark"] != m["mark"].upper():
             continue
         x0, y0, x1, y1 = loc["frags"][0]
-        cut = x0 + (x1 - x0) * len(m["mark"]) / len(t)
+        cut = x0 + (x1 - x0) * (len(m["mark"]) + 0.5) / len(t) + 1      # середина пробела + 1 pt: плашка (cut − 2) флажка не касается
         moved = lambda b: [max(cut, b[0])] + list(b[1:])
         out_s[i] = dict(s, text=m["word"], loc=dict(loc, frags=[moved(loc["frags"][0])], bbox=moved(loc["bbox"]),
                                                     **({"avail": moved(loc["avail"])} if "avail" in loc else {})))
         ru = YES_NO[m["word"].lower()]
-        out_r[str(s["id"])] = dict(r, ru=ru.upper() if m["word"].isupper() else ru)
+        w = m["word"]
+        out_r[str(s["id"])] = dict(r, ru=ru.upper() if w.isupper() else ru.capitalize() if w[0].isupper() else ru)
     return out_s, out_r
 
 
@@ -353,10 +371,11 @@ _LOOKALIKE = str.maketrans("АВСЕНКМОРТХ", "ABCEHKMOPTX")        # к�
 
 def _tok(w):
     """Слово для сверки: заглавные, без знаков по краям, кириллические двойники латиницы — латиницей; в слове с цифрой
-    «O», «I», «L», «S», «B», «Z» — как «0», «1», «1», «5», «8», «2» (путаница распознавания)."""
-    w = w.strip(".,;:()[]{}|/-–—_«»\"'“”„\\").upper()
+    «O», «I», «L», «S», «B», «Z» — как «0», «1», «1», «5», «8», «2» (путаница распознавания), «,» — как «.»,
+    «−», «–», «—» — как «-»."""
+    w = w.strip(".,;:()[]{}|/-–—−_«»\"'“”„\\").upper()
     if re.search(r"\d", w):
-        w = w.translate(_LOOKALIKE).translate(_CONFUSED)
+        w = re.sub("[–—−]", "-", w.translate(_LOOKALIKE).translate(_CONFUSED).replace(",", "."))
     return w
 
 
@@ -367,7 +386,7 @@ def code_map(text):
     for w in TOKEN.findall(text):
         t = _tok(w)
         if re.search(r"\d", t) and len(t) >= 2:
-            out.setdefault(t, w.strip(".,;:()[]{}|"))
+            out.setdefault(t, w.strip(".,;:()[]{}|")[:40])
     return out
 
 
@@ -408,7 +427,7 @@ def ocr_words(page, dpi=200, lang="rus+eng"):
         print(f"figures: второе распознавание листа не выполнено: {type(e).__name__}: {e}"[:200], flush=True)
         return None
     if r.returncode:
-        print(f"figures: tesseract: {r.stderr.strip()[:160]}", flush=True)
+        print(f"figures: tesseract: {(r.stderr or '').strip()[:160]}", flush=True)
         return None
     out = []
     for ln in r.stdout.splitlines()[1:]:

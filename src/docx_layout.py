@@ -1333,7 +1333,8 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
             R = (R + (-4, -4, 4, 4)) & page.rect
             if scheme and not lead:                             # колонтитул оригинала — не в снимке: его печатает DOCX
                 FIG.clamp_zones(R, [s["loc"]["bbox"] for s in off if _zone(s, Hp) == "head"],
-                                [s["loc"]["bbox"] for s in off if _zone(s, Hp) == "foot"], per[pno][0], page.rect.width)
+                                [s["loc"]["bbox"] for s in off if _zone(s, Hp) == "foot"], per[pno][0], page.rect.width,
+                                [s["loc"]["bbox"] for s in segs])
             img = {"clip": [R.x0, R.y0, R.x1, R.y1], "page_number": pno + 1, "x0": R.x0, "x1": R.x1, "top": R.y0,
                    "bottom": R.y1}
             out[pno] = [{"rect": R, "ids": {s["id"] for s in segs},
