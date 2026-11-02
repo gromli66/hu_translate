@@ -1930,6 +1930,24 @@ def test_join_tables_with_different_grid_stay_separate_even_with_repeated_header
     assert len(S.join_tables([mk(three, [head(3), body(3)], 1), same])) == 1
 
 
+def test_join_tables_drops_blank_frame_rows_of_earlier_sheet():
+    """Таблица бланка на каждом листе — сведения и пустые строки до низа рамки (INFO 3PR10 «Hőcserélők»): склеенная через
+    лист, пустые строки первой части вставали посередине таблицы, а последней — уезжали хвостом на новый лист. Пустые
+    строки после текста части, за которой таблица продолжается, — прочь (линии строк — тоже); пустой бланк — как есть."""
+    cell = lambda t, th=False: {"blocks": [p(t)] if t else [], "th": th}
+    head = lambda: [cell("Hőcserélők", True), cell("M", True)]
+    part = lambda page, info: {"k": "table", "geom": {"page": page},
+                               "rows": [head()] + [[cell(t), cell("")] for t in info] + [[cell(""), cell("")]] * 3,
+                               "frame": {"ys": [72 + 35 * i for i in range(len(info) + 5)], "row_lines": True}}
+    got = D.join_tables([part(29, ["YE13W001", "A301"]), part(30, ["TK61W001", "A301"])])
+    assert len(got) == 1
+    rows = [[c["blocks"][0]["runs"][0]["t"] if c["blocks"] else "" for c in r] for r in got[0]["rows"]]
+    assert [r[0] for r in rows] == ["Hőcserélők", "YE13W001", "A301", "TK61W001", "A301", "", "", ""]
+    assert len(got[0]["frame"]["ys"]) == len(rows) + 1
+    empty = lambda page: {"k": "table", "geom": {"page": page}, "rows": [head()] + [[cell(""), cell("")]] * 3}
+    assert [len(t["rows"]) for t in D.join_tables([empty(29), empty(30)])] == [7]       # пустой бланк на два листа
+
+
 def test_cell_pad_is_not_the_empty_space_to_the_sheet_frame():
     """Поле ячейки оригинала — до 14 pt: у бланка без горизонталей между строками «до линии снизу» выходило до рамки
     листа (491 pt у 30RA+SGT TU), и каждая строка таблицы шла на свой лист; слева — нижняя четверть, сверху/снизу — медиана."""

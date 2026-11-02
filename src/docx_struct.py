@@ -523,6 +523,20 @@ def join_tables(bs):
                      or _tail_pairs(prev["rows"][-1], b["rows"][0])) \
                 and ((rep and not _other_grid(prev, b)) or (not rep and _same_cols(prev, b))) \
                 and (b.get("geom") or {}).get("page", 0) > (prev.get("geom") or {}).get("page", 0):
+            # пустые строки в конце части, после строк с текстом, — рамка бланка до низа листа (INFO 3PR10
+            # «Hőcserélők»: 7 строк сведений и 9 пустых на каждом листе): в склеенной таблице они вставали посередине, а
+            # пустые строки последней части уезжали хвостом на новый лист. Часть без текста в теле — пустой бланк (лист
+            # ознакомления ИН-1065: шапка без TH и пустые графы) — как есть
+            blank = lambda r: not any(cell_t(c) or any("img" in q for x in c.get("blocks", []) if x["k"] == "p"
+                                                       for q in x.get("runs") or []) for c in r)
+            rows0, k = prev["rows"], len(prev["rows"])
+            while k and blank(rows0[k - 1]):
+                k -= 1
+            if max(head_n(prev), prev.get("repeat_rows", 0), 1) < k < len(rows0):
+                fr = prev.get("frame") or {}
+                ys0 = fr.get("ys") or []
+                prev = dict(prev, rows=rows0[:k], **({"frame": dict(fr, ys=ys0[:k + 1])} if len(ys0) == len(rows0) + 1
+                                                     else {}))
             rows = b["rows"][rep:]
             # картинки, что Word вложил в повтор шапки (значки строк прошлого листа, JPDS табл. 15), — не прочь:
             # их по месту на листе переселит adopt
