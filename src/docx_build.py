@@ -1032,6 +1032,34 @@ class Builder:
             from docx.enum.text import WD_TAB_ALIGNMENT
             par.paragraph_format.tab_stops.add_tab_stop(Pt(self.L["W"] - self.L["right"] - self.left), WD_TAB_ALIGNMENT.RIGHT)
 
+    def _cell_par(self, par, x, prev, edges, al):
+        """Абзац ячейки текстового слоя — по своему месту на листе оригинала: лист бланка — одна большая ячейка
+        (01-02FMP0BIGT л. 2, NIGHT2_EYES п. 15), и заголовок по центру уходил влево, пустые строки между абзацами
+        пропадали (лист плотнее оригинала), пункт «1. …» шёл без висячего отступа. prev — место абзаца выше в ячейке,
+        edges — края ячейки на листе (линии столбцов), al — выключка столбца."""
+        from docx.shared import Pt
+        g = x.get("geom") or {}
+        pf = par.paragraph_format
+        line = (g["bottom"] - g["top"]) / max(g.get("lines") or 1, 1) if g.get("top") is not None else 0
+        # зазор над абзацем — как в оригинале, если больше полкегля (пустая строка), но не больше строки текста:
+        # зазоры бланков в 25–30 pt раздували перевод на листы (как «pad» подстрок, 30TKBSZ36BIGT)
+        if prev and line and prev.get("page") == g.get("page") and prev.get("bottom") is not None:
+            gap = g["top"] - prev["bottom"]
+            if gap >= 0.4 * (g.get("size") or 10):
+                pf.space_before = Pt(round(min(gap, line), 1))
+        if al not in (None, "left") or g.get("x0") is None:
+            return
+        # строка по середине ячейки, помеченная «по центру», — по центру («ÁLTALÁNOS INFORMÁCIÓK»)
+        if edges and x.get("align") == "center" and (g.get("lines") or 1) == 1 \
+                and abs((g["x0"] - edges[0]) - (edges[1] - g["x1"])) < 6 and g["x0"] - edges[0] > 8:
+            par.alignment = 1
+            return
+        # пункт с меткой, перенесённые строки правее первой («1. A reaktor …» / «primerkör …») — висячим отступом
+        hang = (g.get("rest_x0") or 0) - (g.get("first_x0") or 0)
+        if 5 < hang <= 40 and re.match(rf"\s*(?:{PT.ITEM_LABEL}|[{PT.MARKERS}])\s", text_of(x["runs"])):
+            pf.left_indent = Pt(round(hang, 1))
+            pf.first_line_indent = Pt(-round(hang, 1))
+
     # ---------------------------------------------------------------- блоки
     def paragraph(self, b, style="Normal", tgt=None):
         runs = b["runs"]
@@ -1622,16 +1650,18 @@ class Builder:
                         al = "center"
                 if al:
                     style = self._aligned(style, al)
+                cell_x = (bounds[spans[ci][0]], bounds[spans[ci][1] + 1]) if len(bounds) == ncol + 1 else None
+                prev = None                                 # место предыдущего абзаца ячейки на листе оригинала
                 for x in cell["blocks"]:
                     if x["k"] == "list":
-                        self.list_(x, 0, dc); continue
+                        self.list_(x, 0, dc); prev = None; continue
                     if x["k"] == "table":
                         # таблица в ячейке (листовка из Word свёрстана таблицей в таблице) — вложенной таблицей; раньше
                         # пропускалась вместе с текстом (№09 партии 2: 94 % слов, 22.10)
                         keep = self._room, self._tab_base, getattr(self, "_cell_base", None)
                         self.table(x, tgt=dc)
                         self._room, self._tab_base, self._cell_base = keep
-                        used = True
+                        used, prev = True, None
                         continue
                     if x["k"] != "p" or not x["runs"]:
                         continue
@@ -1648,6 +1678,9 @@ class Builder:
                     # вложенный перечень (nest выше) — с отступом: все абзацы ячейки шли от её края
                     if par is not None and al in (None, "left") and nest.get(id(x)):
                         par.paragraph_format.left_indent = Pt(round(nest[id(x)], 1))
+                    elif par is not None and x.get("seg"):
+                        self._cell_par(par, x, prev, cell_x, al)
+                    prev = x.get("geom")
                 room = self._room.get(starts[ci]) if spans[ci][1] == spans[ci][0] else None
 
                 def widest(par, eff, whole=False):

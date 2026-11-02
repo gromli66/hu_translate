@@ -1151,6 +1151,39 @@ def test_nested_list_in_cell_keeps_indent_and_subheading_underline(tmp_path):
     assert any(r.underline for p in t.rows[0].cells[1].paragraphs for r in p.runs if r.text == "Закрыты:")
 
 
+def test_whole_sheet_cell_keeps_center_gaps_and_hanging_items(tmp_path):
+    """01-02FMP0BIGT л. 2 (NIGHT2_EYES п. 15): лист бланка — одна большая ячейка. Заголовок по середине ячейки — по
+    центру, пустая строка над абзацем — зазором (не больше строки текста), пункт «1. …», перенесённые строки которого
+    правее первой, — висячим отступом; строка вплотную под предыдущей — без зазора."""
+    def para(t, x0, x1, top, lines=1, align="left", rest=None):
+        g = {"page": 1, "top": top, "bottom": top + 13 * lines, "x0": x0, "x1": x1, "first_x0": x0, "size": 10,
+             "lines": lines, **({"rest_x0": rest} if rest else {})}
+        return {"k": "p", "runs": [{"t": t, "font": "Times New Roman", "size": 10, "b": False, "i": False,
+                                    "color": "000000"}], "geom": g, "seg": True, "align": align}
+    ps = [para("ÁLTALÁNOS INFORMÁCIÓK", 246, 386, 112, align="center"),
+          para("A próba terjedelme:", 136, 223, 141),
+          para("1. A reaktor minimálisan ellenőrizhető teljesítményre hozása", 138, 461, 172, lines=4, rest=152),
+          para("2. Minimálisan ellenőrizhető teljesítményen mérések", 138, 424, 222, lines=2, rest=152)]
+    edges = {"top": True, "bottom": True, "left": True, "right": True}
+    head = [para("Sorsz.", 77, 110, 84), para("Feltétel, művelet, ellenőrzés", 257, 378, 84, align="center")]
+    for h in head:
+        h["runs"][0]["b"] = True
+    rows = [[{"blocks": [h], "th": False, "geom": h["geom"], "span": 1, "edges": edges} for h in head],
+            [{"blocks": [], "th": False, "geom": None, "span": 1, "edges": edges},
+             {"blocks": ps, "th": False, "span": 1, "edges": edges,       # место ячейки — по всем её абзацам
+              "geom": {"page": 1, "top": 112, "bottom": 248, "x0": 136, "x1": 461, "first_x0": 136, "size": 10, "lines": 8}}]]
+    tab = {"k": "table", "rows": rows, "borders": True, "frame": {"xs": [71, 120, 512], "ys": [80, 100, 260]},
+           "geom": {"page": 1, "top": 80, "bottom": 260, "x0": 71, "x1": 512, "first_x0": 71, "size": 10}}
+    out = tmp_path / "c.docx"
+    B.Builder(B.Memory([]), lambda img: png(), PROFILE).build([tab], str(out), dict(LAYOUT, first_is_body=True))
+    got = {p.text[:6]: p for c in Document(str(out)).tables[0]._cells for p in c.paragraphs if p.text}
+    assert got["ÁLTALÁ"].alignment == 1
+    assert round(got["A prób"].paragraph_format.space_before.pt) == 13           # зазор 16 pt — не больше строки
+    pf = got["1. A r"].paragraph_format
+    assert round(pf.left_indent.pt) == 14 and round(pf.first_line_indent.pt) == -14
+    assert got["2. Min"].paragraph_format.space_before is None                     # вплотную под пунктом 1
+
+
 def test_review_0211_narrowed_rules(tmp_path):
     """Ред-тим 02.11: отступ — только вложенному перечню под строкой с двоеточием (строка через линию столбца не сдвигает
     остальные); рамка вокруг полужирного заголовка — не таблица; пунктир под тесной ячейкой — не подчёркивание;

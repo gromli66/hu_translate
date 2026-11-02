@@ -970,6 +970,9 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields
                 gg = {"page": pno + 1, "top": g0[1], "bottom": max(g["loc"]["bbox"][3] for g in group), "x0": g0[0],
                       "x1": max(g["loc"]["bbox"][2] for g in group), "first_x0": g0[0], "size": size,
                       "lines": max(len(g["loc"].get("frags") or [1]) for g in group)}
+                fr = group[0]["loc"].get("frags") or []
+                if len(group) == 1 and len(fr) > 1:         # начало первой строки и остальных (висячий отступ пункта)
+                    gg.update(first_x0=fr[0][0], rest_x0=min(f[0] for f in fr[1:]))
                 runs = _runs_of(group, bold, font, size, mono)
                 for ru in runs if pua else ():               # значки частной области — знаком по виду (_pua_glyph)
                     ru["t"] = "".join(pua.get(ch, ch) for ch in ru["t"])
