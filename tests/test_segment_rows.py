@@ -156,6 +156,9 @@ def test_phrase_continuing_past_anchor_rows_is_not_cut():
     names = [_fr(f"szelep {i}", (140, 100 + 12 * i, 200, 112 + 12 * i)) for i in range(4)]
     rw = RW.Rows(codes + names + desc, [])
     assert all(rw.apart(x, y) is None for x, y in zip(desc, desc[1:]))
+    # значения столбца с одного слова («csapágy szegm. fémhőfok» ×2, 1SZ01 л. 90) — не продолжение фразы: режутся
+    vals = [_fr("csapágy szegm. fémhőfok", (260, 100 + 12 * i, 400, 112 + 12 * i)) for i in range(2)]
+    assert RW.Rows(codes + names + vals, []).apart(vals[0], vals[1]) == "якорь"
     assert len(_texts(codes + names + desc)) == 4 + 4 + 1
     nums = [_fr(f"{i}.", (72, 100 + 12 * i, 84, 112 + 12 * i)) for i in range(1, 5)]
     prose = [_fr("Az üzemeltető személyzet a próba előtt", (320, 112, 560, 124)),

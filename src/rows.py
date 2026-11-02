@@ -148,8 +148,11 @@ class Rows:
         size = max(fa.get("size") or 0, fb.get("size") or 0)
         oa = self._own(a)
         if oa is not None:
-            return oa != ob and not (_mid(b) - _mid(a) <= 1.3 * size
-                                     and (mid_phrase(fa["t"], fb["t"]) or hyphen_break(fa["t"], fb["t"])))
+            # две строки с одного слова — значения столбца («csapágy szegm. fémhőfok» ×2, «főolaj sz. …» ×2, 1SZ01
+            # л. 90–95), а не продолжение фразы
+            cont = (mid_phrase(fa["t"], fb["t"]) or hyphen_break(fa["t"], fb["t"])) \
+                and fa["t"].split()[:1] != fb["t"].split()[:1]
+            return oa != ob and not (_mid(b) - _mid(a) <= 1.3 * size and cont)
         # без своего якоря строка fa — в ряду якоря выше (или в шапке над первым рядом: «Elosztó helye» над «E601/II»,
         # 3FI18 л. 38): новый ряд — только через зазор рядов
         return _mid(b) - _mid(a) > 1.5 * size
