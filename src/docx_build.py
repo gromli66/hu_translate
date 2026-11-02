@@ -1573,24 +1573,29 @@ class Builder:
                             nest[id(x)] = x0 - intro[a]
                             continue
                         intro[a] = x0 if text_of(x["runs"]).rstrip().endswith(":") else None
-        # строки столбца, выключенные в оригинале вправо: у трёх и больше абзацев столбца на листе общий правый край
-        # (±2 pt, и у последней строки), начала разные и правее левого края текста столбца на 20 pt и больше —
-        # перечень «A főkeringtető szivattyúk …», «30TH12S003» 30PR132GT л. 34 (NIGHT2_EYES п. 12) шёл влево
+        # строки столбца, выключенные в оригинале вправо: у трёх и больше абзацев столбца на листе (не шапки) общий
+        # правый край (±1,5 pt, и у последней строки), а середины расходятся на 10 pt и больше (не столбец по центру:
+        # коды одной ширины, «Наименование», значения «20 бар» по центру — 3SZ17, 3SZ23, 30PR25GT, ред-тим 02.11), и
+        # начала правее левого края текста столбца на 20 pt и больше — перечень «A főkeringtető szivattyúk …»,
+        # «30TH12S003» 30PR132GT л. 34 (NIGHT2_EYES п. 12) шёл влево
         flush, col = set(), {}
         for row in rows:
             if all("span" in c for c in row):
                 for i, c in enumerate(row):
-                    for x in c["blocks"]:
+                    for x in [] if c.get("th") else c["blocks"]:
                         g = x.get("geom") or {}
                         if x["k"] == "p" and x.get("seg") and g.get("x1") is not None:
-                            col.setdefault((sum(q["span"] for q in row[:i]), g.get("page")), []).append(x)
-        for xs in col.values():
-            left = min(x["geom"]["x0"] for x in xs)
-            for r in sorted({round(x["geom"]["x1"]) for x in xs}):
-                grp = [x for x in xs if abs(x["geom"]["x1"] - r) <= 2 and x["geom"]["x0"] - left >= 20
-                       and abs(x["geom"].get("last_x1", -99) - r) <= 2]
-                if len(grp) >= 3 and len({round(x["geom"]["x0"]) for x in grp}) >= 2:
-                    flush.update(id(x) for x in grp)
+                            col.setdefault((sum(q["span"] for q in row[:i]), g.get("page")), []).append(x["geom"])
+        for gs in col.values():
+            left = min(g["x0"] for g in gs)
+            ends = [g for g in gs if g["x0"] - left >= 20 and abs(g.get("last_x1", -99) - g["x1"]) <= 1.5]
+            for g in ends:
+                grp = [q for q in ends if abs(q["x1"] - g["x1"]) <= 1.5]
+                mids = [(q["x0"] + q["x1"]) / 2 for q in grp]
+                # и не меньше трёх разных начал: шапка «Megnevezés» по центру и два «A 203/3» одной ширины сходились
+                # правым краем в 1 pt (30PR132GT л. 25, 30)
+                if len(grp) >= 3 and max(mids) - min(mids) >= 10 and len({round(q["x0"] / 3) for q in grp}) >= 3:
+                    flush.update(id(q) for q in grp)
         for ri, row in enumerate(rows):
             if all("span" in c for c in row):               # ячейки по сетке линий (docx_layout) — места известны
                 starts = [sum(c["span"] for c in row[:i]) for i in range(len(row))]
@@ -1701,7 +1706,7 @@ class Builder:
                     if par is not None and al in (None, "left") and nest.get(id(x)):
                         par.paragraph_format.left_indent = Pt(round(nest[id(x)], 1))
                     elif par is not None and x.get("seg"):
-                        self._cell_par(par, x, prev, cell_x, al, id(x) in flush)
+                        self._cell_par(par, x, prev, cell_x, al, id(x.get("geom")) in flush)
                     prev = x.get("geom")
                 room = self._room.get(starts[ci]) if spans[ci][1] == spans[ci][0] else None
 

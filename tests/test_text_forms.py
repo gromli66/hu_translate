@@ -1210,6 +1210,13 @@ def test_column_lines_with_common_right_edge_are_flush_right(tmp_path):
     B.Builder(B.Memory([]), lambda img: png(), PROFILE).build([tab], str(out), dict(LAYOUT, first_is_body=True))
     al = {p.text[:10]: p.alignment for c in Document(str(out)).tables[0]._cells for p in c.paragraphs if p.text}
     assert [al[t[:10]] for t, *_ in body] == [None, 2, 2, 2, 2, None]
+    # столбец по центру — не вправо (ред-тим 02.11): коды одной ширины и значения разной ширины, правые края в 1–3 pt
+    centered = [("Megnevezés", 140, 359), ("30UJ21S601", 270, 330), ("30UJ21S602", 270, 330), ("31UJ21S603", 271, 331),
+                ("20 bar", 285, 316), ("36 m3/h", 283, 318), ("1,2 kW", 284, 317)]
+    rows = [[cell([]), cell([para(t, a, z, 160 + 20 * k)]), cell([])] for k, (t, a, z) in enumerate(centered)]
+    tab = dict(tab, rows=rows, frame={"xs": [71, 123, 463, 530], "ys": [150 + 20 * k for k in range(len(centered) + 1)]})
+    B.Builder(B.Memory([]), lambda img: png(), PROFILE).build([tab], str(out), dict(LAYOUT, first_is_body=True))
+    assert all(p.alignment != 2 for c in Document(str(out)).tables[0]._cells for p in c.paragraphs)
 
 
 def test_review_0211_narrowed_rules(tmp_path):
