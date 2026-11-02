@@ -20,6 +20,7 @@ import re
 from collections import Counter
 from statistics import median
 
+import figures as FIG
 import geom as GM
 import patterns as PT
 
@@ -30,9 +31,8 @@ PLABEL = re.compile(r"^\s*(\d{1,2}|[a-z]|[A-Z])(\.\)|\))\s+\S")  # «a)», «1)�
 
 
 def is_scan(page):
-    """Лист — картинка (скан): растровые изображения закрывают хотя бы половину листа."""
-    import fitz
-    return sum(fitz.Rect(i["bbox"]).get_area() for i in page.get_image_info()) >= 0.5 * page.rect.get_area()
+    """Лист — картинка (скан): растровые изображения закрывают хотя бы половину листа (figures.is_scan)."""
+    return FIG.is_scan(page)
 
 
 def suits(path, ocr_pages):
@@ -1242,24 +1242,8 @@ def _head_rows(doc, rules, body, keys, H):
 
 
 def _graphic_page(page, segs, figs):
-    """Лист-плакат: рисунки (краска вне текста и линий, _figures) — больше половины листа и на них ≥ 30 % подписей
-    листа, или рисунок рассыпан на ≥ 5 кусков при малом тексте (обложка, разворот брошюры: картинки под маской,
-    фоновые плашки). Такой лист собирается не абзацами (подписи схемы вперемешку с текстом, картинка — обрывками:
-    плакат «Как работает АЭС» 1 лист → 2, брошюра 12 → 17), а целиком с переведённого PDF (стенд вёрстки без языка,
-    22.10)."""
-    import fitz
-    # блок-схема Word: каждая фигура — десятки картинок (градиент, тень), надписи лежат на них; рисунок по тени не
-    # находится (текст сегментов вычтен из краски), схема уходила в таблицы и абзацы россыпью (30GF(135)51GT, 28.10)
-    if segs:
-        imgs = [fitz.Rect(i["bbox"]) for i in page.get_image_info()]
-        if len(imgs) >= 60 and sum(1 for s in segs if any(r.contains(fitz.Point(*_center(s))) for r in imgs)) >= 0.5 * len(segs):
-            return True
-    rects = [r for r, _ in figs]
-    if not rects or not segs:
-        return False
-    area = sum(r.get_area() for r in rects) / page.rect.get_area()
-    inside = sum(1 for s in segs if any(r.contains(fitz.Point(*_center(s))) for r in rects)) / len(segs)
-    return area >= 0.5 and inside >= 0.3 or len(rects) >= 5 and area >= 0.05 and len(segs) <= 20
+    """Лист-плакат (figures.graphic_page): картинка или схема во весь лист с подписями, обложка, разворот брошюры."""
+    return FIG.graphic_page(page, segs, figs)
 
 
 def _textless(doc, pno, boxes):
@@ -1276,34 +1260,13 @@ def _textless(doc, pno, boxes):
 
 
 def _ocr_layer(page):
-    """Текст листа — невидимый слой распознавания поверх скана (газета 1813 г.: весь текст в режиме 3), а не настоящий
-    текст поверх фона-картинки во весь лист (брошюра из InDesign: фон и фото — картинками, текст — видимый). Лист-плакат
-    (_graphic_page) — не для первого: снимок брал скан без перевода (22.10); второй — плакат (HERCA 16 листов → 32)."""
-    kinds = [k for k, _ in page.get_bboxlog() if "text" in k]
-    return bool(kinds) and kinds.count("ignore-text") >= 0.5 * len(kinds)
+    """Текст листа — невидимый слой распознавания поверх скана (figures.ocr_layer)."""
+    return FIG.ocr_layer(page)
 
 
 def _chart_table(t, draw):
-    """Таблица-график: в её рамке — от трёх залитых фигур, не совпадающих с ячейками (полосы диаграммы Ганта, ромбы
-    вех, столбики): сетка таблицы — только поле графика, и таблицей собиралась пустая сетка без полос (22.10)."""
-    import fitz
-    xs, ys = t[0], t[1]
-    R = fitz.Rect(xs[0], ys[0], xs[-1], ys[-1])
-    near = lambda v, grid: any(abs(v - g) < GM.DOUBLE for g in grid)
-    # края заливки — у любой линии таблицы (до 5 pt — двойная рамка), и на линиях двойной рамки, что в сетку не вошли (1SZ01: голубая «зебра»
-    # по внутренней линии двойной рамки — иначе таблица шла снимком-графиком)
-    xs, ys = list(xs) + [v[0] for v in t[3]], list(ys) + [h[0] for h in t[2]]
-    n = 0
-    for d in draw:
-        if not d.get("solid"):
-            continue
-        q = fitz.Rect(d["rect"])
-        if q.width < 2 or q.height < 2 or not R.contains(q) or q.get_area() > 0.5 * R.get_area():
-            continue
-        if near(q.x0, xs) and near(q.x1, xs) and near(q.y0, ys) and near(q.y1, ys):
-            continue                                        # заливка ячейки
-        n += 1
-    return n >= 3
+    """Таблица-график: от трёх залитых фигур, не совпадающих с ячейками (figures.chart_table)."""
+    return FIG.chart_table(t, draw)
 
 
 def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
@@ -1311,7 +1274,9 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
     import fitz
     import numpy as np
     import docx_struct
-    draw, per, scans, marks = (rules or _page_rules(doc, mask is not None))[:4]
+    pr = rules or _page_rules(doc, mask is not None)
+    draw, per, scans, marks = pr[:4]
+    scheme = FIG.scheme_regions if FIG.enabled() else None     # один набор признаков схемы (E7); None — прежние два
     # картинки на нескольких листах (логотип шапки) — только текстовому слою; get_images не раскодирует картинки
     reused = Counter(x for page in doc for x in {im[0] for im in page.get_images()}) if mask is not None else Counter()
     by_page, masks = {}, {}
@@ -1339,7 +1304,8 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
         # (график рисунком, названия задач абзацами) строки задач расходились с полосами на три листа (22.10)
         charts = sum(fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1]).get_area() for t in _tables(hs, vs)
                      if _chart_table(t, draw[pno])) if mask is not None else 0
-        if mask is not None and segs and (scans[pno] and any(s["loc"].get("ocr") for s in segs)
+        if mask is not None and segs and (FIG.figure_kind(page, segs, figs, scans[pno], charts, True) if scheme else
+                                          scans[pno] and any(s["loc"].get("ocr") for s in segs)
                                           or not (scans[pno] and _ocr_layer(page)) and _graphic_page(page, segs, figs)
                                           or charts >= 0.3 * page.rect.get_area()):
             # скан посреди текстового слоя (лист регистрации, титул с подписями 32RDGT) — листом с переведённого PDF,
@@ -1365,6 +1331,9 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
             if any(_zone(s, Hp) == "foot" for s in off):
                 R.y1 = min(R.y1, min(s["loc"]["bbox"][1] for s in off if _zone(s, Hp) == "foot") - 2)
             R = (R + (-4, -4, 4, 4)) & page.rect
+            if scheme and not lead:                             # колонтитул оригинала — не в снимке: его печатает DOCX
+                FIG.clamp_zones(R, [s["loc"]["bbox"] for s in off if _zone(s, Hp) == "head"],
+                                [s["loc"]["bbox"] for s in off if _zone(s, Hp) == "foot"], per[pno][0], page.rect.width)
             img = {"clip": [R.x0, R.y0, R.x1, R.y1], "page_number": pno + 1, "x0": R.x0, "x1": R.x1, "top": R.y0,
                    "bottom": R.y1}
             out[pno] = [{"rect": R, "ids": {s["id"] for s in segs},
@@ -1384,7 +1353,7 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
             # схема из линий с подписями (дерево «Layout format» Eskom: линии короче порога краски — рисунок не
             # находился, подписи перемешивались между разделами, 19.10) — областью листа с переведённого PDF
             tabs = [fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1]) for t in _tables(hs, vs)]
-            figs += _vector_figures(page, pno, draw[pno], segs, masks.get(pno, []), tabs, [f for f, _ in figs], per[pno])
+            figs += (scheme or _vector_figures)(page, pno, draw[pno], segs, masks.get(pno, []), tabs, [f for f, _ in figs], per[pno])
             # схема из блоков-рамок и ромбов (3FI18 «3.1 Kézi indítás»): рамки блоков — маленькие таблицы, фигуры, что их
             # касаются, в схему не шли — ромбы и стрелки терялись, подписи рассыпались строками (аудит 30.10). Ромб —
             # косые отрезки от 25 pt (у значков «△» и галочек короче): где их от четырёх, схема ищется и поверх таблиц.
@@ -1400,12 +1369,13 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
             if len(slant) >= 4:
                 # длинные линии здесь — связки схемы, не линейки листа: боковая рамка «Telefonon visszajelent…» и петля
                 # «igen» схемы 3.2 соединены линиями от 40 pt, и снимок выходил без них (рамка — таблицей ниже схемы)
-                for R, img in _vector_figures(page, pno, draw[pno], segs, masks.get(pno, []), [], []):
+                for R, img in (scheme or _vector_figures)(page, pno, draw[pno], segs, masks.get(pno, []), [], []):
                     if sum(R.contains(q) for q in slant) >= 4:
                         figs = [(f, i) for f, i in figs if not R.contains(f)] + [(R, img)]
         elif not scans[pno]:
             tabs = [fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1]) for t in _tables(hs, vs)]
-            figs += _scheme_figures(page, pno, draw[pno], segs, tabs, [f for f, _ in figs])
+            figs += scheme(page, pno, draw[pno], segs, [], tabs, [f for f, _ in figs]) if scheme else \
+                _scheme_figures(page, pno, draw[pno], segs, tabs, [f for f, _ in figs])
         regs, used, fills = [], set(), None                 # fills — заливки листа (по первой таблице)
         for t in _tables(hs, vs):
             r = fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1])

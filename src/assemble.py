@@ -330,9 +330,11 @@ def _foreign_ink(page, plates, dpi=150):
 
 def build_pdf(src, out, segs, res, progress=None):
     import fitz
+    import figures as FIG
     import pagefit as PF
     import shots as SH
     doc = fitz.open(src)
+    verify = []                         # сверка листов скана после рисования (figures.verify_page)
     pages = sorted({s["page"] for s in segs if s["page"] is not None and 0 <= s["page"] < len(doc)})
     n_shots, shot_err = SH.apply(doc, segs, res)
     # текст страницы — сегменты с рамками строк; надписи скриншотов и абзацы DOCX вписываются не здесь
@@ -409,7 +411,10 @@ def build_pdf(src, out, segs, res, progress=None):
                 rect = fitz.Rect((x0 + x1) / 2 - half, y0 - 0.5, (x0 + x1) / 2 + half, max(ay1, y1) + 0.5)
                 align = "center"
             # ru_pdf — сокращённая порталом формулировка для тесного места (pipeline.fit); в DOCX — полный перевод
-            txt = html.escape(TAG.sub("", pdf_text(r))).replace("\n", "<br>").replace("\t", "&emsp;")
+            ru = pdf_text(r)
+            if ocr and FIG.enabled():                   # линия ячейки, прочитанная как «|», — не буква перевода
+                ru = FIG.drawn_text(ru)
+            txt = html.escape(TAG.sub("", ru)).replace("\n", "<br>").replace("\t", "&emsp;")
             if loc.get("bold"):
                 txt = f"<b>{txt}</b>"
             items.append((s, rect, txt, align, loc["size"], loc.get("family", "serif")))
@@ -511,12 +516,18 @@ def build_pdf(src, out, segs, res, progress=None):
                 shrink += [{"page": pno + 1, "id": it[0]["id"], "scale": round(scale * min(k, 1.0), 2)} for it in mem]
         for r, png in ink:
             page.insert_image(r, stream=png, overlay=True)
+        if ocr and FIG.enabled():                       # коды и числа перевода читаются на листе вторым распознаванием
+            warn = FIG.verify_page(page, [TAG.sub("", pdf_text(r)) for _, r in todo], pno)
+            if warn:
+                verify.append(warn)
         sub.insert_pdf(doc, from_page=pno, to_page=pno)
     # отдаём только обработанные страницы: и для выборки, и для полного прогона это вся работа
     # каждая вставка абзаца встраивает свой экземпляр шрифта (5275 объектов на 157 стр. ÜFK I, 43,8 МБ);
     # garbage=4 склеивает одинаковые объекты: 3,3 МБ, рендер совпадает пиксель в пиксель (замер 01.10)
     sub.save(out, garbage=4, deflate=True, deflate_fonts=True)
     info = {"shrunk": shrink, "pages": len(pages)}
+    if verify:
+        info["verify"] = verify
     if len(pages) < len(doc):
         # лист без сегментов (рисунок без текста, пустой разделитель) в этот PDF не попадает: где PDF потом печатается
         # из DOCX, это неважно, а без LibreOffice (и для сканов) он итоговый и короче оригинала — сигнал в отчёт сборки
@@ -1000,7 +1011,13 @@ def assemble_all(jf, d, out_dir=None, progress=None):
     out_dir — куда класть файлы (по умолчанию рядом с JSON). progress(доля 0..1) — ход по страницам PDF и DOCX."""
     tick = progress or (lambda x: None)
     src = source_path(d)
+    import figures as FIG
     import langs as L
+    form = None
+    if FIG.enabled() and L.parse_pair(d.get("pair")) == ("hu", "ru"):
+        # известная форма (лист регистрации, титул инструкции, лист изменений): подписи — по словарю формы, не по портальным вариантам
+        res, n_lab, form = FIG.apply_form_labels(d["segs"], d["res"])
+        d = dict(d, res=res) if n_lab else d
     sfx = L.suffix(d.get("pair"))                       # _RU (hu-ru), _EN, _HU — по паре проекта
     outd, stem = Path(out_dir or Path(jf).parent), Path(jf).stem
     outd.mkdir(parents=True, exist_ok=True)
@@ -1070,6 +1087,7 @@ def assemble_all(jf, d, out_dir=None, progress=None):
             if info["docx"].get("failed_pages"):
                 attention.append(f"DOCX из переведённого PDF: листы {', '.join(map(str, info['docx']['failed_pages']))} "
                                  f"pdf2docx не сконвертировал — пустыми листами ({info['docx'].get('failed_why')})")
+    attention += info.get("verify") or []               # коды и числа, не найденные на листе скана после рисования
     # PDF «на месте» — только листы с сегментами: если он итоговый (не напечатан из DOCX), лист без текста выпал
     if info.get("pages_missing") and (info.get("pdf") or {}).get("from") != "DOCX (LibreOffice)":
         miss = info["pages_missing"]
@@ -1080,6 +1098,8 @@ def assemble_all(jf, d, out_dir=None, progress=None):
         for a in attention:
             print(f"СБОРКА {stem}: ВНИМАНИЕ — {a}", flush=True)
         rows += [("", "сборка", f"ВНИМАНИЕ: {a}", "") for a in attention]
+    if form:
+        info["form"] = {"id": form, "labels": n_lab}
     review_xlsx(outd / f"{stem}_вычитка.xlsx", d["segs"], d["res"], stem, polish=d.get("polish"), extra_rows=rows,
                 pair=d.get("pair"))
     return info
