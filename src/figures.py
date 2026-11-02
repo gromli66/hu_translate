@@ -48,14 +48,16 @@ def graphic_page(page, segs, figs):
     import fitz
     if segs:
         imgs = [fitz.Rect(i["bbox"]) for i in page.get_image_info()]
-        if len(imgs) >= 60 and sum(1 for s in segs if any(r.contains(fitz.Point(*_mid(s))) for r in imgs)) >= 0.5 * len(segs):
+        if len(imgs) >= GM.POSTER_PICTURES and sum(1 for s in segs if any(r.contains(fitz.Point(*_mid(s))) for r in imgs)) \
+                >= 0.5 * len(segs):
             return True
     rects = [r for r, _ in figs]
     if not rects or not segs:
         return False
     area = sum(r.get_area() for r in rects) / page.rect.get_area()
     inside = sum(1 for s in segs if any(r.contains(fitz.Point(*_mid(s))) for r in rects)) / len(segs)
-    return area >= 0.5 and inside >= 0.3 or len(rects) >= 5 and area >= 0.05 and len(segs) <= 20
+    return area >= GM.POSTER_AREA and inside >= GM.POSTER_CAPTIONS or len(rects) >= GM.POSTER_PIECES \
+        and area >= GM.POSTER_PIECES_AREA and len(segs) <= GM.POSTER_TEXT
 
 
 def chart_table(t, draw):
@@ -76,7 +78,7 @@ def chart_table(t, draw):
         if near(q.x0, xs) and near(q.x1, xs) and near(q.y0, ys) and near(q.y1, ys):
             continue                                        # заливка ячейки
         n += 1
-    return n >= 3
+    return n >= GM.CHART_SHAPES
 
 
 def figure_kind(page, segs, figs, scan, charts, text_layer):
@@ -90,7 +92,7 @@ def figure_kind(page, segs, figs, scan, charts, text_layer):
         return "scan"
     if not (scan and ocr_layer(page)) and graphic_page(page, segs, figs):
         return "scheme"
-    if charts >= 0.3 * page.rect.get_area():
+    if charts >= GM.CHART_SHARE * page.rect.get_area():
         return "chart"
     return None
 
@@ -125,7 +127,7 @@ def scheme_regions(page, pno, drawings, segs, masked, tabs, figs, rules=((), ())
     sb = [fitz.Rect(s["loc"]["bbox"]) for s in segs]
     off = [fitz.Rect(s["loc"]["bbox"]) for s in masked if s not in segs]
     rs = [fitz.Rect(d["rect"]) + (-0.5, -0.5, 0.5, 0.5) for d in drawings]       # линия без толщины — не пустая рамка
-    rs = [r for r in rs if r.width < 0.75 * W and r.height < 0.75 * H and (r.width > 0.5 or r.height > 0.5)
+    rs = [r for r in rs if r.width < GM.PAGE_SHARE * W and r.height < GM.PAGE_SHARE * H and (r.width > 0.5 or r.height > 0.5)
           and not on_rule(r, rules)
           and not any(r.intersects(t) for t in tabs) and not any(r.intersects(f) for f in figs)
           and not any(r.intersects(o) for o in off)
@@ -143,11 +145,11 @@ def scheme_regions(page, pno, drawings, segs, masked, tabs, figs, rules=((), ())
         for j in range(i + 1, len(items)):
             fb, b = items[j]
             if fa or fb:
-                m = 20 if fa and fb else 10
+                m = GM.SCHEME_LINK if fa and fb else GM.SCHEME_CAPTION
                 near = (a + (-m, -m, m, m)).intersects(b)
             else:                                               # подписи — одного ряда или строки одной подписи
                 h = min(a.height, b.height)
-                near = min(a.y1, b.y1) - max(a.y0, b.y0) >= 0.5 * h and max(a.x0, b.x0) - min(a.x1, b.x1) <= 60 \
+                near = min(a.y1, b.y1) - max(a.y0, b.y0) >= 0.5 * h and max(a.x0, b.x0) - min(a.x1, b.x1) <= GM.SCHEME_ROW_GAP \
                     or min(a.x1, b.x1) > max(a.x0, b.x0) and max(a.y0, b.y0) - min(a.y1, b.y1) <= 0.6 * h
             if near:
                 up[root(i)] = root(j)
@@ -157,17 +159,18 @@ def scheme_regions(page, pno, drawings, segs, masked, tabs, figs, rules=((), ())
     out = []
     for c in comps.values():
         shapes = [r for f, r in c if f]
-        if len(shapes) < 6 or len(c) - len(shapes) < 2:
+        if len(shapes) < GM.SCHEME_SHAPES or len(c) - len(shapes) < GM.SCHEME_CAPTIONS:
             continue
-        vert = sum(r.width <= 3.5 and r.height >= 15 for r in shapes)
-        horz = sum(r.height <= 3.5 and r.width >= 15 for r in shapes)
+        vert = sum(r.width <= GM.ARROW_THIN and r.height >= GM.ARROW_LEN for r in shapes)
+        horz = sum(r.height <= GM.ARROW_THIN and r.width >= GM.ARROW_LEN for r in shapes)
         R = fitz.Rect(shapes[0])
         for _, r in c:
             R |= r
-        if not (vert and horz and vert + horz >= 3 and R.width >= 80 and R.height >= 60):
+        if not (vert and horz and vert + horz >= GM.SCHEME_ARROWS and R.width >= GM.SCHEME_SIZE[0]
+                and R.height >= GM.SCHEME_SIZE[1]):
             continue
         inside = [s for s, b in zip(segs, sb) if R.contains((b.tl + b.br) / 2)]
-        if any(len(s["text"].strip()) > 120 for s in inside) or any(b.intersects(R) and s not in inside
+        if any(len(s["text"].strip()) > GM.SCHEME_PARAGRAPH for s in inside) or any(b.intersects(R) and s not in inside
                                                                      for s, b in zip(segs, sb)):
             continue
         R = (R + (-3, -3, 3, 3)) & page.rect
