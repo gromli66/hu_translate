@@ -1302,10 +1302,8 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
         # не скан: текст — абзацами (ред-тим 20.10)
         # таблица-график на треть листа и больше (диаграмма Ганта во весь лист) — лист целиком, как плакат: частями
         # (график рисунком, названия задач абзацами) строки задач расходились с полосами на три листа (22.10)
-        tbl = _tables(hs, vs)
-        chart = (lambda t: FIG.chart_table(t, draw[pno], FIG.nested(t, tbl))) if scheme else             (lambda t: _chart_table(t, draw[pno]))              # E7: заливка вложенной таблицы — не столбики внешней
-        charts = sum(fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1]).get_area() for t in tbl
-                     if chart(t)) if mask is not None else 0
+        charts = sum(fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1]).get_area() for t in _tables(hs, vs)
+                     if _chart_table(t, draw[pno])) if mask is not None else 0
         if mask is not None and segs and (FIG.figure_kind(page, segs, figs, scans[pno], charts, True) if scheme else
                                           scans[pno] and any(s["loc"].get("ocr") for s in segs)
                                           or not (scans[pno] and _ocr_layer(page)) and _graphic_page(page, segs, figs)
@@ -1384,7 +1382,7 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
             r = fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1])
             if any((f & r).get_area() > 0.8 * r.get_area() for f, _ in figs):
                 continue                                    # сетка внутри рисунка (график) — часть рисунка
-            if chart(t):
+            if _chart_table(t, draw[pno]):
                 # таблица-график (диаграмма Ганта) — рисунком с переведённого PDF, подписи — переводом
                 R = (r + (-2, -2, 2, 2)) & page.rect
                 figs.append((R, {"clip": [R.x0, R.y0, R.x1, R.y1], "page_number": pno + 1, "x0": R.x0, "x1": R.x1,

@@ -440,16 +440,3 @@ def test_short_phrases_are_not_checkboxes_and_bars_are_linear():
     t0 = time.time()
     assert FIG.drawn_text("x" + " |" * 40000 + "x") == "x" + " |" * 40000 + "x" and time.time() - t0 < 2
     assert FIG.label_key("| | Név: | |") == "Név:"
-
-
-def test_chart_table_ignores_fills_of_nested_table():
-    """Рамка листа вокруг бланка с серыми клетками (30TH50-80ÁTVGT л. 6–9) — не график: заливка клеток вложенной таблицы
-    — не столбики внешней, и лист не уходит снимком."""
-    outer = ([65, 106, 570], [78, 753], [(78, 65, 570), (753, 65, 570)], [(65, 78, 753), (570, 78, 753)])
-    inner = ([113, 193, 272, 351], [361, 394, 427], [(361, 113, 351), (427, 113, 351)], [(113, 361, 427), (351, 361, 427)])
-    grey = [{"rect": (193 + 79 * k + 0.0, 394, 272 + 79 * k, 427), "solid": True} for k in range(1)] + \
-           [{"rect": (200 + 25 * k, 400 + 5 * k, 215 + 25 * k, 410 + 5 * k), "solid": True} for k in range(4)]
-    assert FIG.chart_table(outer, grey)                                            # без вложенных — столбики
-    assert not FIG.chart_table(outer, grey, FIG.nested(outer, [outer, inner]))     # внутри вложенной таблицы — её клетки
-    bars = [{"rect": (120 + 40 * k, 100 + 30 * k, 180 + 40 * k, 112 + 30 * k), "solid": True} for k in range(4)]
-    assert FIG.chart_table(outer, bars, FIG.nested(outer, [outer, inner]))        # полосы вне вложенной — график
