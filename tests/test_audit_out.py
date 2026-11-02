@@ -182,6 +182,45 @@ def test_groups_merge_split_pages():
     assert sorted(map(lambda g: (g[0], g[1]), only)) == [([0], [0]), ([1], [1])]
 
 
+def test_unmapped_translation_page_joins_the_sheet_before():
+    # перелив «17 (прод.)» без своих голосов — к листу перед ним; лист перевода до первой группы — к первой
+    gs = A.attach_unmapped([([0], [1]), ([1, 2], [3])], 3, 6)
+    assert gs == [([0], [0, 1, 2]), ([1, 2], [3, 4, 5])]
+    # лист без голосов и у оригинала, и у перевода (30PR132GT л. 39) — к своим соседям с обеих сторон, а не только
+    # страница перевода к чужому листу
+    assert A.attach_unmapped([([0], [0]), ([2], [2])], 4, 4) == [([0, 1], [0, 1]), ([2, 3], [2, 3])]
+    assert A.attach_unmapped([], 3, 3) == []
+
+
+class _Pages:
+    def __init__(self, pages):
+        self.pages, self.n = pages, len(pages)
+
+    def words(self, i):
+        return self.pages[i]
+
+
+class _MarksDoc:
+    def __init__(self, orig, ru, pm):
+        self.orig, self.pdf, self._pm = _Pages(orig), _Pages(ru), pm
+
+    def page_map(self):
+        return self._pm
+
+
+def test_marks_only_kinds_present_in_original_text_layer():
+    # 30SZBVAIT_TU: у оригинала «□» нарисованы рамками (в тексте только «O»), у перевода «□» — знаки; лист 17 оригинала
+    # перелился на две страницы перевода, у второй своих голосов нет
+    o = lambda n: [W(300, 20 * i, 307, 20 * i + 8, "O") for i in range(n)]
+    sq = lambda n: [W(400, 20 * i, 407, 20 * i + 8, "□") for i in range(n)]
+    orig = [[], o(10), o(19)]
+    ru = [sq(5), o(10) + sq(10), o(9) + sq(9), o(10) + sq(10)]
+    assert A.check_marks(_MarksDoc(orig, ru, [(0, 0), (1, 1), (2, 2)])) == []
+    lost = [sq(5), o(10) + sq(10), o(9) + sq(9), sq(10)]                       # отметки «O» второй страницы потеряны
+    f = A.check_marks(_MarksDoc(orig, lost, [(0, 0), (1, 1), (2, 2)]))
+    assert len(f) == 1 and f[0].level == A.RED and "19→9" in f[0].msg
+
+
 # ---------------------------------------------------------------- 7. венгерские буквы
 def test_hungarian_leftovers():
     f = A.hu_leftovers("Проверить, что процесс nem sikerült начат; Ф.И.О. Bóth Zoltán, НСБ (BLÜGY), ÜFK, 30RR0102ÁTJGT")

@@ -571,11 +571,35 @@ def groups(edges, o_pages, r_pages):
     return [v for v in g.values() if v[0] and v[1]]
 
 
+def attach_unmapped(gs, n_orig, n_ru):
+    """Лист вне групп (ни один его сегмент не проголосовал: перелив «N (прод.)», где строки таблицы похожи на строки
+    других листов) — к группе листа перед ним на своей стороне (у первых — после): иначе его отметки выпадали из
+    сверки, а лист оригинала сравнивался с одной страницей перевода (30SZBVAIT_TU: лист 17 → стр. 16, 39 → 20)."""
+    for side, n in ((0, n_orig), (1, n_ru)):
+        owner = {p: k for k, g in enumerate(gs) for p in g[side]}
+        if not owner:
+            return gs
+        for p in range(n):
+            if p not in owner:
+                near = max((q for q in owner if q < p), default=None)
+                k = owner[near if near is not None else min(owner)]
+                gs[k][side].append(p)
+                owner[p] = k
+        for g in gs:
+            g[side].sort()
+    return gs
+
+
 def check_marks(d):
     if not d.pdf or not d.orig:
         return d.skip("6 отметки", "нужны PDF перевода и оригинала")
-    mo = [len(marks_on(d.orig.words(i))) for i in range(d.orig.n)]
-    mr = [len(marks_on(d.pdf.words(i))) for i in range(d.pdf.n)]
+    # отметки двух видов — буква «O» и знак (○, □, Wingdings: сборка вправе рисовать знак иным); вид, которого нет в
+    # текстовом слое оригинала (□ там нарисован рамкой, в переводе — знак), — вне сверки числа: иначе каждая клетка
+    # «□» перевода — лишняя отметка (30SZBVAIT_TU: стр. 1 — 0 → 5)
+    kinds = {w[4] == "O" for i in range(d.orig.n) for w in marks_on(d.orig.words(i))}
+    count = lambda ws: sum(1 for w in marks_on(ws) if (w[4] == "O") in kinds)
+    mo = [count(d.orig.words(i)) for i in range(d.orig.n)]
+    mr = [count(d.pdf.words(i)) for i in range(d.pdf.n)]
     if not sum(mo):
         return []                                     # у оригинала отметок нет в текстовом слое (рисованные кружки)
     out = []
@@ -583,6 +607,7 @@ def check_marks(d):
     pm = d.page_map()
     if pm:
         gs = sorted(groups(pm, range(d.orig.n), range(d.pdf.n)), key=lambda g: min(g[0]))
+        gs = attach_unmapped(gs, d.orig.n, d.pdf.n)
         ab = [(sum(mo[i] for i in og), sum(mr[i] for i in rg)) for og, rg in gs]
         bad = []
         for k, (og, rg) in enumerate(gs):
