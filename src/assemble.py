@@ -334,7 +334,7 @@ def build_pdf(src, out, segs, res, progress=None):
     import pagefit as PF
     import shots as SH
     doc = fitz.open(src)
-    verify = []                         # сверка листов скана после рисования (figures.verify_page)
+    verify, notes = [], []              # сверка листов скана после рисования (figures.verify_page): громко / сведения
     pages = sorted({s["page"] for s in segs if s["page"] is not None and 0 <= s["page"] < len(doc)})
     n_shots, shot_err = SH.apply(doc, segs, res)
     # текст страницы — сегменты с рамками строк; надписи скриншотов и абзацы DOCX вписываются не здесь
@@ -519,7 +519,7 @@ def build_pdf(src, out, segs, res, progress=None):
         if ocr and FIG.enabled():                       # коды и числа перевода читаются на листе вторым распознаванием
             warn = FIG.verify_page(page, [TAG.sub("", pdf_text(r)) for _, r in todo], pno)
             if warn:
-                verify.append(warn)
+                (verify if warn[1] else notes).append(warn[0])
         sub.insert_pdf(doc, from_page=pno, to_page=pno)
     # отдаём только обработанные страницы: и для выборки, и для полного прогона это вся работа
     # каждая вставка абзаца встраивает свой экземпляр шрифта (5275 объектов на 157 стр. ÜFK I, 43,8 МБ);
@@ -528,6 +528,8 @@ def build_pdf(src, out, segs, res, progress=None):
     info = {"shrunk": shrink, "pages": len(pages)}
     if verify:
         info["verify"] = verify
+    if notes:
+        info["verify_notes"] = notes
     if len(pages) < len(doc):
         # лист без сегментов (рисунок без текста, пустой разделитель) в этот PDF не попадает: где PDF потом печатается
         # из DOCX, это неважно, а без LibreOffice (и для сканов) он итоговый и короче оригинала — сигнал в отчёт сборки

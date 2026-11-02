@@ -213,16 +213,25 @@ def test_codes_and_numbers_checked_with_ocr_confusions():
     assert FIG.missing_codes(want, ["30YCGT", "36"]) == sorted(want - {FIG._tok("30YCGT"), "36"})
 
 
-def test_verify_page_warns_loudly_on_missing_codes(monkeypatch):
+def test_verify_page_loud_only_for_real_loss_minor_as_note(monkeypatch):
     page = fitz.open().new_page()
-    monkeypatch.setattr(FIG, "ocr_words", lambda pg, **k: ["30YCGT", "Дата:"])
-    w = FIG.verify_page(page, ["Идентификатор: 30YCGT", "Дата: 2022-01-11"], 2)
-    assert w and "лист 3" in w and "2022-01-11" in w and "1 из 2" in w
+    drawn = ["Идентификатор: 30YCGT", "Дата: 2022-01-11"]
+    monkeypatch.setattr(FIG, "ocr_words", lambda pg, **k: ["Дата:"])                  # оба кода потеряны
+    msg, loud = FIG.verify_page(page, drawn, 2)
+    assert loud and "лист 3" in msg and "2022-01-11" in msg and "30YCGT" in msg and "2 из 2" in msg
+    monkeypatch.setattr(FIG, "ocr_words", lambda pg, **k: ["30YCGT", "Дата:"])        # один из двух — 50 %, но одно слово
+    msg, loud = FIG.verify_page(page, drawn, 2)
+    assert not loud and "1 из 2" in msg
+    many = ["код %d%d" % (i, i) for i in range(10)]
+    monkeypatch.setattr(FIG, "ocr_words", lambda pg, **k: [t for t in "11 22 33 44 55 66 77 88 99".split()])
+    assert FIG.verify_page(page, many, 0)[1] is False                                  # одно слово из десяти — сведения
+    monkeypatch.setattr(FIG, "ocr_words", lambda pg, **k: ["11", "22", "33", "44", "55", "66", "77"])
+    assert FIG.verify_page(page, many, 0)[1] is True                                   # три из десяти — громко
     monkeypatch.setattr(FIG, "ocr_words", lambda pg, **k: ["30YCGT", "2022-01-11"])
-    assert FIG.verify_page(page, ["Идентификатор: 30YCGT", "Дата: 2022-01-11"], 2) is None
-    monkeypatch.setattr(FIG, "ocr_words", lambda pg, **k: None)                  # нет Tesseract — сверка пропущена, не ошибка
+    assert FIG.verify_page(page, drawn, 2) is None
+    monkeypatch.setattr(FIG, "ocr_words", lambda pg, **k: None)                        # нет Tesseract — сверка пропущена
     assert FIG.verify_page(page, ["30YCGT"], 0) is None
-    assert FIG.verify_page(page, ["Дата:", "Подпись:"], 0) is None                # кодов в переводе нет — нечего сверять
+    assert FIG.verify_page(page, ["Дата:", "Подпись:"], 0) is None                      # кодов в переводе нет
 
 
 def test_build_pdf_scan_page_strips_cell_line_and_reports_lost_code(tmp_path, monkeypatch):
@@ -242,7 +251,11 @@ def test_build_pdf_scan_page_strips_cell_line_and_reports_lost_code(tmp_path, mo
     monkeypatch.setattr(FIG, "ocr_words", lambda pg, **kw: ["Дата:"])            # дата на листе второй раз не прочитана
     info = build_pdf(str(src), str(out), [s], {"0": {"ru": "Дата: 2022-01-11 |"}})
     assert fitz.open(out)[0].get_text().strip() == "Дата: 2022-01-11"
-    assert info["verify"] and "2022-01-11" in info["verify"][0]
+    assert "2022-01-11" in info["verify_notes"][0] and "verify" not in info        # одно слово из одного — сведения, не тревога
+    s2 = dict(s, id=1, text="Verzió 30YCGT 2022-01-11", loc=dict(s["loc"], bbox=[60, 330, 180, 342],
+              avail=[60, 330, 520, 342], frags=[[60, 330, 180, 342]]))
+    info = build_pdf(str(src), str(out), [s, s2], {"0": {"ru": "Дата: 2022-01-11"}, "1": {"ru": "Версия 30YCGT 2022-01-11"}})
+    assert info["verify"] and "30YCGT" in info["verify"][0]                        # два из двух — громко
     monkeypatch.setenv("HU_U_FIG", "0")                                         # выключено — как раньше: «|» рисуется, сверки нет
     info = build_pdf(str(src), str(out), [s], {"0": {"ru": "Дата: 2022-01-11 |"}})
     assert "|" in fitz.open(out)[0].get_text() and "verify" not in info
