@@ -330,6 +330,68 @@ def test_each_landscape_page_own_section_with_fit_want(tmp_path):
     assert bld.fit_want == {1: 1, 2: 2, 3: 1}
 
 
+def test_one_sheet_document_is_a_sheet_section_for_fit(tmp_path):
+    """Документ в один лист оригинала (лист изменений) — раздел-лист: перелившийся — мельче кеглем (fit_want {0: 1});
+    документ в два листа одним разделом (текст, текущий через листы) — нет."""
+    mem = B.Memory([("Első", "Первый"), ("Második", "Второй")])
+    port = (595.3, 841.9)
+    for blocks, sizes, want in (([p("Első", 1, 100)], [port], {0: 1}),
+                                ([p("Első", 1, 100), p("Második", 2, 100)], [port, port], {})):
+        bld = B.Builder(mem, lambda img: png(), PROFILE)
+        bld.build(blocks, str(tmp_path / "o.docx"), dict(LAYOUT, first_is_body=True, page_sizes=sizes))
+        assert bld.fit_want == want
+
+
+def test_one_sheet_text_layer_document_measures_margins_on_its_sheet(tmp_path):
+    """Поля и верх тела — по листам после титула (с третьего); у документа текстового слоя в один лист таких нет — по
+    нему, но не шире полей по умолчанию: прежде верх был 110 pt при бланке с 72 pt, и бланк уходил на второй лист;
+    лист, начатый низко (рисунок сверху), — не ниже 110 pt. Размеченный PDF и документ в два листа — как было."""
+    import docx_struct as D
+
+    def sheet(path, top, pages=1):
+        d = fitz.open()
+        for _ in range(pages):
+            pg = d.new_page(width=595.3, height=841.9)
+            pg.insert_text((70, top + 8), "lapszám: 1.", fontsize=9)
+            pg.draw_rect(fitz.Rect(70, top + 18, 540, 680))
+        d.save(str(path))
+        geo = lambda pn, t, b, x1: {"page": pn, "top": t, "bottom": b, "x0": 70, "x1": x1}
+        blocks = [b for pn in range(1, pages + 1) for b in (
+            {"k": "p", "runs": [{"t": "lapszám: 1."}], "geom": geo(pn, top, top + 10, 120)},
+            {"k": "table", "rows": [], "geom": geo(pn, top + 18, 680, 540)})]
+        return blocks, {pn: [(70, top, 120, top + 10), (70, top + 18, 540, 680)] for pn in range(1, pages + 1)}
+    blocks, content = sheet(tmp_path / "a.pdf", 72)
+    L = D.layout(str(tmp_path / "a.pdf"), blocks, content=content)
+    assert (L["top"], L["left"]) == (68, 62)                       # верх — свой; лево — не шире 62 (своё 70)
+    assert D.layout(str(tmp_path / "a.pdf"), blocks)["top"] == 106   # размеченный PDF — как было
+    blocks, content = sheet(tmp_path / "b.pdf", 395)
+    assert D.layout(str(tmp_path / "b.pdf"), blocks, content=content)["top"] == 106
+    blocks, content = sheet(tmp_path / "c.pdf", 72, pages=2)
+    assert D.layout(str(tmp_path / "c.pdf"), blocks, content=content)["top"] == 106
+    # шапка вне тела (не в сегментах) ниже первого блока тела — остаётся шапкой: верх тела не выше её (ред-тим 02.11)
+    d = fitz.open()
+    pg = d.new_page(width=595.3, height=841.9)
+    pg.insert_text((70, 28), "lapszám: 1.", fontsize=9)
+    pg.insert_text((70, 50), "VALLALAT FEJLEC", fontsize=10)
+    pg.insert_text((70, 64), "Masodik sor", fontsize=10)
+    pg.draw_rect(fitz.Rect(70, 80, 540, 680))
+    d.save(str(tmp_path / "h.pdf"))
+    blocks = [{"k": "p", "runs": [{"t": "lapszám: 1."}], "geom": {"page": 1, "top": 20, "bottom": 30, "x0": 70, "x1": 120}},
+              {"k": "table", "rows": [], "geom": {"page": 1, "top": 80, "bottom": 680, "x0": 70, "x1": 540}}]
+    L = D.layout(str(tmp_path / "h.pdf"), blocks, content={1: [(70, 20, 120, 30), (70, 80, 540, 680)]})
+    assert "VALLALAT" in str(L.get("head_grid")) + str(L.get("head_lines"))
+    # скан во весь лист (текстовый слой поверх картинки) — не шапка: верх тела остаётся своим
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (60, 80), "white").save(buf, "PNG")
+    d = fitz.open(str(tmp_path / "a.pdf"))
+    d[0].insert_image(d[0].rect, stream=buf.getvalue(), overlay=False)
+    d.save(str(tmp_path / "s.pdf"))
+    blocks, content = sheet(tmp_path / "unused.pdf", 72)
+    assert D.layout(str(tmp_path / "s.pdf"), blocks, content=content)["top"] == 68
+
+
 def test_foot_top_text_layer_ignores_trailing_space():
     """Текстовый слой: пробел в конце строки таблицы выше низа тела — не подвал (таблица решений OAH: нижнее поле
     165 pt); у размеченного PDF (cbot None) — как было."""

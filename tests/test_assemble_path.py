@@ -25,7 +25,7 @@ def _stubs(monkeypatch, calls, build=None):
         if build:
             build()
         return {"converter": mode}, []
-    monkeypatch.setattr(A, "build_pdf", lambda src, out, segs, res, progress=None, shots_out=None: {"translated": 0})
+    monkeypatch.setattr(A, "build_pdf", lambda src, out, segs, res, progress=None: {"translated": 0})
     monkeypatch.setattr(A, "docx_from_pdf", p2d)
     monkeypatch.setattr(A, "build_struct_docx", struct_docx)
     monkeypatch.setattr(A, "pdf_from_docx", lambda docx, pdf: {"from": "DOCX (LibreOffice)", "pages": 1})

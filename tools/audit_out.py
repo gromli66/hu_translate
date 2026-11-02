@@ -5,13 +5,16 @@
 
   python -X utf8 tools/audit_out.py <папка результатов | файл *_RU.docx> ... [--work <data/jobs/uid/work>]
                                     [--orig <папка оригиналов> ...] [--only <часть имени> ...]
-                                    [--json отчёт.json] [--fail-on red|yellow|never]
+                                    [--json отчёт.json] [--fail-on red|yellow|never] [--require-json]
 
 Рядом с `<имя>_RU.docx` берётся `<имя>_RU.pdf`; сегменты (`segs[].text`, `res[id].ru`) — из `<имя>.json`: в
 `<--work>/json`, в `<папка результатов>/../json` (результаты задания лежат в work/out) или в любом
 `data/jobs/*/work/json` (новые первыми — так проверяются и выложенные копии). Оригинал — `file` из JSON (путь
 контейнера /app/... переводится в data/), затем `<--orig>/<имя>.PDF`. Чего нет — проверка пропускается и в отчёте
 называется. Код возврата: 1, если есть 🔴 (с --fail-on yellow — и 🟡), иначе 0; 2 — нечего проверять.
+Без JSON задания (git-worktree: там нет data/jobs/<задание>/work/json) проверка 1 и — без пути к оригиналу из JSON —
+3, 5, 6, 8 не выполняются: число 🔴 несравнимо с базой. Тогда — предупреждение в отчёте и в stderr, в --json —
+поле «проверки_пропущены» {документ: [что пропущено или неполно]}; с --require-json — код 2. С JSON — всё как было.
 
 Проверки (номера как в аудите 29.10.2026, work/audit_2026-10-29/S*_findings.md):
   1 потеря содержимого — сегмент с переводом, которого нет в DOCX (колонтитулы, сканы, «не требует перевода» не в счёт);
@@ -603,8 +606,11 @@ def check_hungarian(d):
 
 # ---------------------------------------------------------------- 8. снимок листа вместо таблицы
 def image_share(page, min_area=400):
-    """Доля площади листа под картинками (без мелких значков)."""
-    area = sum(pymupdf.Rect(i["bbox"]).get_area() for i in page.get_image_info() if pymupdf.Rect(i["bbox"]).get_area() >= min_area)
+    """Доля площади листа под картинками (без мелких значков). Картинка в несколько пикселей — заливка, не снимок: фон
+    листа ÜTJ — картинка 1×1 жёлтого во весь лист за текстом (docx_build._page_bg), и текстовые листы 01-02FMP0BIGT,
+    30HU*75GT шли «листами-картинками на 100 %»."""
+    area = sum(pymupdf.Rect(i["bbox"]).get_area() for i in page.get_image_info()
+               if pymupdf.Rect(i["bbox"]).get_area() >= min_area and i["width"] * i["height"] > 4)
     return min(1.0, area / (page.rect.width * page.rect.height))
 
 
@@ -689,6 +695,18 @@ class Doc:
         self.skipped.append("%s: пропущено — %s" % (check, why))
         return []
 
+    def json_gaps(self):
+        """Без JSON задания (после run): проверки пропущенные и выполненные неполно — [строка]; с JSON — пусто."""
+        if self.js:
+            return []
+        out = list(self.skipped)
+        if self.pdf and self.orig:                      # листы сопоставляются по тексту сегментов — без них грубее
+            out += ["6 отметки: неполно — листы не сопоставлены по сегментам, сверка по документу",
+                    "8 снимок листа: неполно — листы сопоставлены только по пропорции"]
+        if self.docx:
+            out.append("7 венгерские буквы: неполно — нет слов сегментов, которые сборка оставляет как есть")
+        return out
+
     def page_map(self, by="edges"):
         """Листы оригинала ↔ листы перевода по тексту сегментов: рёбра (o, r) | {r: {o}} (0-based). Пусто, если не вышло."""
         if self._pm is None:
@@ -768,6 +786,9 @@ def render(d, findings):
     head = "══ %s  (перевод: %s л., оригинал: %s л.%s)" % (
         d.stem, d.pdf.n if d.pdf else "—", d.orig.n if d.orig else "—", "" if d.js else "; JSON задания не найден")
     lines = [head]
+    if not d.js:
+        lines.append("  ⚠ JSON задания не найден (%s.json: --work/json, <результаты>/../json, data/jobs/*/work/json) — "
+                     "проверки по сегментам пропущены, итог по документу НЕ сравним с прогоном с JSON" % d.stem)
     for f in sorted(findings, key=lambda x: (x.level != RED, x.check)):
         pg = " [стр. %s%s]" % (f.page or "—", ", ориг. %s" % f.orig_page if f.orig_page else "") if f.page or f.orig_page else ""
         lines.append("  %s %s%s: %s" % (ICON[f.level], f.check, pg, f.msg))
@@ -786,6 +807,8 @@ def main(argv=None):
     ap.add_argument("--only", action="append", default=[], help="только документы, в имени которых есть эта строка")
     ap.add_argument("--json", help="записать результат в JSON")
     ap.add_argument("--fail-on", choices=["red", "yellow", "never"], default="red")
+    ap.add_argument("--require-json", action="store_true",
+                    help="нет JSON задания хоть у одного документа — код 2 (сравнение с базой иначе недостоверно)")
     a = ap.parse_args(argv)
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -795,19 +818,33 @@ def main(argv=None):
     if not files:
         print("Нечего проверять: *_RU.docx не найдены")
         return 2
-    allf, summary = {}, []
+    allf, summary, gaps = {}, [], {}
     for f in files:
         d = Doc(f, a.work, a.orig)
         fs = d.run()
         allf[d.stem] = [x.as_dict() for x in fs]
+        if not d.js:
+            gaps[d.stem] = d.json_gaps()
         print(render(d, fs))
         summary.append((d.stem, sum(x.level == RED for x in fs), sum(x.level == YELLOW for x in fs)))
     nr, ny = sum(s[1] for s in summary), sum(s[2] for s in summary)
     print("\nИТОГО: документов %d, %s %d, %s %d" % (len(summary), ICON[RED], nr, ICON[YELLOW], ny))
     for stem, r, y in summary:
         print("  %-60s %s %2d  %s %2d" % (stem[:60], ICON[RED], r, ICON[YELLOW], y))
+    if gaps:
+        # git-worktree без data/jobs: часть проверок молча выпадала — 70 🔴 вместо 112 на том же наборе (ложное улучшение)
+        skipped = sorted({g.split(":")[0] for v in gaps.values() for g in v})
+        warn = ("⚠ JSON задания не найден у %d из %d документов — пропущены или неполны проверки: %s. Число %s/%s НЕ "
+                "сравнимо с базой, собранной с JSON: укажите --work <data/jobs/<задание>/work> (в git-worktree нет "
+                "data/jobs) или запускайте с --require-json" % (len(gaps), len(summary), ", ".join(skipped), ICON[RED], ICON[YELLOW]))
+        print("\n" + warn)
+        print(warn, file=sys.stderr)
+        allf["проверки_пропущены"] = gaps
     if a.json:
         Path(a.json).write_text(json.dumps(allf, ensure_ascii=False, indent=1), encoding="utf-8")
+    if gaps and a.require_json:
+        print("⛔ --require-json: JSON задания нет у %d документов — код 2" % len(gaps))
+        return 2
     if a.fail_on == "never":
         return 0
     return 1 if nr or (a.fail_on == "yellow" and ny) else 0

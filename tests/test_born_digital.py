@@ -1,17 +1,13 @@
 # -*- coding: utf-8 -*-
 """PDF с текстовым слоем (руководство UTS, 15.10): страница со скриншотом не скан, невидимый текст не переводится,
-маркер пункта отделён от текста, ячейка таблицы — одним абзацем, DOCX без квадратов вместо маркеров и без
-обрезанных строк таблицы, надписи скриншота перерисовываются без порчи соседних пикселей."""
-import io
-import zipfile
-
+маркер пункта отделён от текста, ячейка таблицы — одним абзацем, надписи скриншота перерисовываются без порчи
+соседних пикселей. (Проверки DOCX из оригинала через pdf2docx — docx_src — сняты вместе с ним, 01.11.)"""
 import numpy as np
 import fitz
 
 import layout as L
 import segments as S
 import shots as SH
-import docx_src as D
 
 LOREM = ("Az UTS alkalmazás grafikus felhasználói felülete a következő fő részekre bontható a felhasználó szerint, "
          "amelyek a menüsor alatt helyezkednek el és a tesztelés során folyamatosan láthatók maradnak.")
@@ -85,43 +81,6 @@ def test_narrow_cell_lines_stay_one_paragraph():
     assert [p["text"] for p in pars] == ["Teszt szüneteltetése"]
 
 
-def _docx(body_xml):
-    W = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ' \
-        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
-    doc = f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document {W}><w:body>{body_xml}' \
-          f'<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="400" w:bottom="500" w:left="800" ' \
-          f'w:right="800"/></w:sectPr></w:body></w:document>'
-    rels = '<?xml version="1.0" encoding="UTF-8"?><Relationships ' \
-           'xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>'
-    types = '<?xml version="1.0" encoding="UTF-8"?><Types ' \
-            'xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>'
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as z:
-        z.writestr("word/document.xml", doc)
-        z.writestr("word/_rels/document.xml.rels", rels)
-        z.writestr("[Content_Types].xml", types)
-    return buf.getvalue()
-
-
-def test_docx_normalize_splits_bullets_and_unlocks_rows(tmp_path):
-    sym = '<w:r><w:rPr><w:rFonts w:ascii="Symbol" w:hAnsi="Symbol"/></w:rPr><w:t>•</w:t></w:r>'
-    para = ('<w:p><w:pPr><w:tabs><w:tab w:val="left" w:pos="922"/></w:tabs><w:ind w:left="562" w:firstLine="0"/></w:pPr>'
-            f'{sym}<w:r><w:tab/></w:r><w:r><w:t>aktuális dátum</w:t></w:r><w:r><w:br/></w:r>'
-            f'{sym}<w:r><w:tab/></w:r><w:r><w:t>szimulátor idő</w:t></w:r></w:p>')
-    table = '<w:tbl><w:tr><w:trPr><w:trHeight w:hRule="exact" w:val="240"/></w:trPr><w:tc><w:p><w:r><w:t>x</w:t>' \
-            '</w:r></w:p></w:tc></w:tr></w:tbl><w:p/>'
-    f = tmp_path / "a.docx"
-    f.write_bytes(_docx(para + table))
-    D.normalize(f)
-    ds = S.docx_segments(f)
-    assert [d["src"].strip() for d in ds if d["src"].strip() not in ("x",)] == ["aktuális dátum", "szimulátor idő"]
-    xml = zipfile.ZipFile(f).read("word/document.xml").decode("utf-8")
-    assert 'w:hRule="atLeast"' in xml and 'w:hRule="exact"' not in xml
-    assert 'w:hanging="360"' in xml
-    D._fix_fonts(f)
-    assert 'w:ascii="Symbol"' not in zipfile.ZipFile(f).read("word/document.xml").decode("utf-8")
-
-
 def test_screenshot_label_repaint_keeps_neighbours():
     img = np.full((40, 200, 3), 120, np.uint8)            # серая шапка
     img[30:32, :] = 255                                   # белая линия под шапкой
@@ -137,50 +96,6 @@ def test_screenshot_label_repaint_keeps_neighbours():
 
 
 # ---------------------------------------------------------------- находки красной команды 15.10
-def _section_docx(tables_xml):
-    """DOCX из нескольких «страниц»: у каждой — абзац текста, таблица и абзац-разрыв раздела."""
-    sect = '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="400" w:bottom="500" w:left="800" w:right="800"/></w:sectPr>'
-    body = ""
-    for i, t in enumerate(tables_xml):
-        body += f'<w:p><w:r><w:t>Szöveg {i}</w:t></w:r></w:p>{t}'
-        if i < len(tables_xml) - 1:
-            body += f'<w:p><w:pPr>{sect}</w:pPr></w:p>'
-    return _docx(body)
-
-
-def _tbl(text, h=240, rows=1):
-    tr = f'<w:tr><w:trPr><w:trHeight w:hRule="exact" w:val="{h}"/></w:trPr><w:tc><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:tc></w:tr>'
-    return f'<w:tbl>{tr * rows}</w:tbl>'
-
-
-def test_stamp_goes_to_footer_but_repeated_step_table_does_not(tmp_path):
-    stamp = [_tbl(f"Létesítmény: Paksi Atomerőmű Verzió, Lapszám: 1.10 {i}/99") for i in range(3)]
-    f = tmp_path / "s.docx"; f.write_bytes(_section_docx(stamp)); D.normalize(f)
-    z = zipfile.ZipFile(f)
-    assert len([n for n in z.namelist() if n.startswith("word/footer")]) == 3
-    assert "Létesítmény" not in z.read("word/document.xml").decode("utf-8")
-    # таблица шагов TU: шапка одна, тело разное, высокая — остаётся в теле
-    steps = [_tbl(f"Sorsz. Feltétel, művelet, ellenőrzés lépés {w}", h=3000, rows=3) for w in ("alfa", "béta", "gamma")]
-    g = tmp_path / "t.docx"; g.write_bytes(_section_docx(steps)); D.normalize(g)
-    z = zipfile.ZipFile(g)
-    assert not [n for n in z.namelist() if n.startswith("word/footer")]
-    assert "Sorsz." in z.read("word/document.xml").decode("utf-8")
-
-
-def test_pages_follow_bookmarks_not_extra_sections(tmp_path):
-    from docx import Document
-    parts = []
-    for i in range(3):
-        d = Document(); d.add_paragraph(f"oldal {i} eleje")
-        if i == 1:                                  # pdf2docx: лишний разрыв раздела внутри страницы
-            d.add_section(); d.add_paragraph(f"oldal {i} vége")
-        p = tmp_path / f"p{i}.docx"; d.save(p); parts.append(p)
-    from assemble import _merge_docx
-    out = tmp_path / "m.docx"; _merge_docx(parts, out)
-    pages = {s["src"].strip(): s["page"] for s in D.paged_segments(out)}
-    assert pages == {"oldal 0 eleje": 0, "oldal 1 eleje": 1, "oldal 1 vége": 1, "oldal 2 eleje": 2}
-
-
 def test_watermark_over_whole_page_does_not_hide_text():
     doc = fitz.open(); page = doc.new_page()
     for i in range(10):
@@ -206,17 +121,3 @@ def test_label_that_does_not_fit_keeps_original():
     out = SH.render(doc, xref, [({"box": [5, 10, 24, 19], "h": 9, "t": "Ki"}, "Выключено полностью и навсегда")])
     a = np.frombuffer(out.samples, np.uint8).reshape(out.height, out.width, 3)
     assert (a[10:20, 5:25] == 20).all()                               # оригинал не стёрт
-
-
-def test_docx_toc_block_is_split_and_gets_dot_leader_tabs(tmp_path):
-    br = '<w:r><w:br/></w:r>'
-    lines = ["Tartalom", "Dokumentumhoz kapcsolódó szerepek ........................ 2",
-             "Előzmények ........................................ 13", "A dokumentum célja ............................ 14"]
-    para = '<w:p><w:pPr><w:jc w:val="center"/></w:pPr>' + br.join(f'<w:r><w:t xml:space="preserve">{t}</w:t></w:r>' for t in lines) + '</w:p>'
-    f = tmp_path / "toc.docx"
-    f.write_bytes(_docx(para))
-    D.normalize(f)
-    assert [d["src"].strip() for d in S.docx_segments(f)] == lines
-    assert D._toc_tabs(f) == 3
-    xml = zipfile.ZipFile(f).read("word/document.xml").decode("utf-8")
-    assert xml.count('w:leader="dot"') == 3 and "....." not in xml

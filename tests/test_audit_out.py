@@ -288,3 +288,70 @@ def test_empty_table_rows_page(tmp_path):
 def test_main_without_documents(tmp_path, capsys):
     assert A.main([str(tmp_path)]) == 2
     assert "Нечего проверять" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------- без JSON задания (git-worktree без data/jobs)
+def _nojson_job(tmp_path):
+    """Задание с дефектами (как test_end_to_end_defects); имя редкое — не найдётся в data/jobs основной копии."""
+    segs = [seg(1, "Zárva vannak az armatúrák", 0), seg(2, "Nyitott szelepek vannak", 1), seg(3, "Vezérlő szelep zárva", 1)]
+    res = {"1": {"ru": "Арматура закрыта"}, "2": {"ru": "Клапаны открыты"}, "3": {"ru": "Регулирующий клапан закрыт"}}
+    return make_job(
+        tmp_path, ["Арматура закрыта", "Клапаны открыты"],
+        [hdr_ru(0, 1) + [(40, 100, "Арматура закрыта 30RR21S002")], hdr_ru(0, 2) + [(40, 100, "Клапаны открыты")]],
+        [hdr_hu(0, 1) + [(40, 100, "Zárva 30RR21S002 30RR22S003")], hdr_hu(1, 2) + [(40, 100, "Nyitott")]], segs, res,
+        ru_name="zz_audit_nojson_7f3a")
+
+
+@needs_font
+def test_missing_job_json_is_loud_and_listed(tmp_path, capsys):
+    """Без JSON задания часть проверок молча отключалась (1 потеря содержимого; без пути к оригиналу — 3, 5, 6, 8):
+    тот же набор давал 70 🔴 вместо 112, и сравнение с базой показывало ложное улучшение."""
+    work = _nojson_job(tmp_path)
+    (work / "json" / "zz_audit_nojson_7f3a.json").unlink()
+    rep = tmp_path / "r.json"
+    code = A.main([str(work / "out"), "--json", str(rep)])                     # ни --work, ни --orig
+    out, err = capsys.readouterr()
+    assert code in (0, 1) and "JSON задания не найден" in out and "НЕ сравнимо" in out and "JSON задания" in err
+    gaps = json.loads(rep.read_text(encoding="utf-8"))["проверки_пропущены"]["zz_audit_nojson_7f3a"]
+    assert {g.split(":")[0] for g in gaps} >= {"1 потеря содержимого", "3 шапки", "5 коды оборудования", "6 отметки",
+                                               "8 снимок листа"}
+    assert A.main([str(work / "out"), "--require-json"]) == 2
+    assert "--require-json" in capsys.readouterr().out
+    # оригинал указан: пропущена только проверка по сегментам, сопоставление листов — неполное
+    A.main([str(work / "out"), "--orig", str(work / "in"), "--json", str(rep)])
+    gaps = json.loads(rep.read_text(encoding="utf-8"))["проверки_пропущены"]["zz_audit_nojson_7f3a"]
+    assert gaps[0].startswith("1 потеря содержимого: пропущено") and not any(g.startswith("3 шапки") for g in gaps)
+    assert any(g.startswith("6 отметки: неполно") for g in gaps)
+
+
+@needs_font
+def test_with_job_json_output_unchanged_by_new_flag(tmp_path, capsys):
+    work = _nojson_job(tmp_path)
+    args = [str(work / "out"), "--work", str(work), "--orig", str(work / "in")]
+    code = A.main(args + ["--json", str(tmp_path / "a.json")])
+    plain = capsys.readouterr()
+    assert A.main(args + ["--json", str(tmp_path / "b.json"), "--require-json"]) == code
+    strict = capsys.readouterr()
+    assert plain == strict and "JSON задания не найден" not in plain.out and plain.err == ""
+    a = json.loads((tmp_path / "a.json").read_text(encoding="utf-8"))
+    assert list(a) == ["zz_audit_nojson_7f3a"] and (tmp_path / "a.json").read_text() == (tmp_path / "b.json").read_text()
+
+
+def test_page_background_fill_is_not_a_picture_page(tmp_path):
+    """Фон листа — картинка 1×1 цвета во весь лист за текстом (листы ÜTJ, docx_build._page_bg): заливка, не снимок;
+    настоящая картинка во весь лист — снимок."""
+    import io
+    import pymupdf
+    from PIL import Image
+
+    def png(w, h):
+        buf = io.BytesIO()
+        Image.new("RGB", (w, h), "#FFFF99").save(buf, "PNG")
+        return buf.getvalue()
+    doc = pymupdf.open()
+    for w, h in ((1, 1), (60, 80)):
+        pg = doc.new_page(width=595, height=842)
+        pg.insert_image(pg.rect, stream=png(w, h), overlay=False)
+        pg.insert_text((60, 70), "Text", fontsize=10)
+    assert A.image_share(doc[0]) == 0.0
+    assert A.image_share(doc[1]) > 0.9                              # картинка 60×80 — во весь лист с полями пропорций

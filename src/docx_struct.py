@@ -1292,6 +1292,16 @@ def relist(bs):
     return out
 
 
+def _cell_pad(side, vals):
+    """Поле ячейки таблицы оригинала по расстояниям «текст — линия ячейки»: больше CELL_PAD_MAX — не поле (слева —
+    отступ текста: вложенный пункт, выравнивание; сверху и снизу — пустое место до линии, которой у строки нет: бланк
+    без горизонталей между строками мерил до рамки листа — 72 и 491 pt у 30RA+SGT TU, и каждая строка таблицы с таким
+    полем шла на свой лист, 549 листов при 28); слева — нижняя четверть (отступ бывает и больше поля), сверху и снизу —
+    медиана. Нет значений — None."""
+    v = sorted(x for x in vals if x <= GM.CELL_PAD_MAX)
+    return round(v[len(v) // 4 if side == "left" else len(v) // 2], 1) if v else None
+
+
 def _rgb(col):
     """Цвет pdfplumber — серый числом или (g,), RGB — (r, g, b) — в [r, g, b] (доли 0…1); прочее — None."""
     if isinstance(col, (int, float)):
@@ -1462,11 +1472,9 @@ def load(path):
                     pads["left"].append(cg["x0"] - lx[-1])
                 if above and below:
                     pads["top"].append(cg["top"] - above[-1]); pads["bottom"].append(below[0] - cg["bottom"])
-        # больше 14 pt — отступ текста в ячейке (вложенный пункт, выравнивание), а не поле
-        pads["left"] = [v for v in pads["left"] if v <= 14] or pads["left"][:0]
         for k, v in pads.items():
-            if v:                                           # поле слева — нижняя четверть: отступ бывает и больше поля
-                v.sort(); out["pad_" + k] = round(v[len(v) // 4 if k == "left" else len(v) // 2], 1)
+            if _cell_pad(k, v) is not None:
+                out["pad_" + k] = _cell_pad(k, v)
         return out
 
     def toc_info(el):
@@ -2462,12 +2470,22 @@ def layout(path, blocks, content=None):
                 continue
             else:
                 yield b
-    body = [b["geom"] for b in flat(blocks) if b.get("geom") and b["geom"]["page"] and b["geom"]["page"] > 2
-            and b["k"] in ("p", "h") and not (content and b.get("figure"))]
-    if content:
-        # текстовый слой: у бланка текст — в таблицах, поля и верх тела — и по ним; снимок скана (во весь лист, от края)
-        # — не мера поля: у 32RDGT левое поле выходило 0, верх тела — над штампом, и шапки не было (20.10)
-        body += [b["geom"] for b in blocks if b["k"] == "table" and ((b.get("geom") or {}).get("page") or 0) > 2]
+    def body_of(after):
+        """Места блоков тела на листах после листа after (поля и верх тела меряются по ним)."""
+        g = [b["geom"] for b in flat(blocks) if b.get("geom") and b["geom"]["page"] and b["geom"]["page"] > after
+             and b["k"] in ("p", "h") and not (content and b.get("figure"))]
+        if content:
+            # текстовый слой: у бланка текст — в таблицах, поля и верх тела — и по ним; снимок скана (во весь лист, от
+            # края) — не мера поля: у 32RDGT левое поле выходило 0, верх тела — над штампом, и шапки не было (20.10)
+            g += [b["geom"] for b in blocks if b["k"] == "table" and ((b.get("geom") or {}).get("page") or 0) > after]
+        return g
+    # поля — по листам после титула (с третьего); у документа текстового слоя в один лист (лист изменений) — по
+    # нему, но не шире полей по умолчанию: иначе верх тела был 110 pt при бланке с 55–70 pt, и бланк в лист
+    # оригинала уходил на второй (13 документов ночи 29.10). Два листа — нет (колонтитул, повторяющийся на обоих,
+    # мог оказаться ниже верха тела и пропасть); размеченный PDF — нет (в выборке только абзацы, без таблиц бланка)
+    body3 = body_of(2)
+    short = not body3 and bool(content) and len(pdf.pages) == 1
+    body = body3 or (body_of(0) if short else [])
     # левое поле — самый левый край, повторяющийся у трёх и больше блоков (заголовки у поля), а не медиана: у OAH тело
     # сдвинуто от заголовков на 37 pt, поле выходило внутри сдвига, и центр шапки и логотипа не узнавался (16.10);
     # сдвиг тела — отступом абзаца (docx_build.paragraph)
@@ -2482,6 +2500,20 @@ def layout(path, blocks, content=None):
         firsts[g["page"]] = min(firsts.get(g["page"], g["top"]), g["top"])
     tops_ = sorted(firsts.values())
     body_top = tops_[len(tops_) // 5] if tops_ else 110
+    if short:                                       # один лист: поля — не шире полей по умолчанию
+        left, right, body_top = min(left, 62), min(right, 59), min(body_top, 110)
+        # и верх тела — не выше знаков и картинок вне тела у верха листа (шапка, не попавшая в сегменты): иначе она
+        # не шла ни в шапку (выше верха тела), ни в тело и пропадала молча (ред-тим 02.11)
+        # (прямые знаки не на строках тела — знак строки тела, вылезший за рамку сегмента, не шапка; картинки —
+        # логотип целиком у верха, а не скан во весь лист и не рисунок тела, ред-тим 02.11)
+        pg0, boxes = pdf.pages[0], content.get(1) or []
+        on_body = lambda c: any(b[1] - 2 <= float(c["bottom"]) and float(c["top"]) <= b[3] + 2 for b in boxes)
+        art = [float(c["bottom"]) for c in pg0.chars if c.get("mcid") is None and c["text"].strip() and _upright(c)
+               and float(c["top"]) < 110 and not on_body(c)]
+        art += [float(i["bottom"]) for i in pg0.images if float(i["bottom"]) <= 110
+                and (float(i["x1"]) - float(i["x0"])) * (float(i["bottom"]) - float(i["top"])) < 0.25 * W * H]
+        if art:
+            body_top = min(max(body_top, max(art) + 1), 110)
     page, page_tok, page_off, tok_boxes = _typical_page(pdf, body_top, H, cbot=cbot)
     # номер листа — помечен в знаках: полем станет он, а не такое же число рядом («Блок 3» на листе 3, синтетика)
     mark = lambda chars: [dict(c, text=PAGE_MARK) if c["text"].isdigit() and any(
@@ -2637,7 +2669,7 @@ def layout(path, blocks, content=None):
     # МТ-ЦАСУТП-14 три строки (60 листов → 69, 16.10); 80-й процентиль — у пятой части листов оригинала тело ниже
     # поля, а где раздел начинается с нового листа (3SZ17: листы кончаются на 240…735 pt), поле выходило 7 см (30.10)
     lasts = {}
-    for g in body:
+    for g in body3:                                     # низ тела — по прежней выборке (у одного листа — cbots)
         lasts[g["page"]] = max(lasts.get(g["page"], 0), g.get("bottom") or g["top"])
     if content:
         # текстовый слой: низ текста тела каждого листа (cbots), кроме сканов (OCR — до края листа); таблица через
