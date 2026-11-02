@@ -60,9 +60,25 @@ def graphic_page(page, segs, figs):
         and area >= GM.POSTER_PIECES_AREA and len(segs) <= GM.POSTER_TEXT
 
 
-def chart_table(t, draw):
+def nested(t, tables):
+    """Рамки таблиц, лежащих внутри таблицы t (вложенные: рамка листа вокруг таблицы с заливкой). Таблица — (xs, ys, горизонтали,
+    вертикали), как docx_layout._tables."""
+    import fitz
+    R = fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1])
+    out = []
+    for u in tables:
+        if u != t:
+            r = fitz.Rect(u[0][0], u[1][0], u[0][-1], u[1][-1])
+            if R.contains(r) and r != R:
+                out.append(r)
+    return out
+
+
+def chart_table(t, draw, inner=()):
     """Таблица-график: в её рамке — от трёх залитых фигур, не совпадающих с ячейками (полосы диаграммы Ганта, ромбы вех,
-    столбики). t — (xs, ys, горизонтали, вертикали) таблицы, draw — [{"rect", "solid"}] листа."""
+    столбики). t — (xs, ys, горизонтали, вертикали) таблицы, draw — [{"rect", "solid"}] листа. inner — рамки вложенных
+    таблиц (nested): заливка их ячеек — не столбики внешней (рамка листа вокруг бланка с серыми клетками на 68 % листа была
+    «графиком», и лист уходил снимком, 30TH50-80ÁTVGT л. 6–9)."""
     import fitz
     xs, ys = t[0], t[1]
     R = fitz.Rect(xs[0], ys[0], xs[-1], ys[-1])
@@ -77,6 +93,8 @@ def chart_table(t, draw):
             continue
         if near(q.x0, xs) and near(q.x1, xs) and near(q.y0, ys) and near(q.y1, ys):
             continue                                        # заливка ячейки
+        if any(r.contains(q) for r in inner):
+            continue                                        # заливка вложенной таблицы — её дело
         n += 1
     return n >= GM.CHART_SHAPES
 
