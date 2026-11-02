@@ -40,6 +40,23 @@ def test_repeat_inside_long_text():
     assert r and r[1] == 4 and "закрыт" in r[0]
 
 
+def test_repeat_by_table_rows_is_not_a_defect():
+    """Одинаковые значения по рядам таблицы (INFO 3PR10: «A301» в 40 рядах, каждое — свой сегмент и свой абзац ячейки)
+    — не повтор фразы; значения, слитые нарезкой в один сегмент, и размноженное сборкой значение — повтор."""
+    rows = ["A301"] * 40 + ["GA01"]
+    u = " ".join(rows)
+    assert A.find_repeat(u)[1] == 13                                 # без сегментов — повтор, как прежде
+    assert A.find_repeat(u, legit=A.row_values(rows, {"a301": 40})) is None
+    assert A.find_repeat(u, legit=A.row_values(rows, {"a301": 5})) is not None     # сегментов меньше рядов
+    merged = ["126-128 бар " * 6, "x"]                                # нарезка слила шесть рядов в один сегмент
+    assert A.find_repeat(" ".join(merged), legit=A.row_values(merged, {A.norm(merged[0]): 1, "126128бар": 50}))[1] == 6
+    sig = ["сигнал 11GB02 сигнал 11GB02 сигнал 11GB02"] * 7         # в каждом абзаце — по три ряда
+    assert A.find_repeat(" ".join(sig), legit=A.row_values(sig, {A.norm(sig[0]): 7}))[1] == 21
+    tail = ["A301"] * 9 + ["Привод крана Привод крана Привод крана"]  # законные ряды пропущены, поиск идёт дальше
+    r = A.find_repeat(" ".join(tail), legit=A.row_values(tail, {"a301": 9}))
+    assert r == ("Привод крана", 3)
+
+
 # ---------------------------------------------------------------- 1. потеря содержимого
 def seg(i, text, page=0, **loc):
     return {"id": i, "text": text, "page": page, "loc": loc}
@@ -335,6 +352,54 @@ def test_with_job_json_output_unchanged_by_new_flag(tmp_path, capsys):
     assert plain == strict and "JSON задания не найден" not in plain.out and plain.err == ""
     a = json.loads((tmp_path / "a.json").read_text(encoding="utf-8"))
     assert list(a) == ["zz_audit_nojson_7f3a"] and (tmp_path / "a.json").read_text() == (tmp_path / "b.json").read_text()
+
+
+def _scheme(pg, x=150, y=300):
+    """Векторная схема: кружок-арматура, труба, косая выноска к рамке надписи (как 3FI18 стр. 7)."""
+    import pymupdf
+    pg.draw_circle((x + 150, y + 150), 30)
+    pg.draw_line((x + 150, y + 120), (x + 150, y))
+    pg.draw_line((x + 180, y + 150), (x + 230, y + 250))
+    pg.draw_rect(pymupdf.Rect(x + 200, y + 250, x + 300, y + 300))
+    pg.draw_line((x, y), (x + 300, y))
+
+
+def test_figure_rects_scheme_not_table_grid():
+    import pymupdf
+    doc = pymupdf.open()
+    pg = doc.new_page(width=595, height=842)
+    for i in range(5):                                              # сетка таблицы — только оси
+        pg.draw_line((40, 100 + 20 * i), (500, 100 + 20 * i))
+    for x in (40, 200, 500):
+        pg.draw_line((x, 100), (x, 180))
+    assert A.figure_rects(pg) == []
+    _scheme(pg)
+    figs = A.figure_rects(pg)
+    assert len(figs) == 1 and figs[0].contains(pymupdf.Rect(352, 552, 448, 598)) and figs[0].y0 > 250   # с рамкой надписи
+
+
+@needs_font
+@pytest.mark.parametrize("share, snapshot", [(0.3, False), (0.95, True)])
+def test_vector_scheme_as_picture(tmp_path, share, snapshot):
+    """Схема, нарисованная векторами, в переводе — картинкой с надписями (3FI18 стр. 7, 26–27): надписи в ней — не
+    потеря, картинка — не снимок листа. Картинка во весь лист при небольшой схеме — по-прежнему снимок."""
+    import pymupdf
+    segs = [seg(1, "Szórtvizes armatúra működtetése", 0, bbox=[60, 90, 300, 104]),
+            seg(2, "Áramlásjelző nincs használva", 0, bbox=[355, 560, 445, 590])]
+    res = {"1": {"ru": "Управление арматурой распыления"}, "2": {"ru": "Датчик расхода не используется"}}
+    work = make_job(tmp_path, ["Управление арматурой распыления"], [[(40, 100, "Управление арматурой распыления")]],
+                    [[(60, 100, "Szórtvizes armatúra működtetése")]], segs, res, ru_images=[(0, share)])
+    doc = pymupdf.open()
+    pg = doc.new_page(width=595, height=842)
+    pg.insert_text((60, 100), "Szórtvizes armatúra működtetése", fontsize=10, fontname="F0", fontfile=FONT)
+    pg.insert_text((358, 580), "Áramlásjelző nincs használva", fontsize=7, fontname="F0", fontfile=FONT)
+    _scheme(pg)
+    doc.save(str(work / "in" / "doc.pdf"))
+    doc.close()
+    d = A.Doc(work / "out" / "doc_RU.docx", work, [work / "in"])
+    found = {f.check for f in d.run()}
+    assert "1 потеря содержимого" not in found
+    assert ("8 снимок листа" in found) == snapshot
 
 
 def test_page_background_fill_is_not_a_picture_page(tmp_path):
