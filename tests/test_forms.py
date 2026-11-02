@@ -244,3 +244,21 @@ def test_scan_signature_crossing_line_plate_stays_on_top_and_text_stops_before_f
     assert ((a[:, :, 2] - a[:, :, 0] > 80) & (a[:, :, 2] > 150)).sum() > 20      # синие штрихи подписи в плашке
     spans = [s for b in q.get_text("dict")["blocks"] for ln in b.get("lines", []) for s in ln["spans"] if s["text"].strip()]
     assert spans and max(s["bbox"][2] for s in spans) < 330                       # перевод не заходит на штамп
+
+
+def test_scan_plate_reaches_end_of_word_ink():
+    """Рамка OCR уже слова («AZONOSÍTÓ:» — до «Ó», «MEGNEVEZÉS:» — до «S:», 3PR10 стр. 3): белая плашка — до конца
+    краски слова, хвост «Ó:»/«S:» не проступает рядом с переводом; дальше разрыва в треть строки, через линейку и в
+    чужую рамку — нет."""
+    import numpy as np
+    import assemble as A
+    dark = np.zeros((60, 200), bool)
+    dark[20:30, 10:40] = True                       # слово, рамка OCR — до 30
+    dark[22:28, 42:45] = True                       # «:» через 2 pt
+    dark[20:30, 60:80] = True                       # следующее слово через 15 pt
+    dark[:, 100] = True                             # линейка во всю высоту
+    dark[20:30, 96:99] = True
+    assert A._ink_span(dark, 1.0, (10, 18, 30, 32), []) == (10, 45)
+    assert A._ink_span(dark, 1.0, (60, 18, 80, 32), []) == (60, 80)
+    assert A._ink_span(dark, 1.0, (10, 18, 30, 32), [(41, 18, 50, 32)]) == (10, 40)       # «:» — чужая строка
+    assert A._ink_span(dark, 1.0, (90, 18, 95, 32), [])[1] == 99                         # линейка не берётся

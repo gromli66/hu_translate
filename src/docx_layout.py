@@ -1516,18 +1516,30 @@ def load(src, segs, text=False):
     # пробелы — без счёта: OCR читает название то с двойным пробелом после номера, то с одним («1.1.  Turbina …»
     # / «1.1. Turbina …», 3SZ19), и повтор с прошлого листа оставался заголовком посреди раздела (19.10)
     key = lambda t: re.sub(r"\s+", " ", _sig(t)).strip()
-    top = {}
+    top, at = {}, {}
     for s in content:
         if s["loc"]["bbox"][3] < 0.2 * H:
             top.setdefault(s["page"], set()).add(key(s["text"]))
+            at.setdefault((s["page"], key(s["text"])), []).append(s["loc"]["bbox"][1])
     # первое появление бегущего названия (то же — вверху следующего листа) — заголовок раздела, даже без метки портала:
     # «1.8. Turbina csapágyak rezgése …» 3SZ19 шло обычным абзацем, а со следующего листа снималось как повтор (19.10)
     # (название — полужирное или по центру: строка тела вверху листа, повторённая на следующем, — не заголовок)
     first = {(s["page"], key(s["text"])) for s in content if s["loc"]["bbox"][3] < 0.2 * H and titled(s)
              and (s["loc"].get("bold") or s["loc"].get("align") == "center")
              and key(s["text"]) in top.get(s["page"] + 1, ()) and key(s["text"]) not in top.get(s["page"] - 1, ())}
-    content = [s for s in content if not (s["loc"]["bbox"][3] < 0.2 * H and titled(s)
-                                          and key(s["text"]) in top.get(s["page"] - 1, ()))]
+    # и на первом листе серии: строка над рамкой шапки — не название (не полужирная, не по центру), — что стоит так же
+    # (±15 pt) вверху следующего листа и выше всего текста своего листа, — шапка листа, а не текст: «Azonosító:
+    # 3PR10», «Megnevezés: …» первого листа серии (3PR10 л. 4 после сканов, л. 20 — титул INFO) шли абзацами тела —
+    # под сканом титула и над титулом INFO, а лист без шапки уходил во вводную часть (docx_struct.layout: колонтитул
+    # не как у тела) — без шапки и номера. Пункт под названием раздела, повторённый на листах (цифры не в счёт), — текст
+    again = lambda s: s["loc"]["bbox"][3] < 0.2 * H and titled(s) and key(s["text"]) in top.get(s["page"] - 1, ())
+    cand = lambda s: s["loc"]["bbox"][3] < 0.2 * H and titled(s) and (s["page"], key(s["text"])) not in first and any(
+        abs(y - s["loc"]["bbox"][1]) <= 15 for y in at.get((s["page"] + 1, key(s["text"])), ()))
+    text_top = {}
+    for s in content:
+        if not again(s) and not cand(s):
+            text_top[s["page"]] = min(text_top.get(s["page"], H), s["loc"]["bbox"][1])
+    content = [s for s in content if not (again(s) or cand(s) and s["loc"]["bbox"][1] < text_top.get(s["page"], H))]
     # (факт листа, старше метки портала — _role: метка «текст» у такой строки заголовок не отменяет)
     content = [dict(s, loc=dict(s["loc"], title=True)) if (s["page"], key(s["text"])) in first else s
                for s in content]

@@ -328,6 +328,43 @@ def _foreign_ink(page, plates, dpi=150):
     return out, room
 
 
+def _ink_span(dark, k, frag, stops):
+    """Края краски строки скана (x0, x1 в pt): рамка OCR бывает уже слова — у «AZONOSÍTÓ:» жирного моноширинного она
+    кончалась на «Ó», у «MEGNEVEZÉS:» — перед «S:», и хвост проступал рядом с переводом («ИДЕНТИФИКАТОР:₁:», 3PR10
+    стр. 3). Край тянется по столбцам с краской в средней половине строки, пока разрыв не больше трети её высоты и не
+    дальше полутора высот; не заходит в чужие рамки (stops — рамки других строк листа) и не берёт линейку (краска в
+    столбце выходит за строку и сверху, и снизу). dark — маска тёмного листа при k px на pt."""
+    import numpy as np
+    x0, y0, x1, y1 = frag
+    h = y1 - y0
+    H, W = dark.shape
+    a, z = int((y0 + 0.25 * h) * k), int(np.ceil((y1 - 0.25 * h) * k))
+    up, dn = max(int((y0 - 4) * k), 0), min(int((y1 + 4) * k), H - 1)
+    if z <= a or a < 0 or z > H:
+        return x0, x1
+
+    def ink(c):
+        col = dark[:, c]
+        return col[a:z].any() and not (col[up] and col[dn])
+    out = []
+    for side, edge in ((-1, x0), (1, x1)):
+        lim = [s[2] + 1 if side < 0 else s[0] - 1 for s in stops if s[1] < y1 and s[3] > y0
+               and (s[2] <= x0 + 1 if side < 0 else s[0] >= x1 - 1)]
+        far = edge + side * 1.5 * h
+        far = max([far] + lim) if side < 0 else min([far] + lim)
+        c, last, gap = int(edge * k), edge, 0
+        while 0 <= c + side < W and (c + side) / k * side <= far * side:
+            c += side
+            if ink(c):
+                last, gap = (c + (side > 0)) / k, 0
+            else:
+                gap += 1
+                if gap > h / 3 * k:
+                    break
+        out.append(last)
+    return out[0], out[1]
+
+
 def build_pdf(src, out, segs, res, progress=None):
     import fitz
     import pagefit as PF
@@ -369,14 +406,21 @@ def build_pdf(src, out, segs, res, progress=None):
         tabs = [] if ocr or page.rotation else [r for r in (fitz.Rect(t.bbox) for t in page.find_tables().tables)
                                                  if r.get_area() < 0.5 * page.rect.get_area()]
         plates = []
+        if ocr and not page.rotation:                   # краска листа — где кончается слово (_ink_span)
+            import numpy as np
+            pm = page.get_pixmap(dpi=150, annots=False)
+            dark = np.frombuffer(pm.samples, np.uint8).reshape(pm.height, pm.width, pm.n)[:, :, :3].min(2) < 128
+            lines = [tuple(f) for t in segs if t["page"] == pno for f in t["loc"]["frags"]]
         for s, r in todo:
             if ocr:
                 # OCR-страница: белая заливка по рамкам строк абзаца, а не по общей рамке — общая рамка формы
                 # захватывала соседние поля и рукописные подписи (30RDGT nyilv, 06.10); у первой строки — запас
-                # влево под тире/номер пункта, которые Tesseract мог не включить в рамку
+                # влево под тире/номер пункта, которые Tesseract мог не включить в рамку; и до конца краски слова
                 for i, (x0, y0, x1, y1) in enumerate(s["loc"]["frags"]):
                     left = 16 if i == 0 and re.match(r"\s*[-–•]", s["text"]) else 2
-                    plates.append(fitz.Rect(x0 - left, y0 - 1.5, x1 + 2, y1 + 1.5))
+                    e0, e1 = _ink_span(dark, 150 / 72, (x0, y0, x1, y1), [f for f in lines if f != (x0, y0, x1, y1)]) \
+                        if not page.rotation else (x0, x1)
+                    plates.append(fitz.Rect(min(x0 - left, e0 - 1), y0 - 1.5, max(x1 + 2, e1 + 1), y1 + 1.5))
                     page.add_redact_annot(plates[-1] * der, fill=(1, 1, 1))
             else:
                 for bb in s["loc"]["frags"]:
