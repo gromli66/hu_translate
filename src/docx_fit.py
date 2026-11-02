@@ -8,6 +8,7 @@
 раздела): у оригинала и у перевода. Без LibreOffice — без подгонки."""
 import re
 import shutil
+import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
@@ -77,6 +78,13 @@ def _marked(src, dst):
                 data = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
             zout.writestr(item, data)
     return n
+
+
+def _pages(pdf):
+    """Листов в напечатанном PDF."""
+    import fitz
+    with fitz.open(str(pdf)) as doc:
+        return doc.page_count
 
 
 def _layout(pdf):
@@ -234,12 +242,20 @@ def _fit(orig, ru, printer, tmp, want=None, any_span=False):
             # (документ в один лист, где перевод длиннее на полстраницы, ред-тим 02.11)
             idle = [i for i, v in over.items() if i in ks and v[1] >= span0.get(i, 0)]
             if idle:
-                for i in idle:
-                    del ks[i]
-                info["kept"] = len(idle)
-                if ks:
-                    _shrink(ru, tmp / "ru_fitF.docx", ks)
-                    cur = tmp / "ru_fitF.docx"
+                keep = {i: k for i, k in ks.items() if i not in idle}
+                alt = tmp / "ru_fitF.docx"
+                _shrink(ru, alt, keep) if keep else shutil.copyfile(ru, alt)
+                # такой файл ещё не печатался: у DOCX-исходника раздел без нового листа (непрерывный, чётный) мог сдвинуть
+                # соседний — печать ещё раз; листов больше, чем у последней печати, — ужатие остаётся (ред-тим 02.11)
+                _marked(alt, tmp / "ru_mF.docx")
+                try:
+                    printer(tmp / "ru_mF.docx", tmp / "ru_mF.pdf")
+                    longer = _pages(tmp / "ru_mF.pdf") > _pages(tmp / f"ru_m{step}.pdf")
+                except (OSError, RuntimeError, subprocess.SubprocessError):     # не напечатался — ужатие остаётся
+                    longer = True
+                if not longer:
+                    ks, cur = keep, alt
+                    info["kept"] = len(idle)
             break
         for i, (_, span, fill) in over.items():
             need = (span - 1) + fill                # листов текста раздела
