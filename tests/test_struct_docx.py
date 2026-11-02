@@ -308,6 +308,11 @@ def test_every_numbered_sheet_starts_new_page():
     assert [len(b.get("rows") or []) for b in got] == [2, 2, 2, 0]
     assert [(bool(b.get("break")), b.get("sheet")) for b in got] == [(False, None), (True, 4), (True, 5), (True, 6)]
     assert D.sheet_closed({}, [t, after]) == set()                       # без номеров и подписей — сплошь, как было
+    # перечень через лист — тоже по листам, нумерация части — с её места (02VE25: пункты листа 4 шли в разделе листа 3)
+    num = {"k": "list", "kind": "Decimal", "start": 1, "items": [[p(f"{k}. pont", pg, 100 + 20 * k)] for k, pg in
+                                                                 enumerate((3, 3, 4, 4, 5), 1)]}
+    got = D.split_at_zones([num, after], None, closed)
+    assert [(len(b.get("items") or []), b.get("start"), bool(b.get("break")), b.get("sheet")) for b in got] ==         [(2, 1, False, None), (2, 3, True, 4), (1, 5, True, 5), (0, None, True, 6)]
 
 
 def test_label_tab_kept_and_column_alignment_from_original():

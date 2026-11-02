@@ -2456,7 +2456,11 @@ class Builder:
                     restart = True
             # лист оригинала, закрытый подписью (docx_struct.closed_sheets), — свой раздел: номер листа — его, не
             # подряд по листам перевода
-            if b.get("sheet") and page and not in_title and not in_front and sheet_no.get(page):
+            # (у перечня листа нет в geom — лист его первого пункта: часть перечня, начатая на новом листе, открывала
+            # раздел только у таблиц, 02VE25)
+            if page is None and b["k"] == "list" and b.get("sheet"):
+                page = b["sheet"]
+            if (b.get("sheet") or made is not None) and page and not in_title and not in_front and sheet_no.get(page):
                 if made is None:
                     sec = made = self.doc.add_section(WD_SECTION.NEW_PAGE)
                     self.fresh = True

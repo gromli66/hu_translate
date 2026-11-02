@@ -614,6 +614,19 @@ def split_at_zones(blocks, runs, closed=()):
     zone = lambda pn: next((i for i, z in enumerate(runs or []) if z["from"] <= pn <= z["to"]), None)
     out = []
     for b in blocks:
+        # перечень через лист — тоже по листам (путь А): иначе раздел следующего листа начинался после конца перечня, и
+        # его первая страница выходила с «N (прод.)» (02VE25: пункты листа 4 в разделе листа 3, +7 листов); номер пункта
+        # части — с места в перечне (start)
+        if b["k"] == "list" and (runs or closed) and len(b["items"]) > 1:
+            pages, last = [], None
+            for it in b["items"]:
+                last = min((x["geom"]["page"] for x in it if (x.get("geom") or {}).get("page")), default=last)
+                pages.append(last)
+            cuts = [i for i in range(1, len(pages)) if pages[i] and pages[i - 1] and pages[i] != pages[i - 1]
+                    and (zone(pages[i]) != zone(pages[i - 1]) or pages[i - 1] in closed)]
+            for a, z in zip([0] + cuts, cuts + [len(pages)]):
+                out.append(dict(b, items=b["items"][a:z], start=b.get("start", 1) + a) if cuts else b)
+            continue
         if not (runs or closed) or b["k"] != "table" or not b.get("split"):
             out.append(b)
             continue
