@@ -2026,8 +2026,11 @@ class Builder:
                         continue
                     src = line.replace(PAGE_MARK, "00")
                     ru = self.tr(src) or zone(src) or line
-                    if len(ru) > len(line) and widths[ci] < len(ru) * k + GM.CELL_PAD:
-                        need[ci] = max(need[ci], len(ru) * k + GM.CELL_PAD)
+                    # номер листа на переливе раздела-листа — «N (прод.)» (путь А): ячейка номера — и под него, иначе
+                    # «(прод.)» срезалось узкой ячейкой (3FI18: «2, 2» вместо «2, 2 (прод.)»)
+                    n_ru = len(ru) + (len(" (прод.)") if PAGE_MARK in line and (self.L or {}).get("sheet_no") else 0)
+                    if n_ru > len(line) and widths[ci] < n_ru * k + GM.CELL_PAD:
+                        need[ci] = max(need[ci], n_ru * k + GM.CELL_PAD)
         deficit = [max(0.0, need[i] - widths[i]) for i in range(n)]
         total = sum(deficit)
         if total < 1:
