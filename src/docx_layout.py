@@ -249,7 +249,10 @@ def _underlined(doc, segs):
     for s in segs:
         by_page.setdefault(s["page"], []).append(s)
     for pno, ss in by_page.items():
-        hs = [r for r in (dr["rect"] for dr in doc[pno].get_cdrawings()) if r[3] - r[1] <= 1.2 and r[2] - r[0] >= 6]
+        # сплошная линия одним отрезком: пунктир разделителя строк (много отрезков одним путём, таблицы 3FI18 стр. 33–39)
+        # под тесной ячейкой — не подчёркивание (ред-тим 02.11)
+        hs = [dr["rect"] for dr in doc[pno].get_cdrawings() if len(dr["items"]) == 1
+              and dr["rect"][3] - dr["rect"][1] <= 1.2 and dr["rect"][2] - dr["rect"][0] >= 6]
         if not hs:
             continue
 

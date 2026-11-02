@@ -1149,3 +1149,52 @@ def test_nested_list_in_cell_keeps_indent_and_subheading_underline(tmp_path):
     ind = {p.text: p.paragraph_format.left_indent for c in t._cells for p in c.paragraphs if p.text}
     assert ind["Закрыты:"] is None and ind["Петля 1:"] is None and round(ind["30YA11S201"].pt) == 18
     assert any(r.underline for p in t.rows[0].cells[1].paragraphs for r in p.runs if r.text == "Закрыты:")
+
+
+def test_review_0211_narrowed_rules(tmp_path):
+    """Ред-тим 02.11: отступ — только вложенному перечню под строкой с двоеточием (строка через линию столбца не сдвигает
+    остальные); рамка вокруг полужирного заголовка — не таблица; пунктир под тесной ячейкой — не подчёркивание;
+    настоящая вертикаль штампа — столбец, даже если её пересекает слово."""
+    import segments as S
+    import docx_struct as DS
+    g = lambda x0, top: {"page": 1, "top": top, "bottom": top + 10, "x0": x0, "x1": x0 + 100, "first_x0": x0, "size": 10,
+                         "lines": 1}
+    para = lambda t, x0, top: {"k": "p", "runs": [{"t": t, "font": "Times New Roman", "size": 10, "b": False, "i": False,
+                                                   "color": "000000"}], "geom": g(x0, top), "seg": True, "align": "left"}
+    edges = {"top": True, "bottom": True, "left": True, "right": True}
+    cell = lambda ps: {"blocks": ps, "th": False, "geom": ps[0]["geom"], "span": 1, "edges": edges}
+    rows = [[cell([para("Ellenőrzés", 85, 100), para("Szivattyú indítása", 119, 112), para("Szelep nyitása", 119, 124)])]]
+    tab = {"k": "table", "rows": rows, "borders": True, "frame": {"xs": [80, 450], "ys": [98, 140]},
+           "geom": {"page": 1, "top": 98, "bottom": 140, "x0": 80, "x1": 450, "first_x0": 80, "size": 10}}
+    out = tmp_path / "r.docx"
+    B.Builder(B.Memory([]), lambda img: png(), PROFILE).build([tab], str(out), dict(LAYOUT, first_is_body=True))
+    assert all(p.paragraph_format.left_indent is None for c in Document(str(out)).tables[0]._cells for p in c.paragraphs)
+    d = fitz.open()
+    pg = d.new_page(width=595, height=842)
+    for y, t, f in ((300, "A lapot kitöltötte (név, dátum, aláírás):", "tiro"), (400, "7. Vezérlő táblák feliratai.", "tibo")):
+        pg.draw_rect(fitz.Rect(71, y, 553, y + 26), width=0.6)
+        pg.insert_text((76, y + 17), t, fontsize=10, fontname=f)
+    sh = pg.new_shape()                                              # пунктир под строкой — одним путём
+    for k in range(10):
+        sh.draw_line((100 + 6 * k, 512), (103 + 6 * k, 512))
+    sh.finish(width=0.5)
+    sh.commit()
+    pg.insert_text((100, 511), "E207/3 M101", fontsize=10, fontname="cour")
+    src = tmp_path / "b.pdf"
+    d.save(str(src))
+    segs, _ = S.pdf_segments(str(src), ocr=False, shots=False)
+    blocks, _ = DL.load(str(src), segs, text=True)
+    one = [b for b in blocks if b["k"] == "table" and len(b["frame"]["xs"]) == 2]
+    assert len(one) == 1 and "kitöltötte" in "".join(r.get("t", "") for c in one[0]["rows"][0] for x in c["blocks"]
+                                                     for r in x.get("runs") or [])
+    assert DL._underlined(fitz.open(str(src)), [s for s in segs if "E207" in s["text"]]) == set()
+    import pdfplumber
+    p2 = tmp_path / "s.pdf"
+    d2 = fitz.open()
+    d2.new_page(width=595, height=842).insert_text((300, 745), "Ellenőrizte Jóváhagyta", fontsize=10, fontname="tiro")
+    d2.save(str(p2))
+    rr = lambda x0, x1, top, bottom: {"x0": x0, "x1": x1, "top": top, "bottom": bottom}
+    rects = [rr(71, 553, 729, 729.5), rr(71, 553, 755, 755.5), rr(71, 71.5, 729, 755), rr(553, 553.5, 729, 755),
+             rr(339.8, 340.2, 729, 755)]                              # настоящая вертикаль через слово
+    gz = DS._zone_grid(pdfplumber.open(str(p2)).pages[0].chars, rects)
+    assert len(gz["widths"]) == 2

@@ -1524,16 +1524,23 @@ class Builder:
         # вместе с шапкой при поле тела 659 pt: шапка колонтитула в три строки). Потолок высоты строки — поле тела минус 60 pt
         row_cap = (self.L["H"] - self.L["top"] - self.L["bottom"] - 60) if self.L else None
         row_ys = fr.get("ys") or []
-        # левый край текста столбца — по абзацам всех его ячеек (строка, разрезанная на подстроки, — тоже): от него —
-        # отступ вложенного абзаца ячейки (ниже)
-        col_x0 = {}
+        # вложенный перечень в столбце: абзацы с левой выключкой правее строки-ввода с двоеточием («1-es hurok:» и коды
+        # под ней 30HU175GT, +19 pt; строка, разрезанная на подстроки, — тоже) — с отступом от её края, пока идут
+        # правее. Прочие сдвиги в ячейке (код по центру подстолбца, строка через линию столбца) — нет: от самого левого
+        # края столбца отступ получали сотни абзацев (30THHAGT, 30RVRWVTBIGT, ред-тим 02.11)
+        nest, intro = {}, {}
         for row in rows:
             if all("span" in c for c in row):
                 for i, c in enumerate(row):
                     a = sum(q["span"] for q in row[:i])
                     for x in c["blocks"]:
-                        if x["k"] == "p" and (x.get("geom") or {}).get("x0") is not None:
-                            col_x0[a] = min(col_x0.get(a, x["geom"]["x0"]), x["geom"]["x0"])
+                        x0 = (x.get("geom") or {}).get("x0")
+                        if x["k"] != "p" or x0 is None:
+                            continue
+                        if intro.get(a) is not None and x.get("align") == "left" and 6 <= x0 - intro[a] <= 72:
+                            nest[id(x)] = x0 - intro[a]
+                            continue
+                        intro[a] = x0 if text_of(x["runs"]).rstrip().endswith(":") else None
         for ri, row in enumerate(rows):
             if all("span" in c for c in row):               # ячейки по сетке линий (docx_layout) — места известны
                 starts = [sum(c["span"] for c in row[:i]) for i in range(len(row))]
@@ -1638,12 +1645,9 @@ class Builder:
                         used, par = True, first
                     else:
                         par = self.paragraph(x, style, tgt=dc)
-                    # абзац ячейки правее её текста (коды под «1-es hurok:» 30HU175GT — на 19 pt) — с тем же отступом:
-                    # все абзацы ячейки шли от её края, вложенность перечня терялась; выключка по центру — нет, и не
-                    # больше дюйма (сдвиг в полстолбца — не отступ)
-                    ind = ((x.get("geom") or {}).get("x0") or 0) - col_x0.get(starts[ci], self._tab_base or 0)
-                    if par is not None and al in (None, "left") and x.get("align") == "left" and 6 <= ind <= 72:
-                        par.paragraph_format.left_indent = Pt(round(ind, 1))
+                    # вложенный перечень (nest выше) — с отступом: все абзацы ячейки шли от её края
+                    if par is not None and al in (None, "left") and nest.get(id(x)):
+                        par.paragraph_format.left_indent = Pt(round(nest[id(x)], 1))
                 room = self._room.get(starts[ci]) if spans[ci][1] == spans[ci][0] else None
 
                 def widest(par, eff, whole=False):
