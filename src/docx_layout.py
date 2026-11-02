@@ -584,6 +584,11 @@ def _tables(hs, vs):
             v = min(far, key=lambda v: v[0])
             gh = gh + [h for h in hs if xs[-1] - 2 <= h[1] and h[2] <= v[0] + 2 and ys[0] - 4 <= h[0] <= ys[-1] + 4]
             gv, xs = gv + [v], xs + [v[0]]
+        # линия строки, нарисованная в отрыв от вертикалей своего столбца (3SZ23 INFO: у «M» горизонтали 517–544 при
+        # столбце 507–553, касания нет), — на линии строки и внутри столбца — граница его ячеек: без неё у столбца не
+        # было ни верха, ни низа, «M» стоял вне рамки таблицы
+        gh = gh + [h for h in hs if h not in gh and ys[0] - 4 <= h[0] <= ys[-1] + 4 and any(abs(h[0] - y) <= 2 for y in ys)
+                   and any(xs[c] - 2 <= h[1] and h[2] <= xs[c + 1] + 2 for c in range(len(xs) - 1))]
         if len(ys) >= 2 and len(xs) >= 3:
             out.append((xs, ys, gh, gv))
     return out
