@@ -854,6 +854,7 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
     import fitz
     from concurrent.futures import ThreadPoolExecutor
     from layout import frags_from_text, rules, rules_from_image, group, avail_rects, aligns
+    from rows import Rows
     import pagefit as PF
     doc = fitz.open(path)
     work = Path(OCR_DIR) / Path(path).stem; work.mkdir(parents=True, exist_ok=True)
@@ -954,22 +955,25 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
             else:
                 words, lost[pno] = ocr_words(_dehyphen(tw[pno]), r.get("text") or "", pixs.setdefault(pno, []))
                 frags = ocr_frags(words, vs, pixs[pno])
-            pars = group(frags, hs, vs, form=True)
+            # границы рядов таблиц — одни для правил и для меток портала (rows.py, E5)
+            rw = Rows(frags, hs)
+            pars = group(frags, hs, vs, form=True, rows=rw)
             if labels.get(pno) and labels[pno][1]:
                 from layout import join_lines
-                pars = R.apply(pars, labels[pno][0], labels[pno][1], join_lines)
+                pars = R.apply(pars, labels[pno][0], labels[pno][1], join_lines, apart=rw.apart)
         else:
             frags = frags_from_text(page, vs)
+            rw = Rows(frags, hs)
             # две колонки сплошного текста (E46): просвет — невидимой линейкой (строки через него не склеиваются, место
             # строки и перевода — до него), абзацы — колонка за колонкой
             from layout import gutter, column_order
-            g = gutter(group(frags, hs, vs), page.rect.width)
+            g = gutter(group(frags, hs, vs, rows=rw), page.rect.width)
             if g is not None:
                 vs = list(vs) + [(0, page.rect.height, g)]
-            pars = group(frags, hs, vs)
+            pars = group(frags, hs, vs, rows=rw)
             if labels.get(pno) and labels[pno][1]:
                 from layout import join_lines
-                pars = R.apply(pars, labels[pno][0], labels[pno][1], join_lines)
+                pars = R.apply(pars, labels[pno][0], labels[pno][1], join_lines, apart=rw.apart)
             if g is not None:
                 pars = column_order(pars, g)
         avail_rects(pars, hs, vs, page.rect)

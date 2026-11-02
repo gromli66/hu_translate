@@ -9,6 +9,7 @@
 import re
 import fitz
 from lines import hyphen_break, join_lines      # перенос слова — одна функция для всех читателей (E4)
+from rows import Rows, code_line                # граница ряда таблицы — до склейки строк в абзацы (E5)
 
 GAP = 30.0          # выключка по ширине в узких ячейках даёт пробелы до ~25 pt
 
@@ -22,16 +23,6 @@ def family(font):
         return "sans-serif"
     return "serif"
 MARK = re.compile(r"^\s*(\(?\d+(\.\d+)*\.?\)?|[a-zA-Z]\.?\)|[A-Z]\.\d*\.?|[-–•▪]|\d+/\d+\.|\d+\./|\[\d+\])\s")
-
-
-def code_line(t):
-    """Строка из кодов («04.TH10D001 KM1/1», «30BW07», «03/A TJ22D001»): каждое слово — с цифрой или аббревиатура до
-    4 прописных, слов с цифрами не меньше половины. Такие строки — ячейки перечня без линеек, а не строки абзаца:
-    столбец кодов склеивался в один абзац, код и его значение — в один кусок (3PR42 л. 112, 17.10)."""
-    toks = [x for x in t.split() if re.search(r"\w", x)]
-    dig = [x for x in toks if re.search(r"\d", x)]
-    return bool(toks) and 2 * len(dig) >= len(toks) and all(
-        re.search(r"\d", x) or (x.isupper() and len(re.sub(r"\W", "", x)) <= 4) for x in toks)
 
 
 CODE_GAP = 8.0      # код и значение в строке перечня («TK41D001 ⇥ KM2/1»: 10–24 pt, слова прозы — 3–4 pt) — разные куски
@@ -265,8 +256,10 @@ def frags_from_text(page, vs=()):
 
 
 class Rule(tuple):
-    """Линейка (x0, x1, y) / (y0, y1, x) — обычный кортеж. soft — сторона белой подложки под текст: см. rules()."""
+    """Линейка (x0, x1, y) / (y0, y1, x) — обычный кортеж. soft — сторона белой подложки под текст, edge — сторона
+    заливки без обводки (серая полоса заголовка, заливка строки): см. rules()."""
     soft = False
+    edge = False
 
 
 def _white_fill(dr):
@@ -275,11 +268,11 @@ def _white_fill(dr):
     return dr.get("color") is None and f is not None and len(f) == 3 and min(f) >= 0.99
 
 
-def _mark(t, soft):
-    if not soft:
+def _mark(t, soft, edge=False):
+    if not soft and not edge:
         return t
     r = Rule(t)
-    r.soft = True
+    r.soft, r.edge = soft, edge
     return r
 
 
@@ -315,19 +308,11 @@ def rules(page):
                     # залитый прямоугольник тоже даёт рамку: в формах 30RDGT заливка ячеек — единственный разделитель
                     # («<= 2400» / «mm»); цена — шапка с заливкой по строкам рвётся («Fejlesztő / környezet», UTS)
                     rr = it[1] * rot
+                    edge = dr.get("color") is None              # сторона заливки, а не обведённая рамка
                     if rr.width >= 15 and rr.height > 2.5:     # рамка ячейки: четыре стороны
-                        hs += [_mark((rr.x0, rr.x1, rr.y0), soft), _mark((rr.x0, rr.x1, rr.y1), soft)]
-                        vs += [_mark((rr.y0, rr.y1, rr.x0), soft), _mark((rr.y0, rr.y1, rr.x1), soft)]
+                        hs += [_mark((rr.x0, rr.x1, rr.y0), soft, edge), _mark((rr.x0, rr.x1, rr.y1), soft, edge)]
+                        vs += [_mark((rr.y0, rr.y1, rr.x0), soft, edge), _mark((rr.y0, rr.y1, rr.x1), soft, edge)]
     return hs, vs
-
-
-def _rule_between(hs, x0, x1, ya, yb, soft=True):
-    """Горизонтальная линейка между строками; soft=False — стороны белой подложки (rules) не считаются."""
-    for r in hs:
-        rx0, rx1, y = r
-        if ya - 0.5 <= y <= yb + 0.5 and min(x1, rx1) - max(x0, rx0) > 5 and (soft or not getattr(r, "soft", False)):
-            return True
-    return False
 
 
 def _in_cell(vs, bb):
@@ -362,25 +347,6 @@ def _partner(frags, vs, bb, left=False):
     return any(f["bbox"][0] >= x1 + 5 and same(f) and not _vrule_in(vs, x1, f["bbox"][0], y0, y1) for f in frags)
 
 
-ANCHOR = re.compile(r"^\(?\d+(?:\.\d+)*\.?\)?$")
-
-
-def _row_anchor(frags, bb):
-    """Якорь строки таблицы без горизонтальных линий: ближайший слева на той же линии кусок — код оборудования или номер
-    пункта (через вертикальные линейки колонок — они делят колонки, а не строки). Возвращает его рамку или None."""
-    x0, y0, x1, y1 = bb
-    best = None
-    for f in frags:
-        fb = f["bbox"]
-        if fb[2] <= x0 - 5 and min(y1, fb[3]) - max(y0, fb[1]) > 0.5 * (y1 - y0) and (best is None or fb[2] > best[2]):
-            best = fb
-            best_t = f["t"].strip()
-    if best is None:
-        return None
-    ok = bool(ANCHOR.match(best_t)) or (code_line(best_t) and len(best_t.split()) <= 3 and bool(re.search(r"\d", best_t)))
-    return tuple(best) if ok else None
-
-
 def mid_phrase(prev, nxt):
     """Строка оборвалась на середине фразы: в ней ≥ 3 слов, она кончается буквой или запятой, следующая начинается
     строчной буквой. Одиночные значения столбика («rendben» ×4) и пункты с точкой не подходят."""
@@ -399,9 +365,11 @@ def orphan_tail(prev, nxt):
         and bool(re.match(r"[^\W\d_]{4,}", nxt)) and nxt[:1].islower()
 
 
-def group(frags, hs, vs=(), form=False):
-    """form=True (скан формы): строка, кончающаяся двоеточием, — подпись поля, к ней не приклеивается следующая."""
+def group(frags, hs, vs=(), form=False, rows=None):
+    """form=True (скан формы): строка, кончающаяся двоеточием, — подпись поля, к ней не приклеивается следующая.
+    rows — границы рядов листа (rows.Rows по тем же кускам и линейкам): абзац не пересекает границу ряда (E5)."""
     page_right = max((f["bbox"][2] for f in frags), default=0)
+    rows = rows or Rows(frags, hs)
     frags = sorted(frags, key=lambda f: (round(f["bbox"][1] / 3), f["bbox"][0]))
     # слева на той же строке — номер пункта отдельным куском («1.6.» ⇥ «FOT szintcsökkenés» в оглавлении 3SZ19): кусок
     # начинает новый абзац — иначе название приклеивалось к названию пункта выше, а у «1.6.» оставалось пустым (17.10)
@@ -424,8 +392,8 @@ def group(frags, hs, vs=(), form=False):
     def hyphen_cont(q, f):
         """Строка f — вторая половина слова, разорванного переносом в последней строке абзаца q. Перенос — сильнее
         прочих признаков: другое начертание (жирный остаток «TANI,»), короткая строка, номер пункта против второй
-        строки и выше рамки (17 pt при кегле 9 и шаге 10, 3SZ17) слово пополам не режут; не пускают только линейка
-        между строками и якорь другой строки таблицы."""
+        строки и выше рамки (17 pt при кегле 9 и шаге 10, 3SZ17) слово пополам не режут; не пускает только граница ряда
+        (линейка между строками, якорь другой строки таблицы)."""
         last = q["frags"][-1]["bbox"]
         x0, y0, x1, y1 = f["bbox"]
         size = max(q["size"], f["size"])
@@ -434,13 +402,18 @@ def group(frags, hs, vs=(), form=False):
                 and (-0.35 * size <= gap <= 0.6 * size
                      or (gap < 0 and 0.85 * size <= (y0 + y1 - last[1] - last[3]) / 2 <= 1.8 * size))):
             return False
-        a1, a2 = _row_anchor(frags, last), _row_anchor(frags, f["bbox"])
-        return not _rule_between(hs, x0, x1, last[3], y0, soft=False) and not (a1 is not None and a2 is not None and a1 != a2)
+        return not rows.apart(q["frags"][-1], f, soft=False)
+
+    def near(f):
+        """Абзацы-кандидаты на продолжение строки f, от последнего к первому: последняя строка кончается не выше кегля над
+        f — дальше ни одна проверка продолжения не пройдёт. Прежде — 12 последних абзацев: в широкой таблице (3FI18 л. 35,
+        37: десяток столбцов в ряду) ячейка выпадала из окна, и её следующая строка шла отдельным сегментом."""
+        return [q for q in reversed(pars) if q["frags"][-1]["bbox"][3] >= f["bbox"][1] - max(q["size"], f["size"])]
 
     def continues(f):
         """Предыдущая строка этого же столбца оборвана на середине фразы, начинается без номера и выровнена с этой."""
         x0, y0 = f["bbox"][0], f["bbox"][1]
-        for q in reversed(pars[-12:]):
+        for q in near(f):
             last = q["frags"][-1]["bbox"]
             size = max(q["size"], f["size"])
             if -0.35 * size <= y0 - last[3] <= 0.6 * size and min(f["bbox"][2], q["bbox"][2]) - max(x0, q["bbox"][0]) > 0:
@@ -471,9 +444,9 @@ def group(frags, hs, vs=(), form=False):
         if starts and continues(f):
             starts = False
         if plain:
-            best = next((p for p in reversed(pars[-12:]) if hyphen_cont(p, f)), None)
+            best = next((p for p in near(f) if hyphen_cont(p, f)), None)
         if plain and not starts and best is None:
-            for p in reversed(pars[-12:]):
+            for p in near(f):
                 if len(p["frags"]) == 1 and BULLET.match(p["frags"][0]["t"].strip()):
                     continue
                 px0, py0, px1, py1 = p["bbox"]
@@ -495,19 +468,16 @@ def group(frags, hs, vs=(), form=False):
                     continue
                 if p["bold"] != f["bold"] or abs(p["size"] - f["size"]) > 1.5:
                     continue
-                # белая подложка под текстом (soft) продолжению фразы не помеха
-                if _rule_between(hs, x0, x1, last[3], y0, soft=not cont):
+                # граница ряда: линейка между строками (белая подложка под текстом, soft, продолжению фразы не помеха) или
+                # у двух строк слева свои якоря (код, номер пункта) — это строки таблицы, а не строки абзаца: колонка
+                # «GÉPHÁZ "A" sor 28KÁ» ×38 против колонки кодов шла одним абзацем и переводилась повтором (3SZ23, ещё
+                # 3PR10, 3SZ17, 30HU, 30PR, 30RVR: аудит 29.10); столбик отметок — каждая отметка сама по себе (rows.Rows)
+                if rows.apart(p["frags"][-1], f, soft=not cont):
                     continue
                 if form and p["frags"][-1]["t"].rstrip().endswith(":"):
                     continue
                 if code_line(p["frags"][-1]["t"]) and code_line(f["t"]):
                     continue                                # строки перечня кодов — каждая своим куском
-                # у каждой из двух строк слева на своей линии свой якорь (код, номер пункта) — это строки таблицы, а не
-                # строки абзаца: колонка «GÉPHÁZ "A" sor 28KÁ» ×38 против колонки кодов шла одним абзацем и переводилась
-                # повтором (3SZ23, ещё 3PR10, 3SZ17, 30HU, 30PR, 30RVR: аудит 29.10)
-                a1, a2 = _row_anchor(frags, last), _row_anchor(frags, f["bbox"])
-                if a1 is not None and a2 is not None and a1 != a2:
-                    continue
                 # фраза оборвана на середине: длинная строка без знака конца, следующая — со строчной (центрированный
                 # текст в ячейке: «…A hidroakkumulátorok megengedett» / «szintváltozásának módosítása…» шли порознь, и
                 # перевод выходил «Допустимые гидроемкостей САОЗ изменение изменения уровня», 30TH50, 28.10)
