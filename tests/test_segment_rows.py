@@ -181,7 +181,17 @@ def test_underline_on_white_plate_is_not_cell_edge():
     for kind in ("soft", "edge"):
         sides = [LY._mark((100, 112, 100), kind == "soft", kind == "edge"), LY._mark((100, 112, 400), kind == "soft", kind == "edge")]
         assert RW.Rows([a, b], [(100, 400, 110.5)], sides).apart(a, b) is None
-    assert RW.Rows([a, b], [(100, 400, 110.5)], [(100, 112, 100), (100, 112, 400)]).apart(a, b) == "линейка"
+    assert RW.Rows([a, b], [(90, 410, 110.5)], [(110, 130, 90), (110, 130, 410)]).apart(a, b) == "линейка"
+    # верх таблицы под заголовком той же ширины (3SZ17 л. 2: «9./ Ellenőrizte: …» над «Dátum:»): вертикали уходят вниз
+    h = _fr("9./ Ellenőrizte: (készítő szervezet) nukleáris biztonságot érintő esetben", (69, 344, 517, 354))
+    d = _fr("Dátum:", (73, 356, 102, 363))
+    assert RW.Rows([h, d], [(69, 517, 355)], [(355, 380, 69), (355, 380, 517)]).apart(h, d) == "линейка"
+    # каждая строка фразы в своей обведённой рамке (1SZ01 л. 43): стороны рамки совпадают с краями текста строки — не
+    # граница ячейки, слово с переносом «kö-» / «vetkező» не режется
+    k1 = _fr("f/min fordulatszám eléréséig, a kö-", (74.4, 259.9, 273.0, 275.2), size=9.0)
+    k2 = _fr("vetkező paraméter értékek ELLENŐRZÉ-", (74.4, 268.3, 272.9, 285.6), size=9.0)
+    box = [(260.0, 272.0, 74.4), (260.0, 272.0, 273.0), (270.0, 282.0, 74.4), (270.0, 282.0, 273.0)]
+    assert RW.Rows([k1, k2], [(74.4, 273.0, 261.1), (74.4, 273.0, 271.3), (74.4, 273.0, 281.4)], box).apart(k1, k2) is None
 
 
 def test_anchor_centred_in_multiline_cell_does_not_split_it():

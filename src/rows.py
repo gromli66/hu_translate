@@ -58,6 +58,16 @@ def _cell_edge(r, vs):
                and not getattr(v, "soft", False) and not getattr(v, "edge", False) for v in vs)
 
 
+def _framed(r, L, vs):
+    """Линейка — сторона рамки вокруг самой строки L: оба конца совпадают с краями её текста, а вертикали у концов (если
+    есть) охватывают и саму строку (1SZ01 л. 43: каждая строка фразы в своей обведённой рамке — «…a kö-» / «vetkező …
+    ELLENŐRZÉ-» / «SÉT …» резались на три сегмента). Верх таблицы под заголовком той же ширины («9./ Ellenőrizte: …» над
+    «Dátum:», 3SZ17 л. 2) — вертикали уходят вниз, мимо строки: граница."""
+    ends = [v for v in vs if min(abs(v[2] - r[0]), abs(v[2] - r[1])) <= 2 and v[0] - 2 <= r[2] <= v[1] + 2
+            and not getattr(v, "soft", False) and not getattr(v, "edge", False)]
+    return abs(r[0] - L[0]) <= 2 and abs(r[1] - L[2]) <= 2 and (not ends or any(v[0] <= _mid(L) <= v[1] for v in ends))
+
+
 def _of_line(r, L):
     """Линейка — подчёркивание строки L: в пределах её текста по ширине (±4 pt: хвостовой пробел подчёркнут) и её рамки
     по высоте. Подчёркнутый заголовок по центру в две строки («Reaktor és Készülék … ellenőrzési» / «terjedelme»,
@@ -83,6 +93,7 @@ def rule_between(hs, a, b, soft=True, vs=()):
         if a[3] - 0.5 <= y <= b[1] + 0.5 and (soft or hard):
             return True
         if hard and not getattr(r, "edge", False) and ma + 1 < y < mb - 1 and min(a[2], rx1) - max(a[0], rx0) > 5 \
+                and not (_framed(r, a, vs) or _framed(r, b, vs)) \
                 and (_cell_edge(r, vs) or not (_of_line(r, a) or _of_line(r, b))):
             return True
     return False
