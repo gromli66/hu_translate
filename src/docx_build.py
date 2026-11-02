@@ -2420,6 +2420,11 @@ class Builder:
         # variants): серия листов — свой раздел со своей шапкой и подвалом; None — колонтитулы тела
         zones, zcur, placed = L.get("variants") or [], None, False
         sheet_no = L.get("sheet_no") or {}                  # лист оригинала → его номер (docx_struct.layout)
+        # документ без титула, первый лист — с номером: и первый раздел — раздел-лист (ужимает docx_fit, перелив —
+        # «N (прод.)»); иначе его перелив шёл с номером следующего листа и мимо подгонки (30BLM1M2GT: «2, 3, 3, 4» при
+        # трёх листах). Особый первый лист (ONS: свой колонтитул) — как был
+        if not in_title and sheet_no.get(1) and not L.get("first"):
+            starts.append((0, 1, "sheet"))
         for b in blocks:
             g = b.get("geom") or {}
             page = g.get("page")

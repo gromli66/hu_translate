@@ -2712,7 +2712,10 @@ def layout(path, blocks, content=None):
         # лист — одним блоком с местом первого листа, и по блокам низ знали 2 листа из 13 (30RR2126GT); в документе
         # из одного-двух листов (лист изменений) — по ним: поле по умолчанию уводило хвост таблицы на второй лист
         own = {pn: v for pn, v in cbots.items() if v and not scanned(pdf.pages[pn - 1])}
-        lasts = {pn: v for pn, v in own.items() if pn > 2} or own or lasts
+        # без первых двух листов (титул) — если после них хотя бы два листа: у документа в три листа оставался один
+        # последний, короткий, и поле тела всех листов выходило по нему (30BLM1M2GT: 280 pt, лист 2 — на две страницы)
+        lasts = next((d for d in ({pn: v for pn, v in own.items() if pn > k} for k in (2, 1)) if len(d) >= 2), None) \
+            or own or lasts
     foot_top = min([float(c["top"]) for c in foot_chars] + [i["top"] for i in foot_imgs],
                    default=max(lasts.values()) + 14 if lasts else H - 100)
     foot_bottom = max([float(c["bottom"]) for c in foot_chars] + [i["bottom"] for i in foot_imgs], default=H - 40)

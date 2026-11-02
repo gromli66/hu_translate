@@ -127,6 +127,45 @@ def test_sheets_with_other_version_get_own_header_section(tmp_path):
     assert "4" in starts and "6" in starts
 
 
+def test_first_sheet_without_title_is_a_sheet_section(tmp_path):
+    """Документ без титула, номер листа — с первого листа (30BLM1M2GT, путь А): первый раздел — тоже раздел-лист:
+    перелив — «N (прод.)», а не номер следующего листа, и docx_fit ужимает его, как остальные листы."""
+    src = tmp_path / "first.pdf"
+    segs = _sheets_pdf(src, pages=3, head=lambda pno: (0, pno + 2))
+    blocks, info = DL.load(str(src), segs, text=True)
+    L = D.layout(str(src), blocks, content=info.get("content_boxes"))
+    assert L["first_is_body"] and L["sheet_no"].get(1) == 2
+    blocks = D.split_at_zones(blocks, L.get("variants"), D.sheet_closed(L, blocks))
+    out = tmp_path / "first.docx"
+    bld = B.Builder(B.Memory([(s["text"], s["text"]) for s in segs]), lambda img: png(), PROFILE)
+    bld.build(blocks, str(out), dict(LAYOUT, **{k: v for k, v in L.items() if k in (
+        "head_grid", "variants", "page_marked", "page_tok", "stamp", "stamp_widths", "stamp_box", "stamp_inner",
+        "stamp_paras", "stamp_aligns", "stamp_merge", "head_rule", "head_imgs", "head_lines", "first_is_body",
+        "sheet_no", "num_start")}))
+    assert bld.fit_want.get(0) == 1                                     # первый раздел — один лист оригинала
+    sec = Document(str(out)).sections[0]
+    assert sec.different_first_page_header_footer and "(прод.)" in "".join(
+        t.text for t in sec.header._element.iter(qn("w:t")))
+
+
+def test_body_bottom_of_three_sheet_document_is_not_its_short_last_sheet(tmp_path):
+    """Документ в три листа без подвала (30BLM1M2GT): низ тела — по самому низкому листу после первого, а не только по
+    третьему: тот короткий (две строки), и поле тела всех листов выходило 280 pt — лист 2 шёл на две страницы."""
+    src = tmp_path / "three.pdf"
+    doc = fitz.open()
+    for pno, n in enumerate((36, 36, 6)):
+        pg = doc.new_page(width=595, height=842)
+        pg.insert_text((62, 40), f"Azonosító: 30XYZ   Oldalszám: {pno + 2}", fontsize=9, fontname="tiro")
+        for k in range(n):
+            pg.insert_text((62, 90 + 17 * k), f"{pno + 1}.{k + 1}. A lépés megtörtént, a mérés kész.", fontsize=10,
+                           fontname="tiro")
+    doc.save(str(src))
+    segs = _segs(src)
+    blocks, info = DL.load(str(src), segs, text=True)
+    L = D.layout(str(src), blocks, content=info.get("content_boxes"))
+    assert L["bottom"] < 200                                     # тело — до низа листа 2, а не 3 (≈ 650 pt поля)
+
+
 def test_sheet_background_fill_is_background_of_its_section(tmp_path):
     """Заливка во весь лист (жёлтые листы ÜTJ 30HU375GT, 01-02FMP0BIGT) — фоном раздела этих листов: картинка за
     текстом в шапке раздела; у разделов белых листов фона нет (аудит 30.10: закрашены были только ячейки)."""
