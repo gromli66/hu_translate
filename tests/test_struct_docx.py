@@ -295,6 +295,21 @@ def test_sheet_closed_by_its_signature_starts_next_sheet_on_new_page():
     assert D.closed_sheets([p("a", 3), code(3), p("b", 4), code(4), p("c", 5), p("d", 6), p("e", 7), p("f", 8)]) == set()
 
 
+def test_every_numbered_sheet_starts_new_page():
+    """Путь А (решение 02.11): номер листа оригинала известен — каждый лист свой раздел с новой страницы, таблица через
+    листы режется по листам (INFO 3SZ23/3PR10: номер листа был на 1 меньше оригинала, 30PR25GT: лист с подписью в
+    ячейке сливался со следующим); номера нет — только листы, закрытые подписью, как прежде."""
+    cell = lambda t, pg: {"blocks": [p(t, pg, 100)], "th": False}
+    rows = [[cell(f"{pg}.{k}", pg), cell(f"30TK5{pg}S00{k}", pg)] for pg in (3, 4, 5) for k in (1, 2)]
+    t = {"k": "table", "rows": rows, "split": True, "geom": {"page": 3}}
+    after = p("Megjegyzés", 6, 90)
+    closed = D.sheet_closed({"sheet_no": {3: 2, 4: 3, 5: 4, 6: 5}}, [t, after])
+    got = D.split_at_zones([t, after], None, closed)
+    assert [len(b.get("rows") or []) for b in got] == [2, 2, 2, 0]
+    assert [(bool(b.get("break")), b.get("sheet")) for b in got] == [(False, None), (True, 4), (True, 5), (True, 6)]
+    assert D.sheet_closed({}, [t, after]) == set()                       # без номеров и подписей — сплошь, как было
+
+
 def test_label_tab_kept_and_column_alignment_from_original():
     assert B._keep_tab("Műszaki változás száma\t10776", "Номер технического изменения 10776") == \
         "Номер технического изменения\t10776"

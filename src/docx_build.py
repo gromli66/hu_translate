@@ -2756,8 +2756,9 @@ def blocks_layout(pdf, segs, mode):
         blocks, info = docx_layout.load(str(pdf), segs, text=mode == "text")
         if mode == "text":
             L = dict(docx_struct.layout(str(pdf), blocks, content=info.get("content_boxes")), sizes=True)
-            # раздел с другой шапкой — не внутри таблицы; лист, закрытый подписью, — до конца страницы
-            blocks = docx_struct.split_at_zones(blocks, L.get("variants"), docx_struct.closed_sheets(blocks))
+            # раздел с другой шапкой — не внутри таблицы; лист, закрытый подписью (или любой лист с номером оригинала,
+            # sheet_closed), — до конца страницы
+            blocks = docx_struct.split_at_zones(blocks, L.get("variants"), docx_struct.sheet_closed(L, blocks))
             # логотип своей шапки первого листа (L["first"]) — уже в колонтитуле; рисунком тела он шёл второй копией
             # (E42 корпуса: логотип OAH дважды, 22.10)
             first = L.get("first") or {}
