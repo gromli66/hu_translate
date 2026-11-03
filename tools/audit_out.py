@@ -66,6 +66,7 @@ RATIO_SHEETS = 1.3          # листов перевода / оригинала
 EMPTY_TABLE_SHARE = 0.7     # доля площади листа — пустые строки таблицы (красный); от HALF_EMPTY_SHARE — жёлтый
 HALF_EMPTY_SHARE = 0.4
 BIG_IMAGE_SHARE = 0.25      # доля площади листа — одна картинка/снимок
+HEAD_EDGE, FOOT_EDGE = 0.14, 0.86   # полосы колонтитулов: выше / ниже этой доли высоты листа (как geom.HEAD_EDGE у сборки)
 SHOW = 8                    # сколько примеров печатать в одном замечании
 
 _TAG = re.compile(r"</?f\d+>")
@@ -129,13 +130,17 @@ class DocxText:
 
     def units(self):
         """Единицы для поиска повторов: ячейка целиком (абзацы через пробел) и абзацы вне таблиц."""
+        return [" ".join(v) for v in self.unit_paras()]
+
+    def unit_paras(self):
+        """То же, что units, но ячейка — списком своих абзацев: [[абзац, …], …]."""
         cells, out = {}, []
         for part, t, tc in self.paras:
             if tc is None:
-                out.append(t)
+                out.append([t])
             else:
                 cells.setdefault((part, tc), []).append(t)
-        return out + [" ".join(v) for v in cells.values()]
+        return out + list(cells.values())
 
 
 class PdfText:
@@ -227,12 +232,19 @@ def check_lost(d):
 
 
 # ---------------------------------------------------------------- 2. повтор фразы
-def find_repeat(text, min_chars=10, min_reps=3, max_words=30, cap=20000):
-    """Первая фраза (≥ min_chars знаков), идущая подряд ≥ min_reps раз: (фраза, повторов) или None."""
+def _words(text):
+    return [w for w in (w.strip(",;.:") for w in text.split()) if w]
+
+
+def find_repeat(text, min_chars=10, min_reps=3, max_words=30, cap=20000, legit=None):
+    """Первая фраза (≥ min_chars знаков), идущая подряд ≥ min_reps раз: (фраза, повторов) или None. legit(начало,
+    слов во фразе, повторов) — повтор законен (ряды таблицы): он пропускается, поиск идёт дальше."""
     words = [w.strip(",;.:") for w in text.split()][:cap]
     words = [w for w in words if w]
     n = len(words)
-    for i in range(n):
+    i = 0
+    while i < n:
+        nxt = i + 1
         for p in range(1, max_words + 1):
             if i + p * min_reps > n:
                 break
@@ -244,18 +256,75 @@ def find_repeat(text, min_chars=10, min_reps=3, max_words=30, cap=20000):
             while words[i:i + p] == words[i + reps * p:i + (reps + 1) * p]:
                 reps += 1
             if reps >= min_reps:
+                if legit and legit(i, p, reps):
+                    nxt = i + reps * p
+                    break
                 return " ".join(words[i:i + p]), reps
+        i = nxt
     return None
+
+
+def row_values(paras, seg_count):
+    """legit для find_repeat по ячейке из абзацев paras: повтор — ряды таблицы, если каждое его повторение — целые
+    абзацы, ни один абзац сам не повтор («JM03 JM03 JM03» — ряды, слитые нарезкой) и каждый абзац — перевод своего
+    сегмента: одинаковых сегментов на листах ячейки (seg_count: norm(перевод) → сколько) не меньше, чем таких абзацев
+    в повторе. INFO-таблица 3PR10: «A301» в 40 рядах столбца — 40 сегментов, а не повтор фразы; значения, слитые
+    нарезкой в один сегмент («126-128 бар» ×6 одним абзацем, «сигнал 11GB02» ×3 в каждом из семи), — повтор."""
+    bounds, k = [0], 0
+    for t in paras:
+        k += len(_words(t))
+        bounds.append(k)
+
+    def folded(t):                                       # слова абзаца — k ≥ 2 раза одна и та же последовательность
+        w = _words(t)
+        return any(len(w) % q == 0 and w == w[:q] * (len(w) // q) for q in range(1, len(w) // 2 + 1))
+
+    def legit(a, p, reps):
+        if any(a + j * p not in bounds for j in range(reps + 1)):
+            return False
+        run = paras[bounds.index(a):bounds.index(a + reps * p)]
+        inside = [norm(t) for t in run if norm(t)]
+        return not any(folded(t) for t in run) and all(seg_count.get(t, 0) >= n for t, n in Counter(inside).items())
+    return legit
+
+
+def cell_counts(paras, page_n):
+    """Сколько сегментов с переводом каждого абзаца ячейки на её листах оригинала: окно из двух соседних листов (ряды
+    одной таблицы — на листе или через перенос листа), где есть больше всего разных абзацев ячейки (при равенстве — больше
+    их строк). page_n: norm(перевод) → {лист: сегментов}. → {norm(абзац): сколько}."""
+    need = Counter(norm(t) for t in paras if norm(t))
+    pages = {p for t in need for p in page_n.get(t, ())}
+    win = lambda t, p: page_n.get(t, {}).get(p, 0) + page_n.get(t, {}).get(p + 1, 0)
+    best = max(sorted(pages), key=lambda p: (sum(win(t, p) > 0 for t in need), sum(min(n, win(t, p)) for t, n in need.items())),
+               default=None)
+    return {} if best is None else {t: win(t, best) for t in need}
 
 
 def check_repeats(d):
     if not d.docx:
         return d.skip("2 повтор фразы", "нет DOCX")
     out, seen = [], set()
-    for u in d.docx.units():
+    # перевод → {лист: сколько сегментов им напечатано}: одинаковый исходник сборка переводит по памяти одним вариантом
+    # (у повторов в res бывает и иной), поэтому считаются все сегменты с исходником, у которого есть такой перевод;
+    # сегменты без листа (DOCX-исходник) не считаются — к ячейке их не привязать
+    src_n, ru_src = defaultdict(Counter), defaultdict(set)
+    for s in (d.js or {}).get("segs", ()):
+        r = d.js["res"].get(str(s["id"])) or {}
+        if s.get("page") is not None:
+            src_n[norm(s.get("text"))][s["page"]] += 1
+        ru_src[norm(r.get("ru") or s.get("text"))].add(norm(s.get("text")))
+    page_n = {}
+    for k, v in ru_src.items():
+        n = Counter()
+        for t in v:
+            n.update(src_n.get(t, {}))
+        if n:
+            page_n[k] = n
+    for ps in d.docx.unit_paras():
+        u = " ".join(ps)
         if len(u) < 30:
             continue
-        r = find_repeat(u)
+        r = find_repeat(u, legit=row_values(ps, cell_counts(ps, page_n)) if page_n and len(ps) > 1 else None)
         if r and r[0] not in seen:
             seen.add(r[0])
             pg = (d.pdf.find_pages(r[0]) if d.pdf else [])
@@ -502,11 +571,35 @@ def groups(edges, o_pages, r_pages):
     return [v for v in g.values() if v[0] and v[1]]
 
 
+def attach_unmapped(gs, n_orig, n_ru):
+    """Лист вне групп (ни один его сегмент не проголосовал: перелив «N (прод.)», где строки таблицы похожи на строки
+    других листов) — к группе листа перед ним на своей стороне (у первых — после): иначе его отметки выпадали из
+    сверки, а лист оригинала сравнивался с одной страницей перевода (30SZBVAIT_TU: лист 17 → стр. 16, 39 → 20)."""
+    for side, n in ((0, n_orig), (1, n_ru)):
+        owner = {p: k for k, g in enumerate(gs) for p in g[side]}
+        if not owner:
+            return gs
+        for p in range(n):
+            if p not in owner:
+                near = max((q for q in owner if q < p), default=None)
+                k = owner[near if near is not None else min(owner)]
+                gs[k][side].append(p)
+                owner[p] = k
+        for g in gs:
+            g[side].sort()
+    return gs
+
+
 def check_marks(d):
     if not d.pdf or not d.orig:
         return d.skip("6 отметки", "нужны PDF перевода и оригинала")
-    mo = [len(marks_on(d.orig.words(i))) for i in range(d.orig.n)]
-    mr = [len(marks_on(d.pdf.words(i))) for i in range(d.pdf.n)]
+    # отметки двух видов — буква «O» и знак (○, □, Wingdings: сборка вправе рисовать знак иным); вид, которого нет в
+    # текстовом слое оригинала (□ там нарисован рамкой, в переводе — знак), — вне сверки числа: иначе каждая клетка
+    # «□» перевода — лишняя отметка (30SZBVAIT_TU: стр. 1 — 0 → 5)
+    kinds = {w[4] == "O" for i in range(d.orig.n) for w in marks_on(d.orig.words(i))}
+    count = lambda ws: sum(1 for w in marks_on(ws) if (w[4] == "O") in kinds)
+    mo = [count(d.orig.words(i)) for i in range(d.orig.n)]
+    mr = [count(d.pdf.words(i)) for i in range(d.pdf.n)]
     if not sum(mo):
         return []                                     # у оригинала отметок нет в текстовом слое (рисованные кружки)
     out = []
@@ -514,6 +607,7 @@ def check_marks(d):
     pm = d.page_map()
     if pm:
         gs = sorted(groups(pm, range(d.orig.n), range(d.pdf.n)), key=lambda g: min(g[0]))
+        gs = attach_unmapped(gs, d.orig.n, d.pdf.n)
         ab = [(sum(mo[i] for i in og), sum(mr[i] for i in rg)) for og, rg in gs]
         bad = []
         for k, (og, rg) in enumerate(gs):
@@ -614,6 +708,85 @@ def image_share(page, min_area=400):
     return min(1.0, area / (page.rect.width * page.rect.height))
 
 
+def _components(rects, tol):
+    """Связные (касание ±tol) наборы прямоугольников: [[номер, …], …]; заметание по x — без перебора всех пар (листы с
+    тысячами контуров: 3PR42 — по 3000)."""
+    parent = list(range(len(rects)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+    order = sorted(range(len(rects)), key=lambda i: rects[i].x0)
+    active = []
+    for i in order:
+        a = rects[i]
+        active = [j for j in active if rects[j].x1 + tol >= a.x0]
+        for j in active:
+            b = rects[j]
+            if b.y0 - tol <= a.y1 and a.y0 - tol <= b.y1:
+                parent[find(i)] = find(j)
+        active.append(i)
+    groups = {}
+    for i in range(len(rects)):
+        groups.setdefault(find(i), []).append(i)
+    return list(groups.values())
+
+
+def figure_rects(page, text_boxes=(), tol=4.0, join=25.0):
+    """Векторные рисунки листа (схема, блок-схема) → [Rect]. Сборка кладёт такой рисунок картинкой с переведёнными
+    надписями (docx_layout._scheme_figures), в оригинале изображений там нет — без этого проверки 1 и 8 считали надписи
+    потерянными, а рисунок — снимком листа (3FI18 стр. 7, 26–27).
+    Рисунок — связные (касание ±tol pt) контуры и картинки, где есть «изгиб» не мельче 12 pt: кривая, косой отрезок, ромб.
+    Не рисунок: знаки текста, нарисованные контурами (внутри рамок сегментов text_boxes; 3PR42 — весь лист кривыми),
+    полосы колонтитулов, рамки во весь лист, сетка таблицы из одних осей. Область компоненты — её рамка, если изгибы
+    занимают от двадцатой её части; иначе — рамка изгибов с запасом 10 pt (кружок-отметка, задевший сетку таблицы, не
+    делает рисунком всю таблицу). Области ближе join pt — один рисунок (подписи схемы в своих рамках вокруг неё)."""
+    W, H = page.rect.width, page.rect.height
+    boxes = [pymupdf.Rect(b) + (-2, -2, 2, 2) for b in text_boxes]
+    rects, bent = [], []
+    for dr in page.get_drawings():
+        r = pymupdf.Rect(dr["rect"])
+        if r.width < 0.5 and r.height < 0.5 or r.width > 0.8 * W or r.height > 0.8 * H \
+                or r.y1 < HEAD_EDGE * H or r.y0 > FOOT_EDGE * H or any(b.contains(r) for b in boxes):
+            continue
+        r += (-0.5, -0.5, 0.5, 0.5)                     # отрезок по оси — прямоугольник нулевой ширины: пустой, не касается
+        rects.append(r)
+        # изгиб: кривая, косой отрезок, повёрнутый четырёхугольник (ромбы блок-схемы 3FI18 стр. 27–28 — «qu»)
+        bent.append(max(r.width, r.height) >= 12 and any(
+            it[0] == "c" or it[0] == "l" and abs(it[1].x - it[2].x) > 1 and abs(it[1].y - it[2].y) > 1
+            or it[0] == "qu" and (abs(it[1].ul.y - it[1].ur.y) > 1 or abs(it[1].ul.x - it[1].ll.x) > 1) for it in dr["items"]))
+    if not any(bent):
+        return []
+    n = len(rects)
+    rects += [pymupdf.Rect(i["bbox"]) for i in page.get_image_info()
+              if HEAD_EDGE * H <= i["bbox"][3] and i["bbox"][1] <= FOOT_EDGE * H]
+    regions = []
+    for g in _components(rects, tol):
+        bs = [rects[i] for i in g if i < n and bent[i]]
+        if not bs:
+            continue
+        c, b = pymupdf.Rect(rects[g[0]]), pymupdf.Rect(bs[0])
+        for i in g:
+            c |= rects[i]
+        for r in bs:
+            b |= r
+        regions.append(c if b.get_area() >= 0.05 * c.get_area() else b + (-10, -10, 10, 10))
+    out = []
+    for g in _components(regions, join):
+        u = pymupdf.Rect(regions[g[0]])
+        for i in g:
+            u |= regions[i]
+        out.append(u)
+    return out
+
+
+def figure_share(rect, page):
+    """Доля площади листа под областью рисунка."""
+    return min(1.0, rect.get_area() / (page.rect.width * page.rect.height))
+
+
 def check_images(d):
     if not d.pdf or not d.orig:
         return d.skip("8 снимок листа", "нужны PDF перевода и оригинала")
@@ -626,10 +799,15 @@ def check_images(d):
     ratio = d.pdf.n / d.orig.n
     bad = []
     for i, s in big:
+        near = r2o.get(i) or {o for o in range(round(i / ratio) - 1, round(i / ratio) + 2) if 0 <= o < d.orig.n}
+        # векторный рисунок оригинала — картинкой в переводе законно, если картинка не намного больше рисунков листа
+        # (сумма их областей, а не рамка вокруг всех: два мелких значка по углам — не рисунок на весь лист); снимок всего
+        # листа со схемой в углу — по-прежнему снимок
+        if any(0.02 < f and s <= 1.5 * f + 0.1 for f in (sum(d._fig_shares(o)) for o in near)):
+            continue
         if not any(x > 0.02 for x in so):               # в оригинале картинок нет вовсе
             bad.append((i, s))
             continue
-        near = r2o.get(i) or {o for o in range(round(i / ratio) - 1, round(i / ratio) + 2) if 0 <= o < d.orig.n}
         if all(so[o] <= 0.02 for o in near):            # лист не сопоставлен — берём соседей по линии пропорции
             bad.append((i, s))
     if not bad:
@@ -750,17 +928,39 @@ class Doc:
             self._imgs[key] = image_share(pdf.doc[i])
         return self._imgs[key]
 
+    def _figs(self, i):
+        key = ("figs", i)
+        if key not in self._imgs:
+            text = [(s.get("loc") or {}).get("bbox") for s in (self.js or {}).get("segs", ()) if s.get("page") == i]
+            self._imgs[key] = figure_rects(self.orig.doc[i], [b for b in text if b])
+        return self._imgs[key]
+
+    def _fig_shares(self, i):
+        return [figure_share(f, self.orig.doc[i]) for f in self._figs(i)]
+
     def in_picture(self, s):
         """Текст сегмента — внутри картинки-листа: страница оригинала с изображением, а соответствующий лист перевода
-        почти целиком картинка (надписи нарисованы на ней — потерю по тексту DOCX не засчитываем; снимок ловит проверка 8)."""
-        if not self.orig:
+        почти целиком картинка (надписи нарисованы на ней — потерю по тексту DOCX не засчитываем; снимок ловит проверка 8).
+        Или надпись внутри векторного рисунка оригинала (figure_rects), а рядом в переводе есть картинка не меньше
+        половины этого рисунка."""
+        if not self.orig or not self.pdf:
             return False
         o = min(s.get("page") or 0, self.orig.n - 1)
-        if self._img("orig", o) <= 0.02:
-            return False
         c = round(o * self.pdf.n / self.orig.n)         # листы-картинки не сопоставляются по тексту — берём ещё и соседей по пропорции
-        rs = set(self.page_map(by="o2r").get(o, ())) | {r for r in range(c - 1, c + 2) if 0 <= r < self.pdf.n}
-        return any(self._img("ru", r) > BIG_IMAGE_SHARE for r in rs)
+        m = self.page_map(by="o2r")
+        rs = set(m.get(o, ())) | {r for r in range(c - 1, c + 2) if 0 <= r < self.pdf.n}
+        if not m.get(o) and m.get(o - 1) and m.get(o + 1) and min(m[o + 1]) - max(m[o - 1]) <= 3:
+            # и листы между сопоставленными соседями: у листа-картинки своих текстов нет, пропорция уходит на лист
+            # (3FI18: блок-схема стр. 28 оригинала — лист 27 перевода, по пропорции 28–30)
+            rs |= set(range(max(m[o - 1]), min(m[o + 1]) + 1))
+        if self._img("orig", o) > 0.02 and any(self._img("ru", r) > BIG_IMAGE_SHARE for r in rs):
+            return True
+        bb = (s.get("loc") or {}).get("bbox")
+        if not bb:
+            return False
+        mid = pymupdf.Point((bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2)
+        return any(mid in f + (-4, -4, 4, 4) and any(self._img("ru", r) >= 0.5 * figure_share(f, self.orig.doc[o])
+                                                     for r in rs) for f in self._figs(o))
 
     def run(self):
         out = []

@@ -89,6 +89,19 @@ def png():
     return fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 4, 4), False).tobytes("png")
 
 
+def test_whole_sheet_picture_keeps_no_caption_room(tmp_path):
+    """Снимок листа целиком (схема GF(135)/(246), E7 02.11) ужимался ради 48 pt «под подпись», которой нет: место под
+    подпись — только если в оригинале под рисунком на его листе было тело (24 pt и больше; «Рисунок 17» ИН-1065)."""
+    fig = lambda top, bottom: {"k": "p", "figure": True, "runs": [{"img": {"png": png(), "x0": 62, "x1": 535,
+                                                                          "top": top, "bottom": bottom}}],
+                               "geom": {"page": 1, "top": top, "bottom": bottom, "x0": 62, "x1": 535, "first_x0": 62}}
+    out = tmp_path / "f.docx"
+    B.Builder(B.Memory([]), lambda img: png(), PROFILE).build([fig(119, 715), fig(100, 660)], str(out),
+                                                              dict(LAYOUT, first_is_body=True))
+    w = [round(s.width.pt) for s in Document(str(out)).inline_shapes]
+    assert w == [471, 466]                  # во весь лист — по ширине поля; с телом ниже — с местом под подпись
+
+
 def test_builder_follows_profile(tmp_path):
     icon = {"k": "p", "runs": [{"img": {"x0": 300, "x1": 310, "top": 100, "bottom": 110}}],
             "geom": {"page": 2, "top": 100, "x0": 300, "x1": 310, "first_x0": 300}}
@@ -293,6 +306,26 @@ def test_sheet_closed_by_its_signature_starts_next_sheet_on_new_page():
     assert [bool(b.get("break")) for b in got] == [False, True, True, True]
     code = lambda pg: p("02TD81S203 ZÁR", pg, 700)
     assert D.closed_sheets([p("a", 3), code(3), p("b", 4), code(4), p("c", 5), p("d", 6), p("e", 7), p("f", 8)]) == set()
+
+
+def test_every_numbered_sheet_starts_new_page():
+    """Путь А (решение 02.11): номер листа оригинала известен — каждый лист свой раздел с новой страницы, таблица через
+    листы режется по листам (INFO 3SZ23/3PR10: номер листа был на 1 меньше оригинала, 30PR25GT: лист с подписью в
+    ячейке сливался со следующим); номера нет — только листы, закрытые подписью, как прежде."""
+    cell = lambda t, pg: {"blocks": [p(t, pg, 100)], "th": False}
+    rows = [[cell(f"{pg}.{k}", pg), cell(f"30TK5{pg}S00{k}", pg)] for pg in (3, 4, 5) for k in (1, 2)]
+    t = {"k": "table", "rows": rows, "split": True, "geom": {"page": 3}}
+    after = p("Megjegyzés", 6, 90)
+    closed = D.sheet_closed({"sheet_no": {3: 2, 4: 3, 5: 4, 6: 5}}, [t, after])
+    got = D.split_at_zones([t, after], None, closed)
+    assert [len(b.get("rows") or []) for b in got] == [2, 2, 2, 0]
+    assert [(bool(b.get("break")), b.get("sheet")) for b in got] == [(False, None), (True, 4), (True, 5), (True, 6)]
+    assert D.sheet_closed({}, [t, after]) == set()                       # без номеров и подписей — сплошь, как было
+    # перечень через лист — тоже по листам, нумерация части — с её места (02VE25: пункты листа 4 шли в разделе листа 3)
+    num = {"k": "list", "kind": "Decimal", "start": 1, "items": [[p(f"{k}. pont", pg, 100 + 20 * k)] for k, pg in
+                                                                 enumerate((3, 3, 4, 4, 5), 1)]}
+    got = D.split_at_zones([num, after], None, closed)
+    assert [(len(b.get("items") or []), b.get("start"), bool(b.get("break")), b.get("sheet")) for b in got] ==         [(2, 1, False, None), (2, 3, True, 4), (1, 5, True, 5), (0, None, True, 6)]
 
 
 def test_label_tab_kept_and_column_alignment_from_original():
@@ -1507,6 +1540,21 @@ def test_open_sided_table_edges_from_rules():
     assert DL._tables([(221, 57, 542), (473, 200, 300)], vs) == []
 
 
+def test_detached_row_lines_of_a_column_are_its_borders():
+    """Столбец «M» INFO-таблицы 3SZ23: его горизонтали нарисованы с отступом от вертикалей (517–544 при столбце 507–553)
+    и с сеткой не связаны — у ячеек столбца не было ни верха, ни низа, «M» стоял вне рамки. Линия строки внутри
+    столбца — граница его ячеек; линия не на линии строки (подчёркивание) — нет."""
+    import docx_layout as DL
+    hs = [(95, 68, 552), (130, 68, 507), (130, 517, 544), (143, 68, 507), (143, 517, 544), (349, 68, 507),
+          (349, 517, 544), (200, 230, 300)]
+    vs = [(67, 96, 348), (220, 131, 348), (361, 131, 348), (507, 131, 348), (553, 96, 348)]
+    xs, ys, gh, gv = DL._tables(hs, vs)[0]
+    assert [round(x) for x in xs] == [67, 220, 361, 507, 553] and [round(y) for y in ys[1:]] == [130, 143, 348]
+    rows = DL._grid_cells(xs, ys, gh, gv)
+    assert rows[1][3][2] == {"top": True, "bottom": True, "left": True, "right": True}
+    assert rows[2][3][2]["bottom"] and (200, 230, 300) not in gh
+
+
 def test_blank_continuation_joins_with_row_lines():
     """Продолжение таблицы без текста (пустые графы листа ознакомления ИН-1065) — к своей таблице, линии строк обеих
     частей — одной рамкой: по ним высота пустых строк."""
@@ -1813,6 +1861,52 @@ def test_scan_scheme_of_arrows_and_short_labels_is_figure(tmp_path):
     assert sum("3/2" in x for x in texts) == 3
 
 
+def test_rows_split_by_ink_not_by_tall_monospace_boxes():
+    """3SZ17 стр. 7 (NIGHT2_EYES п. 13): рамка моноширинной строки выше шага строк (16 pt при шаге 11) — рамки абзацев
+    соседних рядов «Деятельность | Состояние» перекрывались, и ряды склеивались в одну строку DOCX. Края полосы — по
+    «чернилам» строк: каждое действие со своим состоянием — своя подстрока."""
+    import docx_layout as DL
+    gh = [(90, 60, 560), (300, 60, 560)]
+    gv = [(60, 90, 300), (380, 90, 300), (560, 90, 300)]
+    t = (DL._cluster([v[0] for v in gv]), [90, 300], gh, gv)
+
+    def seg(text, x0, y0, x1, lines=1):
+        frags = [[x0, y0 + 11 * k - 2.5, x1, y0 + 11 * k + 13.5] for k in range(lines)]   # рамка строки 16 pt, шаг 11
+        return {"id": 0, "page": 0, "text": text, "loc": {"bbox": [x0, frags[0][1], x1, frags[-1][3]], "frags": frags,
+                                                          "size": 9, "bold": False, "align": "left", "family": "monospace"}}
+    segs = []
+    for k, (act, st) in enumerate((("A 30UJ04 ZÁRNI", "ZÁRVA"), ("A 30UJ05 NYITNI", "NYITVA"), ("Szivattyút indítani", "ÜZEMEL"))):
+        segs += [seg(act, 70, 100 + 24 * k, 370, 2), seg(st, 400, 111 + 24 * k, 450)]
+    b = DL._table_block(t, segs, 0, None, "Courier New", 9, True)
+    text = lambda c: ["".join(r.get("t", "") for r in p["runs"]) for p in c["blocks"]]
+    pairs = [(text(r[0]), text(r[1])) for r in b["rows"] if any(text(c) for c in r)]
+    assert pairs == [(["A 30UJ04 ZÁRNI"], ["ZÁRVA"]), (["A 30UJ05 NYITNI"], ["NYITVA"]), (["Szivattyút indítani"], ["ÜZEMEL"])]
+
+
+def test_code_with_taller_mark_in_same_grid_row_is_one_row():
+    """30KBFSZBIGT л. 4 (печать 0c7da1a): в строке сетки код кеглем 12 и значок «□» кеглем 18 — по «чернилам» значок
+    начинается на 2 pt выше кода, и код-метка открывал свою полосу: каждая строка резалась на пустую и строку с
+    текстом (26 строк → 48, листы 9 → 11). Метка — своя полоса, только если чужой текст выше на полстроки."""
+    import docx_layout as DL
+    ys = [225.2 + 23.5 * k for k in range(4)]
+    gh = [(y, 60, 470) for y in ys]
+    gv = [(x, ys[0], ys[-1]) for x in (60, 150, 210, 235, 345, 470)]
+    t = (DL._cluster([v[0] for v in gv]), ys, gh, gv)
+
+    def seg(text, x0, y0, x1, y1, size):
+        return {"id": 0, "page": 0, "text": text, "loc": {"bbox": [x0, y0, x1, y1], "frags": [[x0, y0, x1, y1]],
+                                                          "size": size, "bold": False, "align": "left"}}
+    segs = []
+    for k in range(3):
+        y = 23.5 * k
+        segs += [seg(f"30RR11S00{k}", 77, 228.5 + y, 143, 245.1 + y, 12), seg("NYITVA", 154, 228.5 + y, 202, 245.1 + y, 12),
+                 seg("", 214, 227.1 + y, 230, 247 + y, 18), seg("Kábel, lakat, tábla", 241, 228.5 + y, 336, 245.1 + y, 12),
+                 seg("", 346, 227.1 + y, 362, 247 + y, 18)]
+    b = DL._table_block(t, segs, 0, None, "Times New Roman", 12, False)
+    text = lambda c: "".join(r.get("t", "") for p in c["blocks"] for r in p.get("runs") or [])
+    assert [text(r[0]) for r in b["rows"]] == ["30RR11S000", "30RR11S001", "30RR11S002"]
+
+
 def test_label_column_splits_table_row_into_sub_rows():
     """Таблица-бланк без внутренних горизонталей (31RDGT): номер, текст и отметка — каждый против своего; строка сетки
     режется по горизонтальным полосам абзацев (отметка «O» — против своего кода, не против метки), линий между
@@ -1913,6 +2007,24 @@ def test_join_tables_with_different_grid_stay_separate_even_with_repeated_header
     assert len(S.join_tables([a, other])) == 2                       # столбцов разное число — две таблицы
     same = mk([51, 151, 299, 502], [head(3), body(3)], 2)
     assert len(S.join_tables([mk(three, [head(3), body(3)], 1), same])) == 1
+
+
+def test_join_tables_drops_blank_frame_rows_of_earlier_sheet():
+    """Таблица бланка на каждом листе — сведения и пустые строки до низа рамки (INFO 3PR10 «Hőcserélők»): склеенная через
+    лист, пустые строки первой части вставали посередине таблицы, а последней — уезжали хвостом на новый лист. Пустые
+    строки после текста части, за которой таблица продолжается, — прочь (линии строк — тоже); пустой бланк — как есть."""
+    cell = lambda t, th=False: {"blocks": [p(t)] if t else [], "th": th}
+    head = lambda: [cell("Hőcserélők", True), cell("M", True)]
+    part = lambda page, info: {"k": "table", "geom": {"page": page},
+                               "rows": [head()] + [[cell(t), cell("")] for t in info] + [[cell(""), cell("")]] * 3,
+                               "frame": {"ys": [72 + 35 * i for i in range(len(info) + 5)], "row_lines": True}}
+    got = D.join_tables([part(29, ["YE13W001", "A301"]), part(30, ["TK61W001", "A301"])])
+    assert len(got) == 1
+    rows = [[c["blocks"][0]["runs"][0]["t"] if c["blocks"] else "" for c in r] for r in got[0]["rows"]]
+    assert [r[0] for r in rows] == ["Hőcserélők", "YE13W001", "A301", "TK61W001", "A301", "", "", ""]
+    assert len(got[0]["frame"]["ys"]) == len(rows) + 1
+    empty = lambda page: {"k": "table", "geom": {"page": page}, "rows": [head()] + [[cell(""), cell("")]] * 3}
+    assert [len(t["rows"]) for t in D.join_tables([empty(29), empty(30)])] == [7]       # пустой бланк на два листа
 
 
 def test_cell_pad_is_not_the_empty_space_to_the_sheet_frame():

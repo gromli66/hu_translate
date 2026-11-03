@@ -839,9 +839,13 @@ class Builder:
                 PW, PH = pt(sec.page_width, self.L["W"]), pt(sec.page_height, self.L["H"])
                 w = min(w, PW - pt(sec.left_margin, self.L["left"]) - pt(sec.right_margin, self.L["right"]))
                 # и не выше поля набора без места под подпись: снимок во весь лист уводил «Рисунок 17» на следующий
-                # лист (ИН-1065, 18.10)
+                # лист (ИН-1065, 18.10); место под подпись — только если в оригинале под рисунком на его листе было
+                # тело (24 pt и больше): снимок листа целиком (схема GF(135)/(246)) ужимался до 80 % ради подписи,
+                # которой нет (E7, 02.11)
                 h = (float(img.get("bottom") or 0) - float(img.get("top") or 0)) * w / w0 if w0 > 0 else 0
-                room = PH - pt(sec.top_margin, self.L["top"]) - pt(sec.bottom_margin, self.L["bottom"]) - 48
+                below = PH - pt(sec.bottom_margin, self.L["bottom"]) - float(img.get("bottom") or 0)
+                room = PH - pt(sec.top_margin, self.L["top"]) - pt(sec.bottom_margin, self.L["bottom"]) - \
+                    (48 if below >= 24 else 0)
                 if h > room > 100:
                     w *= room / h
             par.add_run().add_picture(io.BytesIO(data), width=Pt(w))
@@ -1031,6 +1035,31 @@ class Builder:
             # по позиции оригинала перескакивал на следующую строку (3SZ19, 16.10)
             from docx.enum.text import WD_TAB_ALIGNMENT
             par.paragraph_format.tab_stops.add_tab_stop(Pt(self.L["W"] - self.L["right"] - self.left), WD_TAB_ALIGNMENT.RIGHT)
+
+    def _cell_par(self, par, x, edges, al, right=False):
+        """Абзац ячейки текстового слоя — по своему месту на листе оригинала: лист бланка — одна большая ячейка
+        (01-02FMP0BIGT л. 2, NIGHT2_EYES п. 15), и заголовок по центру уходил влево, пункт «1. …» шёл без висячего
+        отступа. edges — края ячейки на листе (линии столбцов), al — выключка столбца, right — строка столбца,
+        выключенного в оригинале вправо (table: общий правый край). Пустые строки между абзацами ячейки — нет: зазоры
+        оригинала (до строки) у 30RL2126GT на 449 границах из 738 дали 49 листов при 46."""
+        from docx.shared import Pt
+        g = x.get("geom") or {}
+        pf = par.paragraph_format
+        if al not in (None, "left") or g.get("x0") is None:
+            return
+        # строка по середине ячейки, помеченная «по центру», — по центру («ÁLTALÁNOS INFORMÁCIÓK»)
+        if edges and x.get("align") == "center" and (g.get("lines") or 1) == 1 \
+                and abs((g["x0"] - edges[0]) - (edges[1] - g["x1"])) < 6 and g["x0"] - edges[0] > 8:
+            par.alignment = 1
+            return
+        if right:
+            par.alignment = 2
+            return
+        # пункт с меткой, перенесённые строки правее первой («1. A reaktor …» / «primerkör …») — висячим отступом
+        hang = (g.get("rest_x0") or 0) - (g.get("first_x0") or 0)
+        if 5 < hang <= 40 and re.match(rf"\s*(?:{PT.ITEM_LABEL}|[{PT.MARKERS}])\s", text_of(x["runs"])):
+            pf.left_indent = Pt(round(hang, 1))
+            pf.first_line_indent = Pt(-round(hang, 1))
 
     # ---------------------------------------------------------------- блоки
     def paragraph(self, b, style="Normal", tgt=None):
@@ -1524,6 +1553,46 @@ class Builder:
         # вместе с шапкой при поле тела 659 pt: шапка колонтитула в три строки). Потолок высоты строки — поле тела минус 60 pt
         row_cap = (self.L["H"] - self.L["top"] - self.L["bottom"] - 60) if self.L else None
         row_ys = fr.get("ys") or []
+        # вложенный перечень в столбце: абзацы с левой выключкой правее строки-ввода с двоеточием («1-es hurok:» и коды
+        # под ней 30HU175GT, +19 pt; строка, разрезанная на подстроки, — тоже) — с отступом от её края, пока идут
+        # правее. Прочие сдвиги в ячейке (код по центру подстолбца, строка через линию столбца) — нет: от самого левого
+        # края столбца отступ получали сотни абзацев (30THHAGT, 30RVRWVTBIGT, ред-тим 02.11)
+        nest, intro = {}, {}
+        for row in rows:
+            if all("span" in c for c in row):
+                for i, c in enumerate(row):
+                    a = sum(q["span"] for q in row[:i])
+                    for x in c["blocks"]:
+                        x0 = (x.get("geom") or {}).get("x0")
+                        if x["k"] != "p" or x0 is None:
+                            continue
+                        if intro.get(a) is not None and x.get("align") == "left" and 6 <= x0 - intro[a] <= 72:
+                            nest[id(x)] = x0 - intro[a]
+                            continue
+                        intro[a] = x0 if text_of(x["runs"]).rstrip().endswith(":") else None
+        # строки столбца, выключенные в оригинале вправо: у трёх и больше абзацев столбца на листе (не шапки) общий
+        # правый край (±1,5 pt, и у последней строки), а середины расходятся на 10 pt и больше (не столбец по центру:
+        # коды одной ширины, «Наименование», значения «20 бар» по центру — 3SZ17, 3SZ23, 30PR25GT, ред-тим 02.11), и
+        # начала правее левого края текста столбца на 20 pt и больше — перечень «A főkeringtető szivattyúk …»,
+        # «30TH12S003» 30PR132GT л. 34 (NIGHT2_EYES п. 12) шёл влево
+        flush, col = set(), {}
+        for row in rows:
+            if all("span" in c for c in row):
+                for i, c in enumerate(row):
+                    for x in [] if c.get("th") else c["blocks"]:
+                        g = x.get("geom") or {}
+                        if x["k"] == "p" and x.get("seg") and g.get("x1") is not None:
+                            col.setdefault((sum(q["span"] for q in row[:i]), g.get("page")), []).append(x["geom"])
+        for gs in col.values():
+            left = min(g["x0"] for g in gs)
+            ends = [g for g in gs if g["x0"] - left >= 20 and abs(g.get("last_x1", -99) - g["x1"]) <= 1.5]
+            for g in ends:
+                grp = [q for q in ends if abs(q["x1"] - g["x1"]) <= 1.5]
+                mids = [(q["x0"] + q["x1"]) / 2 for q in grp]
+                # и не меньше трёх разных начал: шапка «Megnevezés» по центру и два «A 203/3» одной ширины сходились
+                # правым краем в 1 pt (30PR132GT л. 25, 30)
+                if len(grp) >= 3 and max(mids) - min(mids) >= 10 and len({round(q["x0"] / 3) for q in grp}) >= 3:
+                    flush.update(id(q) for q in grp)
         for ri, row in enumerate(rows):
             if all("span" in c for c in row):               # ячейки по сетке линий (docx_layout) — места известны
                 starts = [sum(c["span"] for c in row[:i]) for i in range(len(row))]
@@ -1605,6 +1674,7 @@ class Builder:
                         al = "center"
                 if al:
                     style = self._aligned(style, al)
+                cell_x = (bounds[spans[ci][0]], bounds[spans[ci][1] + 1]) if len(bounds) == ncol + 1 else None
                 for x in cell["blocks"]:
                     if x["k"] == "list":
                         self.list_(x, 0, dc); continue
@@ -1625,9 +1695,14 @@ class Builder:
                                 self._img_run(first, r["img"])
                         else:
                             self._put_runs(first, x["runs"])
-                        used = True
+                        used, par = True, first
                     else:
-                        self.paragraph(x, style, tgt=dc)
+                        par = self.paragraph(x, style, tgt=dc)
+                    # вложенный перечень (nest выше) — с отступом: все абзацы ячейки шли от её края
+                    if par is not None and al in (None, "left") and nest.get(id(x)):
+                        par.paragraph_format.left_indent = Pt(round(nest[id(x)], 1))
+                    elif par is not None and x.get("seg"):
+                        self._cell_par(par, x, cell_x, al, id(x.get("geom")) in flush)
                 room = self._room.get(starts[ci]) if spans[ci][1] == spans[ci][0] else None
 
                 def widest(par, eff, whole=False):
@@ -2006,8 +2081,11 @@ class Builder:
                         continue
                     src = line.replace(PAGE_MARK, "00")
                     ru = self.tr(src) or zone(src) or line
-                    if len(ru) > len(line) and widths[ci] < len(ru) * k + GM.CELL_PAD:
-                        need[ci] = max(need[ci], len(ru) * k + GM.CELL_PAD)
+                    # номер листа на переливе раздела-листа — «N (прод.)» (путь А): ячейка номера — и под него, иначе
+                    # «(прод.)» срезалось узкой ячейкой (3FI18: «2, 2» вместо «2, 2 (прод.)»)
+                    n_ru = len(ru) + (len(" (прод.)") if PAGE_MARK in line and (self.L or {}).get("sheet_no") else 0)
+                    if n_ru > len(line) and widths[ci] < n_ru * k + GM.CELL_PAD:
+                        need[ci] = max(need[ci], n_ru * k + GM.CELL_PAD)
         deficit = [max(0.0, need[i] - widths[i]) for i in range(n)]
         total = sum(deficit)
         if total < 1:
@@ -2397,6 +2475,11 @@ class Builder:
         # variants): серия листов — свой раздел со своей шапкой и подвалом; None — колонтитулы тела
         zones, zcur, placed = L.get("variants") or [], None, False
         sheet_no = L.get("sheet_no") or {}                  # лист оригинала → его номер (docx_struct.layout)
+        # документ без титула, первый лист — с номером: и первый раздел — раздел-лист (ужимает docx_fit, перелив —
+        # «N (прод.)»); иначе его перелив шёл с номером следующего листа и мимо подгонки (30BLM1M2GT: «2, 3, 3, 4» при
+        # трёх листах). Особый первый лист (ONS: свой колонтитул) — как был
+        if not in_title and sheet_no.get(1) and not L.get("first"):
+            starts.append((0, 1, "sheet"))
         for b in blocks:
             g = b.get("geom") or {}
             page = g.get("page")
@@ -2436,12 +2519,20 @@ class Builder:
                     restart = True
             # лист оригинала, закрытый подписью (docx_struct.closed_sheets), — свой раздел: номер листа — его, не
             # подряд по листам перевода
-            if b.get("sheet") and page and not in_title and not in_front and made is None and sheet_no.get(page):
-                sec = made = self.doc.add_section(WD_SECTION.NEW_PAGE)
-                self.fresh = True
+            # (у перечня листа нет в geom — лист его первого пункта: часть перечня, начатая на новом листе, открывала
+            # раздел только у таблиц, 02VE25)
+            if page is None and b["k"] == "list" and b.get("sheet"):
+                page = b["sheet"]
+            if (b.get("sheet") or made is not None) and page and not in_title and not in_front and sheet_no.get(page):
+                if made is None:
+                    sec = made = self.doc.add_section(WD_SECTION.NEW_PAGE)
+                    self.fresh = True
                 # раздел — листы оригинала до следующего раздела: перелившийся на лишний лист — мельче кеглем
-                # (docx_fit, как альбомный: 30KBFPRBIGT, строки «ПЛОМБИРОВАНИЕ, ВЫВЕШИВАНИЕ ПЛАКАТА» в две строки)
-                starts.append((len(self.doc.sections) - 1, page, "sheet"))
+                # (docx_fit, как альбомный: 30KBFPRBIGT, строки «ПЛОМБИРОВАНИЕ, ВЫВЕШИВАНИЕ ПЛАКАТА» в две строки);
+                # и первый лист тела, чей раздел открыт концом титула или вводной части: его перелив шёл с номером
+                # следующего листа, без «(прод.)» (3PR10 путь А: «3, 4, 4»)
+                if not starts or starts[-1][0] != len(self.doc.sections) - 1:
+                    starts.append((len(self.doc.sections) - 1, page, "sheet"))
             if zones and page and not in_title and not in_front:
                 zk = next((i for i, z in enumerate(zones) if z["from"] <= page <= z["to"]), None)
                 if zk != zcur:
@@ -2740,8 +2831,9 @@ def blocks_layout(pdf, segs, mode):
         blocks, info = docx_layout.load(str(pdf), segs, text=mode == "text")
         if mode == "text":
             L = dict(docx_struct.layout(str(pdf), blocks, content=info.get("content_boxes")), sizes=True)
-            # раздел с другой шапкой — не внутри таблицы; лист, закрытый подписью, — до конца страницы
-            blocks = docx_struct.split_at_zones(blocks, L.get("variants"), docx_struct.closed_sheets(blocks))
+            # раздел с другой шапкой — не внутри таблицы; лист, закрытый подписью (или любой лист с номером оригинала,
+            # sheet_closed), — до конца страницы
+            blocks = docx_struct.split_at_zones(blocks, L.get("variants"), docx_struct.sheet_closed(L, blocks))
             # логотип своей шапки первого листа (L["first"]) — уже в колонтитуле; рисунком тела он шёл второй копией
             # (E42 корпуса: логотип OAH дважды, 22.10)
             first = L.get("first") or {}

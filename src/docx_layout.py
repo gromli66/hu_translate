@@ -240,6 +240,30 @@ def _text_style(doc, segs):
     return out
 
 
+def _underlined(doc, segs):
+    """Подчёркнутые сегменты текстового слоя (подзаголовки «Zárva vannak az alábbi armatúrák:», «1-es hurok:» 30HU175GT
+    — подчёркивание терялось): под каждой строкой сегмента — тонкая (до 1,2 pt) горизонталь в нижних 4 pt её рамки, от
+    начала строки (±2 pt) и на 80 % её ширины и больше, но не длиннее строки больше чем на 10 pt (линия ячейки таблицы
+    под строкой — от края ячейки, во всю её ширину и ниже рамки знаков). → {id}."""
+    out, by_page = set(), {}
+    for s in segs:
+        by_page.setdefault(s["page"], []).append(s)
+    for pno, ss in by_page.items():
+        # сплошная линия одним отрезком: пунктир разделителя строк (много отрезков одним путём, таблицы 3FI18 стр. 33–39)
+        # под тесной ячейкой — не подчёркивание (ред-тим 02.11)
+        hs = [dr["rect"] for dr in doc[pno].get_cdrawings() if len(dr["items"]) == 1
+              and dr["rect"][3] - dr["rect"][1] <= 1.2 and dr["rect"][2] - dr["rect"][0] >= 6]
+        if not hs:
+            continue
+
+        def under(f):
+            w = f[2] - f[0]
+            return any(f[3] - 4 <= (h[1] + h[3]) / 2 <= f[3] - 0.5 and f[0] - 2 <= h[0] and h[2] <= f[2] + 10
+                       and min(h[2], f[2]) - max(h[0], f[0]) >= 0.8 * w for h in hs)
+        out |= {s["id"] for s in ss if all(under(f) for f in s["loc"].get("frags") or [s["loc"]["bbox"]])}
+    return out
+
+
 def _pixel_style(doc, segs, layer=None):
     """Полужирные и курсивные слова по картинке листа (300 dpi). Текстовый слой для этого не годится: у 3SZ19
     полужирная строка оглавления «Turbina csapágy fehérfém…» лежит в нём только как «Turbina csapág», остальное
@@ -564,7 +588,11 @@ def _tables(hs, vs):
             and max(hi) - min(hi) <= 6 else []
         if edges:
             x0, x1 = edges
-        if x1 - x0 < 60 or y1 - y0 < 15 or not any(x0 + 3 < v[0] < x1 - 3 for v in gv):
+        # рамка без внутренних вертикалей — не таблица; кроме рамки вокруг строки во всю ширину текста (подпись листа
+        # «A lapot kitöltötte (név, dátum, aláírás):» 30HU*75GT — прямоугольник 482 × 26 pt): абзацем она теряла рамку,
+        # теперь — таблица в одну ячейку (с текстом внутри — _regions)
+        line_box = y1 - y0 <= 40 and x1 - x0 >= 300
+        if x1 - x0 < 60 or y1 - y0 < 15 or not line_box and not any(x0 + 3 < v[0] < x1 - 3 for v in gv):
             continue
         ys = _cluster([h[0] for h in hh] + [y0, y1])
         ys = [y for i, y in enumerate(ys) if i == 0 or y - ys[i - 1] >= GM.DOUBLE]  # двойная линия — одна
@@ -584,7 +612,12 @@ def _tables(hs, vs):
             v = min(far, key=lambda v: v[0])
             gh = gh + [h for h in hs if xs[-1] - 2 <= h[1] and h[2] <= v[0] + 2 and ys[0] - 4 <= h[0] <= ys[-1] + 4]
             gv, xs = gv + [v], xs + [v[0]]
-        if len(ys) >= 2 and len(xs) >= 3:
+        # линия строки, нарисованная в отрыв от вертикалей своего столбца (3SZ23 INFO: у «M» горизонтали 517–544 при
+        # столбце 507–553, касания нет), — на линии строки и внутри столбца — граница его ячеек: без неё у столбца не
+        # было ни верха, ни низа, «M» стоял вне рамки таблицы
+        gh = gh + [h for h in hs if h not in gh and ys[0] - 4 <= h[0] <= ys[-1] + 4 and any(abs(h[0] - y) <= 2 for y in ys)
+                   and any(xs[c] - 2 <= h[1] and h[2] <= xs[c + 1] + 2 for c in range(len(xs) - 1))]
+        if len(ys) >= 2 and (len(xs) >= 3 or line_box and len(xs) == 2):
             out.append((xs, ys, gh, gv))
     return out
 
@@ -835,7 +868,8 @@ def _runs_of(group, bold, font, size, mono, right=None):
             t, b, it = pc[:3]
             runs.append({"t": t, "font": font, "size": size, "b": b, "i": it, "color": pc[3] if len(pc) > 3 else "000000",
                          "body_mono": mono, **({"box": f"b{g['id']}"} if g["loc"].get("box") else {}),
-                         **({"sup": g["loc"]["sup"]} if g["loc"].get("sup") else {})})
+                         **({"sup": g["loc"]["sup"]} if g["loc"].get("sup") else {}),
+                         **({"u": True} if g["loc"].get("u") else {})})
         last = runs[-1]
         if i + 1 < len(group):
             last["t"] += "\t"
@@ -890,13 +924,26 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields
     # склеивали все строки таблицы в одну — коды и места разъезжались; такой абзац — в полосу своей середины
     bands = []
     for r, cells in enumerate(grid):
-        spans = sorted((min(g["loc"]["bbox"][1] for g in group), max(g["loc"]["bbox"][3] for g in group), ci,
+        # края абзаца — по «чернилам»: середина первой (последней) строки ∓ 0,4 кегля, а не рамка: рамка моноширинной
+        # строки выше шага строк (15–19 pt при шаге 10–11), рамки абзацев соседних рядов перекрывались, и ряды
+        # «Деятельность | Состояние» склеивались в одну строку DOCX блоками по 3–4 (3SZ17 стр. 7, NIGHT2_EYES п. 13)
+        # (фрагмент на несколько строк — край не дальше половины кегля от его края: отметка против нижней строки
+        # такого абзаца — в его полосе)
+        def ink(g, top):
+            f = (g["loc"].get("frags") or [g["loc"]["bbox"]])[0 if top else -1]
+            sz = g["loc"].get("size") or (f[3] - f[1]) / 1.2
+            mid = (f[1] + f[3]) / 2
+            return min(mid - 0.4 * sz, f[1] + 0.5 * sz) if top else max(mid + 0.4 * sz, f[3] - 0.5 * sz)
+        spans = sorted((min(ink(g, True) for g in group), max(ink(g, False) for g in group), ci,
                         ci == 0 and bool(PT.ROW_ANCHOR.fullmatch(" ".join(g["text"] for g in group).strip())))
                        for ci in range(len(cells)) for group in _lines(sorted(
                            put.get((r, ci), []), key=lambda s: (round(s["loc"]["bbox"][1] / 3), s["loc"]["bbox"][0]))))
         strips = []                                             # [верх, низ, {ячейки}, метка]
         for a, z, ci, anchor in spans:
-            if strips and a < strips[-1][1] - 2 and not (anchor and a > strips[-1][0] + 2):
+            # метка — своя полоса, если чужой абзац начался выше на полстроки метки, а не на 2 pt: по «чернилам»
+            # значок «□» кеглем 18 в той же строке начинается на 2,15 pt выше кода кеглем 12, и каждая строка
+            # сетки резалась на пустую полосу и строку с текстом (30KBFSZBIGT: 26 строк → 48, листы 9 → 11)
+            if strips and a < strips[-1][1] - 2 and not (anchor and a > strips[-1][0] + max(2.0, 0.5 * (z - a))):
                 strips[-1][1] = max(strips[-1][1], z)
                 strips[-1][2].add(ci)
             else:
@@ -926,10 +973,15 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields
                 gg = {"page": pno + 1, "top": g0[1], "bottom": max(g["loc"]["bbox"][3] for g in group), "x0": g0[0],
                       "x1": max(g["loc"]["bbox"][2] for g in group), "first_x0": g0[0], "size": size,
                       "lines": max(len(g["loc"].get("frags") or [1]) for g in group)}
+                fr = group[0]["loc"].get("frags") or []
+                if len(group) == 1 and len(fr) > 1:         # начало первой строки и остальных (висячий отступ пункта)
+                    gg.update(first_x0=fr[0][0], rest_x0=min(f[0] for f in fr[1:]))
+                if len(group) == 1 and fr:                  # конец последней строки (выключка вправо, docx_build)
+                    gg["last_x1"] = fr[-1][2]
                 runs = _runs_of(group, bold, font, size, mono)
                 for ru in runs if pua else ():               # значки частной области — знаком по виду (_pua_glyph)
                     ru["t"] = "".join(pua.get(ch, ch) for ch in ru["t"])
-                paras.append({"k": "p", "runs": runs, "geom": gg, "seg": True})
+                paras.append({"k": "p", "runs": runs, "geom": gg, "seg": True, "align": group[0]["loc"].get("align")})
                 geom = gg if geom is None else dict(geom, x0=min(geom["x0"], gg["x0"]), x1=max(geom["x1"], gg["x1"]),
                                                      bottom=gg["bottom"], lines=geom["lines"] + gg["lines"])
             for img in (pics.get((r, ci), []) if first else []):
@@ -1432,6 +1484,12 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
                     pua[ch] = _pua_glyph(page, s["loc"]["bbox"]) or ch
             # поля ввода — внутри одной ячейки сетки, не на её линиях и не во всю ячейку
             fields = [f for f in marks[pno][1] if _in_cell(f, xs_, ys_, whole=True)]
+            # рамка вокруг строки (одна ячейка) — таблицей только в теле листа и не вокруг заголовка: рамка шапки (выше
+            # полосы колонтитула) и заголовок в рамке или на плашке («7. Vezérlő táblák feliratai.» 3SZ23 — полужирный)
+            # — как прежде, иначе заголовок переставал быть заголовком (ред-тим 02.11)
+            if len(xs_) == 2 and (r.y1 < GM.HEAD_EDGE * page.rect.height or any(
+                    s["loc"].get("bold") or s["loc"].get("role") == "heading" for s in inside)):
+                continue
             if inside:
                 used |= set(mine)
                 blk = _table_block(t, inside + glyphs, pno, bold, font, size, mono, [figs[i] for i in mine], pua, fields)
@@ -1556,6 +1614,8 @@ def load(src, segs, text=False):
                             if seg:
                                 sup.setdefault(seg["id"], []).append((m.group(1), t))
         content = [dict(s, loc=dict(s["loc"], sup=sup[s["id"]])) if s["id"] in sup else s for s in content]
+        und = _underlined(doc, content)                     # подчёркнутый подзаголовок — подчёркнутым (_runs_of)
+        content = [dict(s, loc=dict(s["loc"], u=True)) if s["id"] in und else s for s in content]
     size = round(median(s["loc"].get("size") or 10 for s in content) * 2) / 2
     font = FAMILY.get(Counter(s["loc"].get("family") for s in content).most_common(1)[0][0], "Arial")
     left = sorted(s["loc"]["bbox"][0] for s in content)[len(content) // 10]

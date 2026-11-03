@@ -1091,3 +1091,177 @@ def test_flowchart_with_quad_diamonds_and_long_links_is_one_figure(tmp_path):
     assert len(figs) == 1 and not any(b["k"] == "table" for b in blocks)
     x0, y0, x1, y1 = figs[0]
     assert x0 <= 130 and x1 >= 540 and y0 <= 120 and y1 >= 600      # и петля слева, и рамка «Telefonon…» справа
+
+
+def test_sheet_signature_box_is_framed_cell_and_stamp_does_not_cut_words(tmp_path):
+    """Подпись листа в рамке «A lapot kitöltötte (név, dátum, aláírás):» (30HU*75GT): прямоугольник вокруг строки во
+    всю ширину без внутренних линий — таблица в одну ячейку (абзацем рамка пропадала); рамка повыше или поуже — не
+    таблица, как прежде. В подвале-штампе концы отрезков линии таблицы над подписью (120, 453 pt) — не столбцы, если
+    режут слово: подпись рвалась «Лист / заполн / ил» в ячейке 49 pt."""
+    import pdfplumber
+    import docx_struct as S
+    box = lambda x0, y0, x1, y1: ([(y0, x0, x1), (y1, x0, x1)], [(x0, y0, y1), (x1, y0, y1)])
+    for (x0, y0, x1, y1), ok in (((71, 729, 553, 755), True), ((71, 600, 553, 700), False), ((71, 729, 300, 755), False)):
+        hs, vs = box(x0, y0, x1, y1)
+        got = DL._tables(hs, vs)
+        assert bool(got) == ok and (not ok or [round(x) for x in got[0][0]] == [x0, x1])
+    src = tmp_path / "f.pdf"
+    doc = fitz.open()
+    doc.new_page(width=595, height=842).insert_text((76, 745), "A lapot kitöltötte (név, dátum, aláírás):", fontsize=10,
+                                                    fontname="tiro")
+    doc.save(str(src))
+    p = pdfplumber.open(str(src)).pages[0]
+    r = lambda x0, x1, top, bottom: {"x0": x0, "x1": x1, "top": top, "bottom": bottom}
+    rects = [r(a, b, 706, 706.5) for a, b in ((71, 120), (120, 453), (453, 553))]       # линия таблицы — по ячейкам
+    rects += [r(71, 553, 729, 729.5), r(71, 553, 755, 755.5), r(71, 71.5, 729, 755), r(553, 553.5, 729, 755)]
+    g = S._zone_grid(p.chars, rects)
+    assert g["rows"][0]["cells"][0] == "A lapot kitöltötte (név, dátum, aláírás):" and g["widths"][0] > 300
+
+
+def test_nested_list_in_cell_keeps_indent_and_subheading_underline(tmp_path):
+    """30HU175GT стр. 5: коды под «1-es hurok:» — на 19 pt правее текста ячейки, подзаголовки «Zárva vannak az alábbi
+    armatúrák:», «1-es hurok:» подчёркнуты линией 0,5 pt. В DOCX абзацы ячейки шли от её края, подчёркивание терялось:
+    теперь вложенный абзац — с отступом от края текста столбца (строка, разрезанная на подстроки, — тоже), подчёркнутый
+    подзаголовок — подчёркнутым; линия ячейки под строкой — не подчёркивание."""
+    d = fitz.open()
+    pg = d.new_page(width=595, height=842)
+    pg.insert_text((123.5, 301), "Zárva vannak az alábbi armatúrák:", fontsize=10, fontname="tiro")
+    pg.draw_rect(fitz.Rect(123.5, 301.9, 262.3, 302.4), color=None, fill=(0, 0, 0))
+    pg.insert_text((123.5, 401), "30TY12S001", fontsize=10, fontname="tiro")
+    pg.draw_rect(fitz.Rect(120, 404.5, 453, 405), color=None, fill=(0, 0, 0))      # линия ячейки под строкой
+    seg = lambda i, y, x1: {"id": i, "page": 0, "text": "x", "loc": {"bbox": [123.5, y - 11.4, x1, y + 2.9]}}
+    assert DL._underlined(d, [seg(1, 301, 264.8), seg(2, 401, 178)]) == {1}
+    g = lambda x0, top: {"page": 1, "top": top, "bottom": top + 10, "x0": x0, "x1": x0 + 100, "first_x0": x0, "size": 10,
+                         "lines": 1}
+    run = lambda t, u=False: dict({"t": t, "font": "Times New Roman", "size": 10, "b": False, "i": False,
+                                   "color": "000000"}, **({"u": True} if u else {}))
+    para = lambda t, x0, top, u=False: {"k": "p", "runs": [run(t, u)], "geom": g(x0, top), "seg": True, "align": "left"}
+    edges = {"top": True, "bottom": True, "left": True, "right": True}
+    cell = lambda ps: {"blocks": ps, "th": False, "geom": ps[0]["geom"] if ps else None, "span": 1, "edges": edges}
+    rows = [[cell([para("1.1.2.", 84, 290)]), cell([para("Zárva vannak:", 123.5, 290, True), para("1-es hurok:", 123.5, 302)])],
+            [cell([]), cell([para("30YA11S201", 142, 314), para("30TY12S001", 142, 326)])]]
+    tab = {"k": "table", "rows": rows, "borders": True, "frame": {"xs": [71, 120, 453], "ys": [288, 312, 340]},
+           "geom": {"page": 1, "top": 288, "bottom": 340, "x0": 71, "x1": 453, "first_x0": 71, "size": 10}}
+    out = tmp_path / "n.docx"
+    mem = B.Memory([("Zárva vannak:", "Закрыты:"), ("1-es hurok:", "Петля 1:")])
+    B.Builder(mem, lambda img: png(), PROFILE).build([tab], str(out), dict(LAYOUT, first_is_body=True))
+    t = Document(str(out)).tables[0]
+    ind = {p.text: p.paragraph_format.left_indent for c in t._cells for p in c.paragraphs if p.text}
+    assert ind["Закрыты:"] is None and ind["Петля 1:"] is None and round(ind["30YA11S201"].pt) == 18
+    assert any(r.underline for p in t.rows[0].cells[1].paragraphs for r in p.runs if r.text == "Закрыты:")
+
+
+def test_whole_sheet_cell_keeps_center_and_hanging_items(tmp_path):
+    """01-02FMP0BIGT л. 2 (NIGHT2_EYES п. 15): лист бланка — одна большая ячейка. Заголовок по середине ячейки — по
+    центру, пункт «1. …», перенесённые строки которого правее первой, — висячим отступом; пустая строка над абзацем —
+    без зазора (зазоры оригинала раздували перевод на листы: 30RL2126GT 46 → 49)."""
+    def para(t, x0, x1, top, lines=1, align="left", rest=None):
+        g = {"page": 1, "top": top, "bottom": top + 13 * lines, "x0": x0, "x1": x1, "first_x0": x0, "size": 10,
+             "lines": lines, **({"rest_x0": rest} if rest else {})}
+        return {"k": "p", "runs": [{"t": t, "font": "Times New Roman", "size": 10, "b": False, "i": False,
+                                    "color": "000000"}], "geom": g, "seg": True, "align": align}
+    ps = [para("ÁLTALÁNOS INFORMÁCIÓK", 246, 386, 112, align="center"),
+          para("A próba terjedelme:", 136, 223, 141),
+          para("1. A reaktor minimálisan ellenőrizhető teljesítményre hozása", 138, 461, 172, lines=4, rest=152),
+          para("2. Minimálisan ellenőrizhető teljesítményen mérések", 138, 424, 222, lines=2, rest=152)]
+    edges = {"top": True, "bottom": True, "left": True, "right": True}
+    head = [para("Sorsz.", 77, 110, 84), para("Feltétel, művelet, ellenőrzés", 257, 378, 84, align="center")]
+    for h in head:
+        h["runs"][0]["b"] = True
+    rows = [[{"blocks": [h], "th": False, "geom": h["geom"], "span": 1, "edges": edges} for h in head],
+            [{"blocks": [], "th": False, "geom": None, "span": 1, "edges": edges},
+             {"blocks": ps, "th": False, "span": 1, "edges": edges,       # место ячейки — по всем её абзацам
+              "geom": {"page": 1, "top": 112, "bottom": 248, "x0": 136, "x1": 461, "first_x0": 136, "size": 10, "lines": 8}}]]
+    tab = {"k": "table", "rows": rows, "borders": True, "frame": {"xs": [71, 120, 512], "ys": [80, 100, 260]},
+           "geom": {"page": 1, "top": 80, "bottom": 260, "x0": 71, "x1": 512, "first_x0": 71, "size": 10}}
+    out = tmp_path / "c.docx"
+    B.Builder(B.Memory([]), lambda img: png(), PROFILE).build([tab], str(out), dict(LAYOUT, first_is_body=True))
+    got = {p.text[:6]: p for c in Document(str(out)).tables[0]._cells for p in c.paragraphs if p.text}
+    assert got["ÁLTALÁ"].alignment == 1
+    assert got["A prób"].paragraph_format.space_before is None and got["A prób"].alignment is None
+    pf = got["1. A r"].paragraph_format
+    assert round(pf.left_indent.pt) == 14 and round(pf.first_line_indent.pt) == -14
+
+
+def test_column_lines_with_common_right_edge_are_flush_right(tmp_path):
+    """30PR132GT л. 17, 34 (NIGHT2_EYES п. 12): перечень столбца «Megnevezés» выключен вправо — строки кончаются на
+    445 pt при разных началах; в переводе шёл влево. Три и больше абзаца столбца с общим правым краем (и у последней
+    строки), начатые правее левого края текста столбца на 20 pt и больше, — вправо; вводная строка у левого края и
+    строка с другим концом — как были."""
+    def para(t, x0, x1, top, last=None):
+        g = {"page": 1, "top": top, "bottom": top + 12, "x0": x0, "x1": x1, "first_x0": x0, "size": 10, "lines": 1,
+             "last_x1": x1 if last is None else last}
+        return {"k": "p", "runs": [{"t": t, "font": "Times New Roman", "size": 10, "b": False, "i": False,
+                                    "color": "000000"}], "geom": g, "seg": True, "align": "left"}
+    edges = {"top": True, "bottom": True, "left": True, "right": True}
+    cell = lambda ps: {"blocks": ps, "th": False, "span": 1, "edges": edges, "geom": dict(
+        ps[0]["geom"], x1=max(p["geom"]["x1"] for p in ps), lines=2) if ps else None}
+    body = [("A továbbiakban az ellenőrzés ki kell terjedjen az alábbiakra:", 140, 359, None),
+            ("A főkeringtető szivattyúk tömítő blokkjai", 293, 445, None),
+            ("A főelzáró tolózárak tömszelencéi", 319, 445, None), ("30TH12S003", 394, 445, None),
+            ("30TH12S451", 394, 445, None), ("Autonómköri szivattyúk, hőcserélők", 167, 445, 400)]
+    rows = [[cell([]), cell([para(t, a, z, 160 + 20 * k, last)]), cell([para("O", 507, 515, 160 + 20 * k)])]
+            for k, (t, a, z, last) in enumerate(body)]
+    tab = {"k": "table", "rows": rows, "borders": True, "frame": {"xs": [71, 123, 463, 530],
+                                                                  "ys": [150 + 20 * k for k in range(len(body) + 1)]},
+           "geom": {"page": 1, "top": 150, "bottom": 270, "x0": 71, "x1": 530, "first_x0": 71, "size": 10}}
+    out = tmp_path / "r.docx"
+    B.Builder(B.Memory([]), lambda img: png(), PROFILE).build([tab], str(out), dict(LAYOUT, first_is_body=True))
+    al = {p.text[:10]: p.alignment for c in Document(str(out)).tables[0]._cells for p in c.paragraphs if p.text}
+    assert [al[t[:10]] for t, *_ in body] == [None, 2, 2, 2, 2, None]
+    # столбец по центру — не вправо (ред-тим 02.11): коды одной ширины и значения разной ширины, правые края в 1–3 pt
+    centered = [("Megnevezés", 140, 359), ("30UJ21S601", 270, 330), ("30UJ21S602", 270, 330), ("31UJ21S603", 271, 331),
+                ("20 bar", 285, 316), ("36 m3/h", 283, 318), ("1,2 kW", 284, 317)]
+    rows = [[cell([]), cell([para(t, a, z, 160 + 20 * k)]), cell([])] for k, (t, a, z) in enumerate(centered)]
+    tab = dict(tab, rows=rows, frame={"xs": [71, 123, 463, 530], "ys": [150 + 20 * k for k in range(len(centered) + 1)]})
+    B.Builder(B.Memory([]), lambda img: png(), PROFILE).build([tab], str(out), dict(LAYOUT, first_is_body=True))
+    assert all(p.alignment != 2 for c in Document(str(out)).tables[0]._cells for p in c.paragraphs)
+
+
+def test_review_0211_narrowed_rules(tmp_path):
+    """Ред-тим 02.11: отступ — только вложенному перечню под строкой с двоеточием (строка через линию столбца не сдвигает
+    остальные); рамка вокруг полужирного заголовка — не таблица; пунктир под тесной ячейкой — не подчёркивание;
+    настоящая вертикаль штампа — столбец, даже если её пересекает слово."""
+    import segments as S
+    import docx_struct as DS
+    g = lambda x0, top: {"page": 1, "top": top, "bottom": top + 10, "x0": x0, "x1": x0 + 100, "first_x0": x0, "size": 10,
+                         "lines": 1}
+    para = lambda t, x0, top: {"k": "p", "runs": [{"t": t, "font": "Times New Roman", "size": 10, "b": False, "i": False,
+                                                   "color": "000000"}], "geom": g(x0, top), "seg": True, "align": "left"}
+    edges = {"top": True, "bottom": True, "left": True, "right": True}
+    cell = lambda ps: {"blocks": ps, "th": False, "geom": ps[0]["geom"], "span": 1, "edges": edges}
+    rows = [[cell([para("Ellenőrzés", 85, 100), para("Szivattyú indítása", 119, 112), para("Szelep nyitása", 119, 124)])]]
+    tab = {"k": "table", "rows": rows, "borders": True, "frame": {"xs": [80, 450], "ys": [98, 140]},
+           "geom": {"page": 1, "top": 98, "bottom": 140, "x0": 80, "x1": 450, "first_x0": 80, "size": 10}}
+    out = tmp_path / "r.docx"
+    B.Builder(B.Memory([]), lambda img: png(), PROFILE).build([tab], str(out), dict(LAYOUT, first_is_body=True))
+    assert all(p.paragraph_format.left_indent is None for c in Document(str(out)).tables[0]._cells for p in c.paragraphs)
+    d = fitz.open()
+    pg = d.new_page(width=595, height=842)
+    for y, t, f in ((300, "A lapot kitöltötte (név, dátum, aláírás):", "tiro"), (400, "7. Vezérlő táblák feliratai.", "tibo")):
+        pg.draw_rect(fitz.Rect(71, y, 553, y + 26), width=0.6)
+        pg.insert_text((76, y + 17), t, fontsize=10, fontname=f)
+    sh = pg.new_shape()                                              # пунктир под строкой — одним путём
+    for k in range(10):
+        sh.draw_line((100 + 6 * k, 512), (103 + 6 * k, 512))
+    sh.finish(width=0.5)
+    sh.commit()
+    pg.insert_text((100, 511), "E207/3 M101", fontsize=10, fontname="cour")
+    src = tmp_path / "b.pdf"
+    d.save(str(src))
+    segs, _ = S.pdf_segments(str(src), ocr=False, shots=False)
+    blocks, _ = DL.load(str(src), segs, text=True)
+    one = [b for b in blocks if b["k"] == "table" and len(b["frame"]["xs"]) == 2]
+    assert len(one) == 1 and "kitöltötte" in "".join(r.get("t", "") for c in one[0]["rows"][0] for x in c["blocks"]
+                                                     for r in x.get("runs") or [])
+    assert DL._underlined(fitz.open(str(src)), [s for s in segs if "E207" in s["text"]]) == set()
+    import pdfplumber
+    p2 = tmp_path / "s.pdf"
+    d2 = fitz.open()
+    d2.new_page(width=595, height=842).insert_text((300, 745), "Ellenőrizte Jóváhagyta", fontsize=10, fontname="tiro")
+    d2.save(str(p2))
+    rr = lambda x0, x1, top, bottom: {"x0": x0, "x1": x1, "top": top, "bottom": bottom}
+    rects = [rr(71, 553, 729, 729.5), rr(71, 553, 755, 755.5), rr(71, 71.5, 729, 755), rr(553, 553.5, 729, 755),
+             rr(339.8, 340.2, 729, 755)]                              # настоящая вертикаль через слово
+    gz = DS._zone_grid(pdfplumber.open(str(p2)).pages[0].chars, rects)
+    assert len(gz["widths"]) == 2

@@ -40,6 +40,35 @@ def test_repeat_inside_long_text():
     assert r and r[1] == 4 and "закрыт" in r[0]
 
 
+def test_repeat_by_table_rows_is_not_a_defect():
+    """Одинаковые значения по рядам таблицы (INFO 3PR10: «A301» в 40 рядах, каждое — свой сегмент и свой абзац ячейки)
+    — не повтор фразы; значения, слитые нарезкой в один сегмент, и размноженное сборкой значение — повтор."""
+    rows = ["A301"] * 40 + ["GA01"]
+    u = " ".join(rows)
+    assert A.find_repeat(u)[1] == 13                                 # без сегментов — повтор, как прежде
+    assert A.find_repeat(u, legit=A.row_values(rows, {"a301": 40})) is None
+    assert A.find_repeat(u, legit=A.row_values(rows, {"a301": 5})) is not None     # сегментов меньше рядов
+    merged = ["126-128 бар " * 6, "x"]                                # нарезка слила шесть рядов в один сегмент
+    assert A.find_repeat(" ".join(merged), legit=A.row_values(merged, {A.norm(merged[0]): 1, "126128бар": 50}))[1] == 6
+    sig = ["сигнал 11GB02 сигнал 11GB02 сигнал 11GB02"] * 7         # в каждом абзаце — по три ряда
+    assert A.find_repeat(" ".join(sig), legit=A.row_values(sig, {A.norm(sig[0]): 7}))[1] == 21
+    tail = ["A301"] * 9 + ["Привод крана Привод крана Привод крана"]  # законные ряды пропущены, поиск идёт дальше
+    r = A.find_repeat(" ".join(tail), legit=A.row_values(tail, {"a301": 9}))
+    assert r == ("Привод крана", 3)
+    codes = ["JM03 JM03 JM03"] * 3                                    # в каждом абзаце — три ряда, слитые нарезкой
+    assert A.find_repeat(" ".join(codes), legit=A.row_values(codes, {A.norm(codes[0]): 3})) is not None
+
+
+def test_row_counts_from_the_cells_own_sheets():
+    """Сегменты считаются на листах самой ячейки (окно из двух соседних листов, где её абзацы находятся лучше всего), а
+    не где угодно в документе: размноженное сборкой «Не используется» ×3 не прячется за тремя такими строками на
+    других листах (ред-тим 02.11)."""
+    page_n = {"a301": {30: 40}, "ga01": {30: 1}, "неиспользуется": {3: 1, 12: 3}, "клапан": {3: 1}}
+    assert A.cell_counts(["A301"] * 40 + ["GA01"], page_n) == {"a301": 40, "ga01": 1}
+    cnt = A.cell_counts(["Клапан"] + ["Не используется"] * 3, page_n)
+    assert cnt == {"клапан": 1, "неиспользуется": 1}
+
+
 # ---------------------------------------------------------------- 1. потеря содержимого
 def seg(i, text, page=0, **loc):
     return {"id": i, "text": text, "page": page, "loc": loc}
@@ -151,6 +180,45 @@ def test_groups_merge_split_pages():
     assert len(gs) == 1 and sorted(gs[0][0]) == [1, 2] or len(gs) == 2
     only = A.groups([(0, 0), (1, 1)], range(2), range(2))
     assert sorted(map(lambda g: (g[0], g[1]), only)) == [([0], [0]), ([1], [1])]
+
+
+def test_unmapped_translation_page_joins_the_sheet_before():
+    # перелив «17 (прод.)» без своих голосов — к листу перед ним; лист перевода до первой группы — к первой
+    gs = A.attach_unmapped([([0], [1]), ([1, 2], [3])], 3, 6)
+    assert gs == [([0], [0, 1, 2]), ([1, 2], [3, 4, 5])]
+    # лист без голосов и у оригинала, и у перевода (30PR132GT л. 39) — к своим соседям с обеих сторон, а не только
+    # страница перевода к чужому листу
+    assert A.attach_unmapped([([0], [0]), ([2], [2])], 4, 4) == [([0, 1], [0, 1]), ([2, 3], [2, 3])]
+    assert A.attach_unmapped([], 3, 3) == []
+
+
+class _Pages:
+    def __init__(self, pages):
+        self.pages, self.n = pages, len(pages)
+
+    def words(self, i):
+        return self.pages[i]
+
+
+class _MarksDoc:
+    def __init__(self, orig, ru, pm):
+        self.orig, self.pdf, self._pm = _Pages(orig), _Pages(ru), pm
+
+    def page_map(self):
+        return self._pm
+
+
+def test_marks_only_kinds_present_in_original_text_layer():
+    # 30SZBVAIT_TU: у оригинала «□» нарисованы рамками (в тексте только «O»), у перевода «□» — знаки; лист 17 оригинала
+    # перелился на две страницы перевода, у второй своих голосов нет
+    o = lambda n: [W(300, 20 * i, 307, 20 * i + 8, "O") for i in range(n)]
+    sq = lambda n: [W(400, 20 * i, 407, 20 * i + 8, "□") for i in range(n)]
+    orig = [[], o(10), o(19)]
+    ru = [sq(5), o(10) + sq(10), o(9) + sq(9), o(10) + sq(10)]
+    assert A.check_marks(_MarksDoc(orig, ru, [(0, 0), (1, 1), (2, 2)])) == []
+    lost = [sq(5), o(10) + sq(10), o(9) + sq(9), sq(10)]                       # отметки «O» второй страницы потеряны
+    f = A.check_marks(_MarksDoc(orig, lost, [(0, 0), (1, 1), (2, 2)]))
+    assert len(f) == 1 and f[0].level == A.RED and "19→9" in f[0].msg
 
 
 # ---------------------------------------------------------------- 7. венгерские буквы
@@ -335,6 +403,77 @@ def test_with_job_json_output_unchanged_by_new_flag(tmp_path, capsys):
     assert plain == strict and "JSON задания не найден" not in plain.out and plain.err == ""
     a = json.loads((tmp_path / "a.json").read_text(encoding="utf-8"))
     assert list(a) == ["zz_audit_nojson_7f3a"] and (tmp_path / "a.json").read_text() == (tmp_path / "b.json").read_text()
+
+
+def _scheme(pg, x=150, y=300):
+    """Векторная схема: кружок-арматура, труба, косая выноска к рамке надписи (как 3FI18 стр. 7)."""
+    import pymupdf
+    pg.draw_circle((x + 150, y + 150), 30)
+    pg.draw_line((x + 150, y + 120), (x + 150, y))
+    pg.draw_line((x + 180, y + 150), (x + 230, y + 250))
+    pg.draw_rect(pymupdf.Rect(x + 200, y + 250, x + 300, y + 300))
+    pg.draw_line((x, y), (x + 300, y))
+
+
+def test_figure_rects_scheme_not_table_grid():
+    import pymupdf
+    doc = pymupdf.open()
+    pg = doc.new_page(width=595, height=842)
+    for i in range(5):                                              # сетка таблицы — только оси
+        pg.draw_line((40, 100 + 20 * i), (500, 100 + 20 * i))
+    for x in (40, 200, 500):
+        pg.draw_line((x, 100), (x, 180))
+    assert A.figure_rects(pg) == []
+    _scheme(pg)
+    figs = A.figure_rects(pg)
+    assert len(figs) == 1 and figs[0].contains(pymupdf.Rect(352, 552, 448, 598)) and figs[0].y0 > 250   # с рамкой надписи
+
+
+def test_figure_rects_not_text_outlines_table_marks_or_page_frames():
+    """Ред-тим 02.11: знаки текста контурами (3PR42 — весь лист кривыми), кружок-отметка у сетки таблицы, рамка листа со
+    скруглёнными углами и линии во всю высоту — не рисунок (иначе снимок листа и потеря текста таблицы не замечались)."""
+    import pymupdf
+    doc = pymupdf.open()
+    pg = doc.new_page(width=595, height=842)
+    for k in range(20):                                             # «буквы» — кривые внутри рамок строк текста
+        pg.draw_circle((100 + 12 * k, 300), 3)
+    assert A.figure_rects(pg, [[90, 290, 350, 310]]) == []
+    pg = doc.new_page(width=595, height=842)
+    for r in range(6):                                              # таблица по ячейкам и кружок-отметка у линии
+        for c in range(3):
+            pg.draw_rect(pymupdf.Rect(80 + 130 * c, 150 + 30 * r, 210 + 130 * c, 180 + 30 * r))
+    pg.draw_circle((210, 165), 7)
+    figs = A.figure_rects(pg)
+    assert len(figs) == 1 and A.figure_share(figs[0], pg) < 0.01   # рисунок — сам кружок с запасом, не таблица
+    pg = doc.new_page(width=595, height=842)
+    pg.draw_rect(pymupdf.Rect(20, 20, 575, 822), radius=0.05)        # рамка листа со скруглёнными углами
+    pg.draw_line((30, 20), (30, 822))
+    pg.draw_circle((300, 400), 5)
+    assert all(A.figure_share(f, pg) < 0.01 for f in A.figure_rects(pg))
+
+
+@needs_font
+@pytest.mark.parametrize("share, snapshot", [(0.3, False), (0.95, True)])
+def test_vector_scheme_as_picture(tmp_path, share, snapshot):
+    """Схема, нарисованная векторами, в переводе — картинкой с надписями (3FI18 стр. 7, 26–27): надписи в ней — не
+    потеря, картинка — не снимок листа. Картинка во весь лист при небольшой схеме — по-прежнему снимок."""
+    import pymupdf
+    segs = [seg(1, "Szórtvizes armatúra működtetése", 0, bbox=[60, 90, 300, 104]),
+            seg(2, "Áramlásjelző nincs használva", 0, bbox=[355, 560, 445, 590])]
+    res = {"1": {"ru": "Управление арматурой распыления"}, "2": {"ru": "Датчик расхода не используется"}}
+    work = make_job(tmp_path, ["Управление арматурой распыления"], [[(40, 100, "Управление арматурой распыления")]],
+                    [[(60, 100, "Szórtvizes armatúra működtetése")]], segs, res, ru_images=[(0, share)])
+    doc = pymupdf.open()
+    pg = doc.new_page(width=595, height=842)
+    pg.insert_text((60, 100), "Szórtvizes armatúra működtetése", fontsize=10, fontname="F0", fontfile=FONT)
+    pg.insert_text((358, 580), "Áramlásjelző nincs használva", fontsize=7, fontname="F0", fontfile=FONT)
+    _scheme(pg)
+    doc.save(str(work / "in" / "doc.pdf"))
+    doc.close()
+    d = A.Doc(work / "out" / "doc_RU.docx", work, [work / "in"])
+    found = {f.check for f in d.run()}
+    assert "1 потеря содержимого" not in found
+    assert ("8 снимок листа" in found) == snapshot
 
 
 def test_page_background_fill_is_not_a_picture_page(tmp_path):

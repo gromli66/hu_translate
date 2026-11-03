@@ -523,6 +523,20 @@ def join_tables(bs):
                      or _tail_pairs(prev["rows"][-1], b["rows"][0])) \
                 and ((rep and not _other_grid(prev, b)) or (not rep and _same_cols(prev, b))) \
                 and (b.get("geom") or {}).get("page", 0) > (prev.get("geom") or {}).get("page", 0):
+            # пустые строки в конце части, после строк с текстом, — рамка бланка до низа листа (INFO 3PR10
+            # «Hőcserélők»: 7 строк сведений и 9 пустых на каждом листе): в склеенной таблице они вставали посередине, а
+            # пустые строки последней части уезжали хвостом на новый лист. Часть без текста в теле — пустой бланк (лист
+            # ознакомления ИН-1065: шапка без TH и пустые графы) — как есть
+            blank = lambda r: not any(cell_t(c) or any("img" in q for x in c.get("blocks", []) if x["k"] == "p"
+                                                       for q in x.get("runs") or []) for c in r)
+            rows0, k = prev["rows"], len(prev["rows"])
+            while k and blank(rows0[k - 1]):
+                k -= 1
+            if max(head_n(prev), prev.get("repeat_rows", 0), 1) < k < len(rows0):
+                fr = prev.get("frame") or {}
+                ys0 = fr.get("ys") or []
+                prev = dict(prev, rows=rows0[:k], **({"frame": dict(fr, ys=ys0[:k + 1])} if len(ys0) == len(rows0) + 1
+                                                     else {}))
             rows = b["rows"][rep:]
             # картинки, что Word вложил в повтор шапки (значки строк прошлого листа, JPDS табл. 15), — не прочь:
             # их по месту на листе переселит adopt
@@ -583,6 +597,15 @@ def closed_sheets(blocks):
     return {pn for pn, (_, t) in last.items() if len(key(t)) >= 6 and n[key(t)] >= max(3, 0.25 * len(last))}
 
 
+def sheet_closed(L, blocks):
+    """Листы, после которых следующий лист оригинала начинается с новой страницы перевода (split_at_zones). Номер листа
+    оригинала известен (счётчик в колонтитуле, L["sheet_no"]) — каждый: лист — свой раздел со своим номером,
+    перелившийся — «N (прод.)» (решение Максима 02.11, путь А UNIFIED_DESIGN §8: так проще сверять большие документы;
+    номера INFO-частей 3SZ23/3PR10 были на 1 меньше оригинала, лист 30PR25GT с подписью в ячейке таблицы сливался со
+    следующим). Иначе — листы, закрытые своей подписью (closed_sheets)."""
+    return set(L["sheet_no"]) if L.get("sheet_no") else closed_sheets(blocks)
+
+
 def split_at_zones(blocks, runs, closed=()):
     """Раздел с другой шапкой (серия листов со своим колонтитулом, layout → variants) начинается между блоками, а таблица
     через лист (join_tables) — один блок: её режет там, где у листа другая серия; у следующей части — копия строк, что
@@ -591,6 +614,19 @@ def split_at_zones(blocks, runs, closed=()):
     zone = lambda pn: next((i for i, z in enumerate(runs or []) if z["from"] <= pn <= z["to"]), None)
     out = []
     for b in blocks:
+        # перечень через лист — тоже по листам (путь А): иначе раздел следующего листа начинался после конца перечня, и
+        # его первая страница выходила с «N (прод.)» (02VE25: пункты листа 4 в разделе листа 3, +7 листов); номер пункта
+        # части — с места в перечне (start)
+        if b["k"] == "list" and (runs or closed) and len(b["items"]) > 1:
+            pages, last = [], None
+            for it in b["items"]:
+                last = min((x["geom"]["page"] for x in it if (x.get("geom") or {}).get("page")), default=last)
+                pages.append(last)
+            cuts = [i for i in range(1, len(pages)) if pages[i] and pages[i - 1] and pages[i] != pages[i - 1]
+                    and (zone(pages[i]) != zone(pages[i - 1]) or pages[i - 1] in closed)]
+            for a, z in zip([0] + cuts, cuts + [len(pages)]):
+                out.append(dict(b, items=b["items"][a:z], start=b.get("start", 1) + a) if cuts else b)
+            continue
         if not (runs or closed) or b["k"] != "table" or not b.get("split"):
             out.append(b)
             continue
@@ -2676,7 +2712,10 @@ def layout(path, blocks, content=None):
         # лист — одним блоком с местом первого листа, и по блокам низ знали 2 листа из 13 (30RR2126GT); в документе
         # из одного-двух листов (лист изменений) — по ним: поле по умолчанию уводило хвост таблицы на второй лист
         own = {pn: v for pn, v in cbots.items() if v and not scanned(pdf.pages[pn - 1])}
-        lasts = {pn: v for pn, v in own.items() if pn > 2} or own or lasts
+        # без первых двух листов (титул) — если после них хотя бы два листа: у документа в три листа оставался один
+        # последний, короткий, и поле тела всех листов выходило по нему (30BLM1M2GT: 280 pt, лист 2 — на две страницы)
+        lasts = next((d for d in ({pn: v for pn, v in own.items() if pn > k} for k in (2, 1)) if len(d) >= 2), None) \
+            or own or lasts
     foot_top = min([float(c["top"]) for c in foot_chars] + [i["top"] for i in foot_imgs],
                    default=max(lasts.values()) + 14 if lasts else H - 100)
     foot_bottom = max([float(c["bottom"]) for c in foot_chars] + [i["bottom"] for i in foot_imgs], default=H - 40)
@@ -3112,6 +3151,13 @@ def _zone_grid(chars, rects):
         cols.pop(-2)
     while len(cols) >= 3 and cols[1] - cols[0] < GM.EDGE_COL and empty(cols[0], cols[1]):
         cols.pop(1)
+    # место столбца без своей вертикали (конец отрезка рамки), что режет слово, — не столбец: концы отрезков нижней
+    # линии таблицы над подписью листа (30HU375GT: 120 и 453 pt) делили «A lapot kitöltötte (név, dátum, aláírás):» на
+    # ячейки по 49 и 333 pt — «Лист / заполн / ил»; настоящая вертикаль — столбец, даже если её пересекает слово
+    real = lambda c: any(float(r["x1"]) - float(r["x0"]) < 3 and float(r["bottom"]) - float(r["top"]) > 5
+                         and abs((float(r["x0"]) + float(r["x1"])) / 2 - c) <= 3 for r in rects)
+    cols = [cols[0]] + [c for c in cols[1:-1] if real(c) or not any(float(w["x0"]) + 1 < c < float(w["x1"]) - 1
+                                                                    for w in words)] + cols[-1:] if len(cols) >= 2 else cols
     # внутренние линии — только настоящие вертикали; концы отрезков рамки (у штампа UTS рамка сверху разбита на
     # куски в точках 160 и 448) — места столбцов, но не линии: сетка рисовалась там, где её нет (16.10)
     vx = [(float(r["x0"]) + float(r["x1"])) / 2 for r in rects
