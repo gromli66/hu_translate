@@ -16,6 +16,11 @@ seg = lambda i, text, page=0, y=300.0, **loc: {"id": i, "page": page, "text": te
                                                "loc": dict({"bbox": [60.0, y, 200.0, y + 10]}, **loc)}
 
 
+def attach(blocks, segs):
+    """Память задачи (все сегменты переведены) раздаёт абзацам дерева разметки их id."""
+    B.job_memory(segs, {str(s["id"]): {"ru": "ру"} for s in segs}).attach(blocks)
+
+
 def walk(bs):
     for b in bs:
         yield b
@@ -89,7 +94,8 @@ def test_builder_writes_own_variant_per_block(tmp_path):
         "Проверка состояния", "Контроль состояния"]
     mem = B.Memory([("Állapot ellenőrzése", "Проверка состояния", 1), ("Állapot ellenőrzése", "Контроль состояния", 2)])
     used = B.Builder(mem, lambda img: png(), PROFILE).build(
-        [para("Állapot ellenőrzése", None), para("Állapot ellenőrzése", None)], str(tmp_path / "b.docx"), LAYOUT)
+        [para("Állapot ellenőrzése", None), para("Állapot ellenőrzése", None)], str(tmp_path / "b.docx"),
+        dict(LAYOUT, exempt_ids={}))
     assert used == set()
     assert [p.text for p in Document(str(tmp_path / "b.docx")).paragraphs if p.text] == [
         "Проверка состояния", "Проверка состояния"]
@@ -184,7 +190,7 @@ def test_attach_sids_to_tag_tree_paragraphs_by_text():
     blocks = [{"k": "p", "runs": [{"t": "Egy sor"}]}, {"k": "p", "runs": [{"t": "Egy sor"}]},
               {"k": "list", "kind": "Decimal", "items": [[{"k": "p", "runs": [{"t": "Más sor"}]}]]},
               {"k": "p", "runs": [{"t": "Egy sor"}]}, {"k": "p", "runs": [{"t": "Képfelirat"}]}]
-    B.attach_sids(blocks, segs)
+    attach(blocks, segs)
     assert [b.get("sids") for b in blocks[:2]] == [[1], [2]] and blocks[2]["items"][0][0]["sids"] == [3]
     assert "sids" not in blocks[3] and "sids" not in blocks[4]
 
@@ -214,7 +220,7 @@ def test_same_source_text_gets_one_translation_per_document():
 def test_footnote_gets_its_own_ids_not_its_hosts():
     segs = [seg(1, "Fő szöveg"), seg(2, "Lábjegyzet szövege")]
     blocks = [{"k": "p", "runs": [{"t": "Fő szöveg"}], "notes": [{"runs": [{"t": "Lábjegyzet szövege"}], "pos": 1.0}]}]
-    B.attach_sids(blocks, segs)
+    attach(blocks, segs)
     assert blocks[0]["sids"] == [1] and blocks[0]["notes"][0]["sids"] == [2]
 
 
@@ -232,5 +238,5 @@ def test_attach_claims_the_tree_segment_with_the_page_segment_of_the_same_text()
     перевод ищется по тексту, и оба взяты."""
     segs = [seg(1, "Zárni a szelepet"), seg(2, "<f1>Zárni</f1><f2> a szelepet</f2>", struct_only=True)]
     blocks = [{"k": "p", "runs": [{"t": "Zárni", "b": True}, {"t": " a szelepet"}]}]
-    B.attach_sids(blocks, segs)
+    attach(blocks, segs)
     assert blocks[0]["sids"] == [1, 2]
