@@ -827,14 +827,24 @@ def lost_ids(segs, res, used, exempt=None, dropped=(), skip_pages=(), H=842, tre
 
 def lost_id_rows(lost, seen=()):
     """Сегменты, которых сборка не взяла (lost_ids), — в лог и строками листа «нарушения»; seen — ключи (_key24) переводов,
-    уже названных потерей по тексту DOCX (lost_segments): дважды одно и то же не пишем. → (строки, сколько сегментов)."""
+    уже названных потерей по тексту DOCX (lost_segments): строкой листа «нарушения» дважды одно и то же не пишем (число
+    потерь в info и «ВНИМАНИЕ» — по всем). → строки листа."""
     pg = lambda s: s["page"] + 1 if s["page"] is not None else "—"
-    new = [(s, ru) for s, ru in lost if _key24(ru) not in seen]
-    if new:
-        print(f"DOCX: сборка не взяла {len(new)} сегментов с переводом: " + "; ".join(
-            f"л.{pg(s)} №{s['id']} «{s['text'][:30]}»" for s, _ in new[:8]), flush=True)
+    if lost:
+        print(f"DOCX: сборка не взяла {len(lost)} сегментов с переводом: " + "; ".join(
+            f"л.{pg(s)} №{s['id']} «{s['text'][:30]}»" for s, _ in lost[:8]), flush=True)
     return [("", "потеря сегмента", f"сборка не взяла (№{s['id']}), лист {pg(s)}: {ru[:90]}", s["text"][:90])
-            for s, ru in new], len(new)
+            for s, ru in lost if _key24(ru) not in seen]
+
+
+def missed_rows(missing):
+    """Тексты, что сборка спросила у памяти и не нашла (Memory.missing): в DOCX они остались на языке оригинала. Прежде число
+    писалось в info и нигде не читалось (П5: запасной путь — громкий)."""
+    texts = list(dict.fromkeys(t for t in missing if t.strip()))
+    if texts:
+        print(f"DOCX: нет перевода у {len(texts)} текстов (остались как в оригинале): "
+              + "; ".join(f"«{t[:30]}»" for t in texts[:8]), flush=True)
+    return [("", "нет перевода", "в DOCX остался текст оригинала", t[:90]) for t in texts]
 
 
 def lost_rows(lost):
@@ -957,21 +967,24 @@ def build_struct_docx(src, out, segs, res, rules=None, progress=None, mode="stru
     # потеря текста (аудит 29.10: подписи строк, пункты таблиц терялись молча). Только блоки по сегментам листа (text,
     # layout): сегмент — абзац или ячейка; у размеченного PDF абзацы — по дереву разметки, строки листа поштучно не идут
     skip = {b["geom"]["page"] - 1 for b in blocks if b.get("figure") and b.get("geom")}
-    lost = lost_segments(out, segs, mem.expected, skip, doc[0].rect.height)         if mode in ("text", "layout") else []
+    lost = lost_segments(out, segs, mem.expected, skip, doc[0].rect.height) \
+        if mode in ("text", "layout") else []
     rows += lost_rows(lost)
-    lost_i, n_lost_i = [], 0
+    lost_i = []
     if SIDS.enabled():
-        # что сборка не спрашивала у памяти (sids.py): громко — лог, лист «нарушения», «ВНИМАНИЕ» в info["attention"]
-        lost_i = lost_ids(segs, res, used, L.get("exempt_ids"), SIDS.dropped(blocks), skip, doc[0].rect.height,
-                          tree=mode == "struct")
-        more, n_lost_i = lost_id_rows(lost_i, {_key24(ru) for _, ru, _ in lost})
-        rows += more
+        # что сборка не спрашивала у памяти (sids.py): громко — лог, лист «нарушения», «ВНИМАНИЕ» в info["attention"].
+        # Листы с рисунком целиком не пропускаются: сегменты рисунка снял docx_layout.load (exempt), прочие на них — тело
+        exempt = L.get("exempt_ids")
+        lost_i = lost_ids(segs, res, used, exempt, SIDS.dropped(blocks), skip if exempt is None else (),
+                          doc[0].rect.height, tree=mode == "struct")
+        rows += lost_id_rows(lost_i, {_key24(ru) for _, ru, _ in lost})
+        rows += missed_rows(mem.missing)
     tick(1.0)
     info = {"converter": {"layout": "сегменты листа", "text": "текстовый слой"}.get(mode, "разметка PDF"),
             "missed": len(set(mem.missing)), "format": len(viol), "lang": len(lang), "lost": len(lost)}
     if SIDS.enabled():
         info["used_ids"] = len(used)
-        info["lost_ids"] = n_lost_i
+        info["lost_ids"] = len(lost_i)
     if fit is not None:
         info["fit"] = fit
     return info, rows
@@ -981,6 +994,9 @@ def _h_note(r):
     """Колонка H: подозрение смысловой проверки, автоисправление или перевод по образцу правки редактора;
     правка шлифовки (pipeline.polish), пока перевод тот же; сокращённая для PDF формулировка (pipeline.fit)."""
     note = _h_note_main(r)
+    if SIDS.enabled() and r.get("unified"):             # termvar.same_source: тот же исходный текст — единый перевод
+        note = (note + " | " if note else "") + "Единый перевод для того же текста в документе, было: " \
+            + TAG.sub("", r["unified"])[:300]
     p = r.get("polish")
     if p and p.get("of") == r["ru"]:
         note = (note + " | " if note else "") + f"Шлифовка ({p['rules']}; {p['who']}), было: " + TAG.sub("", p["before"])[:300]
@@ -1191,6 +1207,9 @@ def assemble_all(jf, d, out_dir=None, progress=None):
                 if info["docx"].get("lost_ids"):        # потеря — громко (П5): задание «требует внимания», а не «готово»
                     attention.append(f"DOCX: сборка не взяла {info['docx']['lost_ids']} сегментов с переводом "
                                      f"(строки «потеря сегмента» листа «нарушения»)")
+                if SIDS.enabled() and info["docx"].get("missed"):
+                    attention.append(f"DOCX: у {info['docx']['missed']} текстов нет перевода — остались как в оригинале "
+                                     f"(строки «нет перевода» листа «нарушения»)")
                 import subprocess
                 try:                                    # PDF — из этого DOCX; без LibreOffice — в вёрстке оригинала
                     info["pdf"] = pdf_from_docx(outd / f"{stem}{sfx}.docx", outd / f"{stem}{sfx}.pdf")

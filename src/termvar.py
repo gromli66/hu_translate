@@ -284,16 +284,23 @@ def same_source(segs, res):
         if r.get("ru") and "shot" not in s["loc"] and not r.get("copied") and not TAG.search(s["text"])                 and not TAG.search(r["ru"]) and needs_translation(s["text"]):
             groups[s["text"].strip()].append((s["id"], r))
     out, was = dict(res), {}
+    base = lambda ru: FIRST_USE.sub("", ru)                     # перевод без латиницы в скобках
     for items in groups.values():
-        votes = Counter(r["ru"] for _, r in items)
-        if len(votes) < 2 or len({FIRST_USE.sub("", ru) for ru in votes}) == 1:
+        if len({base(r["ru"]) for _, r in items}) < 2:
             continue            # одинаковы, либо различаются только аббревиатурой первого упоминания — это соглашение, не разнобой
-        pool = [r["ru"] for _, r in items if any(r.get(f) for f in AUTH)] or [r["ru"] for _, r in items]
-        c = Counter(pool)
-        top = max(c.values())
-        pick = next(ru for ru in pool if c[ru] == top)               # первый среди самых частых
+        pool = [r for _, r in items if any(r.get(f) for f in AUTH)] or [r for _, r in items]
+        # перевод с замечанием проверки или смысловой проверки не растиражировать, если есть чистый
+        clean = [r for r in pool if not r.get("issues") and not (r.get("review") or {}).get("serious")] or pool
+        c = Counter(base(r["ru"]) for r in clean)
+        win = next(base(r["ru"]) for r in clean if c[base(r["ru"])] == max(c.values()))     # первый среди самых частых
+        forms = Counter(r["ru"] for r in clean if base(r["ru"]) == win)
         for i, r in items:
-            if r["ru"] != pick and not any(r.get(f) for f in AUTH):
-                was[i] = r["ru"]
-                out[str(i)] = dict(r, ru=pick, unified=r.get("unified") or r["ru"])
+            if base(r["ru"]) == win or any(r.get(f) for f in AUTH):
+                continue
+            # скобки с латиницей — как у самого сегмента (первое упоминание остаётся первым, дальше — без них)
+            own = bool(FIRST_USE.search(r["ru"]))
+            same = [(ru, n) for ru, n in forms.items() if bool(FIRST_USE.search(ru)) == own]
+            pick = max(same or list(forms.items()), key=lambda x: x[1])[0]
+            was[i] = r["ru"]
+            out[str(i)] = dict(r, ru=pick, unified=r.get("unified") or r["ru"])
     return out, was

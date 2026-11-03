@@ -576,8 +576,12 @@ class Memory:
         r = self._by_id(text) if self.cur else None
         if r is None:
             r = self._get(text)
-            if r is not None and self.cur:
-                self.used.update(self.cur)          # составной блок или текст не равен тексту сегмента — найден по тексту
+            if r is not None:
+                # составной блок или текст не равен тексту сегмента — найден по тексту: id блока взяты, как и сегмент
+                # разметки с этим текстом (struct_only: один на текст; его спрашивают и вне абзаца — подпись рисунка)
+                self.used.update(self.cur)
+                if self.pool:
+                    self.used.update(self.pool.get(KEY(text), ((), ()))[1])
         return r
 
     def _get(self, text):

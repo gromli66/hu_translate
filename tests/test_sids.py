@@ -173,8 +173,8 @@ def test_lost_ids_rules():
 def test_lost_id_rows_do_not_repeat_what_the_docx_text_check_named():
     segs = [seg(1, "Egy"), seg(2, "Kettő")]
     lost = [(segs[0], "Первое слово абзаца"), (segs[1], "Второе слово абзаца")]
-    rows, n = A.lost_id_rows(lost, {A._key24("Первое слово абзаца")})
-    assert n == 1 and rows[0][1] == "потеря сегмента" and "№2" in rows[0][2]
+    rows = A.lost_id_rows(lost, {A._key24("Первое слово абзаца")})
+    assert len(rows) == 1 and rows[0][1] == "потеря сегмента" and "№2" in rows[0][2]
 
 
 def test_cut_row_tail_and_inline_merge_carry_ids():
@@ -315,3 +315,33 @@ def test_same_source_keeps_first_use_abbreviation():
     res = {"1": {"ru": "Испытание СУЗ (SZBV)"}, "2": {"ru": "Испытание СУЗ"}, "3": {"ru": "Испытание СУЗ"}}
     out, was = termvar.same_source(segs, res)
     assert was == {} and out["1"]["ru"] == "Испытание СУЗ (SZBV)"
+
+
+def test_memory_marks_tree_segment_asked_outside_a_paragraph():
+    """Подпись рисунка спрашивается у памяти вне абзаца (caption → self.tr(title)): сегмент разметки с этим текстом взят."""
+    segs = [seg(1, "Rajz felirata"), seg(2, "Kapcsolási rajz", struct_only=True)]
+    mem = B.job_memory(segs, {"1": {"ru": "Подпись рисунка"}, "2": {"ru": "Схема соединений"}})
+    assert mem.get("Kapcsolási rajz") == "Схема соединений" and mem.used == {2}
+    mem.at([1])
+    mem.get("Rajz felirata")
+    assert mem.used == {1, 2}
+
+
+def test_missed_rows_name_texts_without_translation_once():
+    rows = A.missed_rows(["Ismeretlen", "Ismeretlen", "  ", "Másik szöveg"])
+    assert [r[1:] for r in rows] == [("нет перевода", "в DOCX остался текст оригинала", "Ismeretlen"),
+                                     ("нет перевода", "в DOCX остался текст оригинала", "Másik szöveg")]
+
+
+def test_same_source_prefers_clean_translation_and_keeps_abbreviation_by_position():
+    """Тираж не размножает перевод с замечанием; первое упоминание аббревиатуры остаётся первым даже при разнобое слов."""
+    import termvar
+    segs = [seg(1, "Szelep nyitva"), seg(2, "Szelep nyitva"), seg(3, "SZBV leállt"), seg(4, "SZBV leállt"),
+            seg(5, "SZBV leállt"), seg(6, "SZBV leállt")]
+    res = {"1": {"ru": "Клапан открыт", "issues": ["число"]}, "2": {"ru": "Клапан открыт 5"},
+           "3": {"ru": "СУЗ (SZBV) остановилась"}, "4": {"ru": "СУЗ прекратила работу"}, "5": {"ru": "СУЗ остановилась"},
+           "6": {"ru": "СУЗ остановилась"}}
+    out, was = termvar.same_source(segs, res)
+    assert out["1"]["ru"] == "Клапан открыт 5" and out["2"]["ru"] == "Клапан открыт 5"
+    assert [out[str(i)]["ru"] for i in (3, 4, 5, 6)] == ["СУЗ (SZBV) остановилась", "СУЗ остановилась",
+                                                          "СУЗ остановилась", "СУЗ остановилась"]
