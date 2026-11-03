@@ -493,6 +493,7 @@ class Memory:
         # E6 (sids.py): перевод сегмента по его id; cur — id блока, который сейчас собирается (Builder._at); used — id,
         # перевод которых сборка взяла (по id или по тексту составного блока)
         self.ids, self.used, self.cur, self.pool = {}, set(), (), {}
+        self.lacking = []           # тексты блоков, которых память не знает (missing — ещё и строки колонтитулов: у них поле, не перевод)
         for pair in pairs:
             self.add(*pair)
 
@@ -640,6 +641,8 @@ class Memory:
         r = self.get(text)
         if r is None and text.strip():
             self.missing.append(text)
+            if self.cur:
+                self.lacking.append(text)
         return r
 
 

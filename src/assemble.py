@@ -838,8 +838,9 @@ def lost_id_rows(lost, seen=()):
 
 
 def missed_rows(missing):
-    """Тексты, что сборка спросила у памяти и не нашла (Memory.missing): в DOCX они остались на языке оригинала. Прежде число
-    писалось в info и нигде не читалось (П5: запасной путь — громкий)."""
+    """Тексты блоков, что сборка спросила у памяти и не нашла (Memory.lacking): в DOCX они остались на языке оригинала
+    (30RVRXTSBIGT TU пп. 1.16–1.17: пункты «− 30YP15S101 zárva …» — портал перевёл их одним сегментом страницы, а дерево
+    разметки — отдельными пунктами). Прежде число писалось в info["missed"] и нигде не читалось (П5: запасной путь — громкий)."""
     texts = list(dict.fromkeys(t for t in missing if t.strip()))
     if texts:
         print(f"DOCX: нет перевода у {len(texts)} текстов (остались как в оригинале): "
@@ -978,13 +979,14 @@ def build_struct_docx(src, out, segs, res, rules=None, progress=None, mode="stru
         lost_i = lost_ids(segs, res, used, exempt, SIDS.dropped(blocks), skip if exempt is None else (),
                           doc[0].rect.height, tree=mode == "struct")
         rows += lost_id_rows(lost_i, {_key24(ru) for _, ru, _ in lost})
-        rows += missed_rows(mem.missing)
+        rows += missed_rows(mem.lacking)
     tick(1.0)
     info = {"converter": {"layout": "сегменты листа", "text": "текстовый слой"}.get(mode, "разметка PDF"),
             "missed": len(set(mem.missing)), "format": len(viol), "lang": len(lang), "lost": len(lost)}
     if SIDS.enabled():
         info["used_ids"] = len(used)
         info["lost_ids"] = len(lost_i)
+        info["lacking"] = len(set(mem.lacking))
     if fit is not None:
         info["fit"] = fit
     return info, rows
@@ -1207,8 +1209,8 @@ def assemble_all(jf, d, out_dir=None, progress=None):
                 if info["docx"].get("lost_ids"):        # потеря — громко (П5): задание «требует внимания», а не «готово»
                     attention.append(f"DOCX: сборка не взяла {info['docx']['lost_ids']} сегментов с переводом "
                                      f"(строки «потеря сегмента» листа «нарушения»)")
-                if SIDS.enabled() and info["docx"].get("missed"):
-                    attention.append(f"DOCX: у {info['docx']['missed']} текстов нет перевода — остались как в оригинале "
+                if info["docx"].get("lacking"):
+                    attention.append(f"DOCX: у {info['docx']['lacking']} текстов нет перевода — остались как в оригинале "
                                      f"(строки «нет перевода» листа «нарушения»)")
                 import subprocess
                 try:                                    # PDF — из этого DOCX; без LibreOffice — в вёрстке оригинала

@@ -345,3 +345,13 @@ def test_same_source_prefers_clean_translation_and_keeps_abbreviation_by_positio
     assert out["1"]["ru"] == "Клапан открыт 5" and out["2"]["ru"] == "Клапан открыт 5"
     assert [out[str(i)]["ru"] for i in (3, 4, 5, 6)] == ["СУЗ (SZBV) остановилась", "СУЗ остановилась",
                                                           "СУЗ остановилась", "СУЗ остановилась"]
+
+
+def test_lacking_names_only_block_texts_not_header_lines():
+    """Без перевода — тексты блоков (в DOCX остались на языке оригинала); строки колонтитула (поле, не перевод) —
+    только в Memory.missing, как прежде."""
+    mem = B.Memory([("Egy", "Один", 1)])
+    assert mem("Oldalszám: 7.") is None                     # колонтитул — вне блока
+    mem.at([2])
+    assert mem("Ismeretlen bekezdés") is None
+    assert mem.missing == ["Oldalszám: 7.", "Ismeretlen bekezdés"] and mem.lacking == ["Ismeretlen bekezdés"]
