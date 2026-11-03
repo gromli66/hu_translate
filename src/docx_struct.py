@@ -2165,7 +2165,7 @@ def _compose_figures(blocks, doc):
                 continue
             R, got, _ = res
             at = next((i for i in idx if i not in drop and blocks[i]["geom"]["top"] >= R.y0 - 1), max(idx) + 1)
-            new.setdefault(at, []).append({"k": "p", "runs": clip(R), "figure": True, "loose": True, "geom": {
+            new.setdefault(at, []).append({"k": "p", "runs": clip(R), "figure": True, "geom": {
                 "page": pn, "top": R.y0, "bottom": R.y1, "x0": R.x0, "x1": R.x1, "first_x0": R.x0, "size": 10}})
             drop |= got
             done.append(R)
@@ -2900,7 +2900,6 @@ def _zone_paras(chars, rects, x_left, x_right, imgs=(), page_w=None):
     лист/всего, версия — строкой, название — второй строкой, линия снизу) собиралась таблицей в рамке со
     смешанными частями, логотип в подвале терялся (16.10). → {"rows": [{"parts": [(текст, вид, позиция от левого
     поля)], "bold"} | {"img", "kind"}], "font", "size"} или None — колонтитул в рамке (таблицей)."""
-    import pdfplumber
     vs = [r for r in rects if float(r["x1"]) - float(r["x0"]) < 3 and float(r["bottom"]) - float(r["top"]) > 5]
     boxed = [r for r in rects if r.get("object_type") == "rect" and r.get("stroke")
              and float(r["x1"]) - float(r["x0"]) >= 3 and float(r["bottom"]) - float(r["top"]) >= 3]
@@ -2959,7 +2958,6 @@ def _typical_page(pdf, body_top, H, sample=15, cbot=lambda pg: None):
     второй лист — оглавление, и в подвал всех листов попадало «Tartalom» («Содержание», 16.10). Заодно — номер
     листа: число колонтитула, которое растёт вместе с листом («13. oldal» на 19-м листе) → (лист, его текст,
     смещение: номер = индекс листа от 0 + смещение, слово номера на этом листе)."""
-    import pdfplumber
     n = len(pdf.pages)
     # выборка — по всему документу, и 1-й лист: титул со своими колонтитулами в общую группу не попадёт, а короткий
     # документ без титула (два листа) иначе не давал номера листа — в штампе застывала цифра (синтетика, 16.10)
@@ -3075,7 +3073,6 @@ def _rule_grid(chars, rects, imgs=()):
     таблицы с линиями, где их нет, а с логотипом сетка не строилась вовсе и номер листа застывал числом (16.10).
     Внутренних вертикалей нет (ÜFK) — None, сетку строит _zone_grid. Ячейка — {"lines": [(текст, полужирный)],
     "align"}; out["merge"][r][c] — продолжение ячейки выше; out["imgs"] — {(строка, столбец): [картинка]}."""
-    import pdfplumber
     thin = []
     for o in rects:
         a, b, t, u = float(o["x0"]), float(o["x1"]), float(o["top"]), float(o["bottom"])
@@ -3137,7 +3134,6 @@ def _zone_grid(chars, rects):
     """Сетка колонтитула: столбцы — по вертикальным краям рамок; если внутренних линий нет — по разрывам между
     группами слов (> 18 pt) внутри рамки; строки — по словам; выравнивание столбца — по положению текста; шрифт
     и кегль — по знакам колонтитула. {"rows": [{"cells", "bold"}], "widths", "aligns", "font", "size", "box"}."""
-    import pdfplumber
     out = {"rows": [], "widths": [], "aligns": [], "font": None, "size": None, "box": bool(rects), "inner": False}
     words = _words(chars) if chars else []
     if not words:
