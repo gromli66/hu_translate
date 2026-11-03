@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import glossary as G
 import segments as S
-from translate import Translator, TAG, NUM, HU_CAPS_WORDS, LAT_ABBR, fix_caps, fix_units, gloss_misses, badness
+from translate import Translator, TAG, NUM, HU_CAPS_WORDS, LAT_ABBR, fix_units, gloss_misses, badness
 from llm import STAT
 
 SEC_CHARS, CTX_CHARS, STREAM_CHARS = 6000, 3000, 250000
@@ -388,7 +388,7 @@ def extract(inputs, work, progress=_quiet, src_lang="hu"):
                     "".join(f"; {Path(k).name} не переводится: {v}" for k, v in info.get("shot_skipped", {}).items()))
         else:
             segs, info = S.pdf_segments(f, progress=lambda x: progress("извлечение", i + x, len(files)), lang=lang)
-        dplan = struct = None
+        struct = None
         ocr = info.get("ocr_pages") or []
         if f.suffix.lower() == ".pdf" and ocr:
             import fitz
@@ -437,7 +437,7 @@ def extract(inputs, work, progress=_quiet, src_lang="hu"):
                 segs, info = S.pdf_segments(f, roles=True, lang=lang)
                 struct.update(roles_seen(segs))
                 log(f"извлечение: {f.name} — роли строк порталом: {roles_note(struct)}")
-        jf.write_text(json.dumps({"file": str(f.resolve()), "segs": segs, "res": {}, "info": info, "docx": dplan,
+        jf.write_text(json.dumps({"file": str(f.resolve()), "segs": segs, "res": {}, "info": info,
                                   "struct": struct}, ensure_ascii=False, default=_plain), encoding="utf-8")
         log(f"извлечение: {f.name} — сегментов {len(segs)}, OCR-страниц {len(info.get('ocr_pages', []))}, {time.time() - t0:.0f} с")
     progress("извлечение", len(files), len(files))
@@ -611,8 +611,8 @@ def struct_fill(work, prj, progress=_quiet):
             try:
                 miss = B.missing(d["file"], d["segs"], d["res"], st.get("mode") or "struct")
             except Exception as e:                  # noqa: BLE001 — сборка по разметке тогда откатится на прежний путь
-                st["error"] = f"{type(e).__name__}: {e}"[:200]
-                log(f"структура: {f.stem} — пробная сборка DOCX по разметке не удалась ({st['error']})")
+                err = f"{type(e).__name__}: {e}"[:200]
+                log(f"структура: {f.stem} — пробная сборка DOCX по разметке не удалась ({err})")
                 break
             if not miss:
                 break
@@ -844,8 +844,8 @@ def _abbr_of(short, ru, hu):
     return True
 
 
-def fit(work, prj=None, limit=0.7):
-    """Короткая формулировка для PDF там, где перевод ужимается мельче limit от исходного кегля (сборка «на месте»
+def fit(work, prj=None):
+    """Короткая формулировка для PDF там, где перевод ужимается мельче 0,7 исходного кегля (assemble.build_pdf; сборка «на месте»
     не может раздвинуть ячейку или строку списка). Портал сокращает, код проверяет: коды и числа те же, текст
     короче. Сокращённое — только в PDF (r["ru_pdf"]); в DOCX строка растёт, там полный перевод."""
     import tempfile
