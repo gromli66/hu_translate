@@ -1229,7 +1229,8 @@ class Builder:
         self.note_id += 1
         nid = str(self.note_id)
         tmp = self.doc.add_paragraph(style="Footnote Text")    # перевод — тем же путём, что у абзаца
-        self._put_runs(tmp, [dict(r) for r in note["runs"]])
+        with self._at(note):
+            self._put_runs(tmp, [dict(r) for r in note["runs"]])
         p_el = tmp._p
         p_el.getparent().remove(p_el)
         ref = parse_xml('<w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:rPr>'
@@ -2881,7 +2882,7 @@ def _paras(blocks):
         elif b.get("runs"):
             yield b
             for n in b.get("notes") or []:
-                yield {"k": "p", "runs": n["runs"]}
+                yield {"k": "p", "runs": n["runs"], "note": n}
 
 
 def blocks_layout(pdf, segs, mode):
@@ -2925,9 +2926,9 @@ def attach_sids(blocks, segs):
         if "shot" not in s["loc"] and s["text"].strip():
             want.setdefault(KEY(s["text"]), []).append(s["id"])
     for b in _paras(blocks):
-        k = KEY(text_of(b["runs"]))
-        if k and want.get(k) and "sids" not in b:
-            b["sids"] = [want[k].pop(0)]
+        k, tgt = KEY(text_of(b["runs"])), b.get("note") or b           # сноска — своими id, не абзаца-хозяина
+        if k and want.get(k) and "sids" not in tgt:
+            tgt["sids"] = [want[k].pop(0)]
 
 
 def job_memory(segs, res):

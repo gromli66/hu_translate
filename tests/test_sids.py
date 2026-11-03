@@ -209,3 +209,10 @@ def test_same_source_text_gets_one_translation_per_document():
     assert ru(10) == "<f1>Закрыть</f1>" and ru(11) == "<f1>Закрывать</f1>"
     assert was == {1: "Проверка состояния", 5: "Измерение уровня", 8: "Рост давления"}
     assert res["1"]["ru"] == "Проверка состояния" and out["1"]["unified"] == "Проверка состояния"   # res не изменён
+
+
+def test_footnote_gets_its_own_ids_not_its_hosts():
+    segs = [seg(1, "Fő szöveg"), seg(2, "Lábjegyzet szövege")]
+    blocks = [{"k": "p", "runs": [{"t": "Fő szöveg"}], "notes": [{"runs": [{"t": "Lábjegyzet szövege"}], "pos": 1.0}]}]
+    B.attach_sids(blocks, segs)
+    assert blocks[0]["sids"] == [1] and blocks[0]["notes"][0]["sids"] == [2]
