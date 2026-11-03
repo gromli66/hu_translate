@@ -493,6 +493,7 @@ class Memory:
         # E6 (sids.py): перевод сегмента по его id; cur — id блока, который сейчас собирается (Builder._at); used — id,
         # перевод которых сборка взяла (по id или по тексту составного блока)
         self.ids, self.used, self.cur, self.pool = {}, set(), (), {}
+        self.inside = False         # идёт сборка блока (Builder._at), пусть и без id
         self.lacking = []           # тексты блоков, которых память не знает (missing — ещё и строки колонтитулов: у них поле, не перевод)
         for pair in pairs:
             self.add(*pair)
@@ -552,9 +553,11 @@ class Memory:
         """Сегменты взяты без перевода: маркер пункта, что сборка снимает вместе с его знаком."""
         self.used.update(sids or ())
 
-    def at(self, sids):
-        """Блок со своими сегментами (sids) собирается: до сброса `at(prev)` перевод ищется сначала по их id. → прежние sids."""
-        prev, self.cur = self.cur, tuple(sids or ())
+    def at(self, sids, inside=True):
+        """Блок со своими сегментами (sids; у блока без id — пусто) собирается: перевод ищется сначала по их id, пока не
+        вызван `at(*prev)`. → прежнее состояние (sids, внутри ли блока)."""
+        prev = (self.cur, self.inside)
+        self.cur, self.inside = tuple(sids or ()), inside
         return prev
 
     def _by_id(self, text):
@@ -641,7 +644,7 @@ class Memory:
         r = self.get(text)
         if r is None and text.strip():
             self.missing.append(text)
-            if self.cur:
+            if self.inside:
                 self.lacking.append(text)
         return r
 
@@ -1143,7 +1146,7 @@ class Builder:
         try:
             yield
         finally:
-            at(prev)
+            at(*prev)
 
     def paragraph(self, b, style="Normal", tgt=None):
         with self._at(b):

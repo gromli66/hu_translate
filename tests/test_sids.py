@@ -46,7 +46,7 @@ def test_block_gets_its_own_translation_by_id_not_the_first_of_the_text():
     assert mem.get("Állapot ellenőrzése") == "Проверка состояния"           # вне блока — как прежде: первый побеждает
     prev = mem.at([2])
     assert mem.get("Állapot ellenőrzése") == "Контроль состояния" and mem.used == {2}
-    mem.at(prev)
+    mem.at(*prev)
     assert mem.cur == ()
 
 
@@ -80,7 +80,7 @@ def test_flag_off_memory_is_text_only(monkeypatch):
     monkeypatch.setenv("HU_U_SIDS", "0")
     mem = B.Memory([("Állapot ellenőrzése", "Проверка состояния", 1), ("Állapot ellenőrzése", "Контроль состояния", 2)])
     prev = mem.at([2])
-    mem.at(prev)
+    mem.at(*prev)
     assert mem.ids == {} and mem.get("Állapot ellenőrzése") == "Проверка состояния"
     assert S.of([seg(1, "x")]) == {} and S.add({"k": "p"}, [1]) == {"k": "p"}
 
@@ -273,7 +273,7 @@ def test_memory_context_is_restored_when_a_block_fails(tmp_path):
     bld._put_runs = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("картинка не вставилась"))
     with pytest.raises(RuntimeError):
         bld.paragraph({"k": "p", "runs": [{"t": "Egy", "size": 10}], "sids": [1]})
-    assert mem.cur == () and mem.used == set()
+    assert mem.cur == () and not mem.inside and mem.used == set()
 
 
 def test_flag_off_builder_ignores_sids_in_blocks(tmp_path, monkeypatch):
@@ -354,4 +354,6 @@ def test_lacking_names_only_block_texts_not_header_lines():
     assert mem("Oldalszám: 7.") is None                     # колонтитул — вне блока
     mem.at([2])
     assert mem("Ismeretlen bekezdés") is None
-    assert mem.missing == ["Oldalszám: 7.", "Ismeretlen bekezdés"] and mem.lacking == ["Ismeretlen bekezdés"]
+    mem.at(None)                                            # блок без id (абзац дерева без пары) — всё равно блок
+    assert mem("Másik ismeretlen") is None
+    assert mem.missing == ["Oldalszám: 7.", "Ismeretlen bekezdés", "Másik ismeretlen"]         and mem.lacking == ["Ismeretlen bekezdés", "Másik ismeretlen"]
