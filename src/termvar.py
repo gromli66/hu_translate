@@ -263,16 +263,17 @@ def sheet(wb, d, entries=()):
     return groups
 
 
-FIRST_USE = re.compile(r"\s*\([A-Za-z][A-Za-z0-9 ./-]*\)")       # «СУЗ (SZBV)»: латиница в скобках — первое упоминание
+FIRST_USE = re.compile(r"\s*\([A-Z]{2,8}\)")       # «СУЗ (SZBV)»: аббревиатура латиницей в скобках — первое упоминание
+REVIEW = ("issues", "review", "gloss_miss", "autofix", "warn")      # замечания проверок — к тексту, которому принадлежат
 AUTH = ("edited", "tm", "polish", "ru_pdf")        # перевод редактора, память переводов, шлифовка, сокращение для PDF
 
 
 def same_source(segs, res):
     """E6 (sids.py): одинаковый исходный текст сегментов — один перевод на документ. Блок берёт перевод своего сегмента (по id),
     и там, где портал или редактор перевёл тот же текст по-разному, в одном документе вышло бы два варианта (прежде везде
-    стоял первый). Выбор: перевод, утверждённый редактором, из памяти, после шлифовки (AUTH), иначе самый частый, при
-    равенстве — первый в документе (как было). Текст — точный (KEY: пробелы и метки — не в счёт, регистр и знаки — в счёт:
-    «Nyomás:» и «nyomás» — разные), без меток начертания, надписей на картинках и копий без слов. Переводы с правкой
+    стоял первый). Выбор: перевод, утверждённый редактором, из памяти, после шлифовки (AUTH), иначе без замечаний проверки
+    и самый частый, при равенстве — первый в документе (как было). Текст — точный (по краям пробелы не в счёт; регистр,
+    знаки, табуляция — в счёт: «Nyomás:» и «nyomás» — разные), без меток начертания, надписей на картинках и копий без слов. Переводы с правкой
     редактора, из памяти, после шлифовки и сокращённые для PDF (AUTH) решают выбор и сами не меняются. Варианты, что
     различаются только латиницей в скобках («СУЗ (SZBV)» при первом упоминании, дальше «СУЗ», pipeline.first_use), —
     не разнобой: каждый блок остаётся со своим.
@@ -281,7 +282,8 @@ def same_source(segs, res):
     groups = defaultdict(list)
     for s in segs:
         r = res.get(str(s["id"])) or {}
-        if r.get("ru") and "shot" not in s["loc"] and not r.get("copied") and not TAG.search(s["text"])                 and not TAG.search(r["ru"]) and needs_translation(s["text"]):
+        if r.get("ru") and "shot" not in s["loc"] and not r.get("copied") and not TAG.search(s["text"]) \
+                and not TAG.search(r["ru"]) and needs_translation(s["text"]):
             groups[s["text"].strip()].append((s["id"], r))
     out, was = dict(res), {}
     base = lambda ru: FIRST_USE.sub("", ru)                     # перевод без латиницы в скобках
@@ -293,14 +295,26 @@ def same_source(segs, res):
         clean = [r for r in pool if not r.get("issues") and not (r.get("review") or {}).get("serious")] or pool
         c = Counter(base(r["ru"]) for r in clean)
         win = next(base(r["ru"]) for r in clean if c[base(r["ru"])] == max(c.values()))     # первый среди самых частых
-        forms = Counter(r["ru"] for r in clean if base(r["ru"]) == win)
+        forms, src = Counter(), {}
+        for r in clean:
+            if base(r["ru"]) == win:
+                forms[r["ru"]] += 1
+                src.setdefault(r["ru"], r)
         for i, r in items:
             if base(r["ru"]) == win or any(r.get(f) for f in AUTH):
                 continue
-            # скобки с латиницей — как у самого сегмента (первое упоминание остаётся первым, дальше — без них)
+            # скобки с латиницей — как у самого сегмента: первое упоминание остаётся первым, дальше — без них
             own = bool(FIRST_USE.search(r["ru"]))
             same = [(ru, n) for ru, n in forms.items() if bool(FIRST_USE.search(ru)) == own]
-            pick = max(same or list(forms.items()), key=lambda x: x[1])[0]
+            if same:
+                pick = max(same, key=lambda x: x[1])[0]
+            elif own:
+                continue                # первое упоминание с аббревиатурой, у выбранных её нет: не лишать его аббревиатуры
+            else:
+                pick = base(max(forms.items(), key=lambda x: x[1])[0])      # дальше — без скобок
+            # замечания и смысловая проверка — у выбранного перевода, не у прежнего текста этого сегмента
+            keep = {k: v for k, v in r.items() if k not in REVIEW}
+            keep.update({k: v for k, v in src.get(pick, src[max(forms, key=forms.get)]).items() if k in REVIEW})
             was[i] = r["ru"]
-            out[str(i)] = dict(r, ru=pick, unified=r.get("unified") or r["ru"])
+            out[str(i)] = dict(keep, ru=pick, unified=r.get("unified") or r["ru"])
     return out, was

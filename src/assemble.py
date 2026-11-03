@@ -1208,7 +1208,7 @@ def assemble_all(jf, d, out_dir=None, progress=None):
                                                        lang_check=L.parse_pair(d.get("pair")) == ("hu", "ru"))
                 if info["docx"].get("lost_ids"):        # потеря — громко (П5): задание «требует внимания», а не «готово»
                     attention.append(f"DOCX: сборка не взяла {info['docx']['lost_ids']} сегментов с переводом "
-                                     f"(строки «потеря сегмента» листа «нарушения»)")
+                                     f"(лог сборки и лист «нарушения»)")
                 if info["docx"].get("lacking"):
                     attention.append(f"DOCX: у {info['docx']['lacking']} текстов нет перевода — остались как в оригинале "
                                      f"(строки «нет перевода» листа «нарушения»)")

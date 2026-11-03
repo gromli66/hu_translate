@@ -494,7 +494,8 @@ class Memory:
         # перевод которых сборка взяла (по id или по тексту составного блока)
         self.ids, self.used, self.cur, self.pool = {}, set(), (), {}
         self.inside = False         # идёт сборка блока (Builder._at), пусть и без id
-        self.lacking = []           # тексты блоков, которых память не знает (missing — ещё и строки колонтитулов: у них поле, не перевод)
+        self.pending = []           # промахи текущего блока: сборка пробует варианты (с метками, без, часть) — нашёлся любой, и промах снят
+        self.lacking = []           # тексты блоков, которых память так и не нашла (missing — ещё и строки колонтитулов: у них поле, не перевод)
         for pair in pairs:
             self.add(*pair)
 
@@ -553,11 +554,15 @@ class Memory:
         """Сегменты взяты без перевода: маркер пункта, что сборка снимает вместе с его знаком."""
         self.used.update(sids or ())
 
-    def at(self, sids, inside=True):
+    def at(self, sids, inside=True, pending=None):
         """Блок со своими сегментами (sids; у блока без id — пусто) собирается: перевод ищется сначала по их id, пока не
-        вызван `at(*prev)`. → прежнее состояние (sids, внутри ли блока)."""
-        prev = (self.cur, self.inside)
+        вызван `at(*prev)`. → прежнее состояние (sids, внутри ли блока, промахи объемлющего блока)."""
+        prev = (self.cur, self.inside, self.pending)
+        if self.pending:                            # блок (или его пробы) кончился: что не нашлось — потеря перевода
+            self.lacking += [t for t in dict.fromkeys(TAGS.sub("", t) for t in self.pending) if t not in self.lacking]
+            del self.pending[:]
         self.cur, self.inside = tuple(sids or ()), inside
+        self.pending = [] if pending is None else pending
         return prev
 
     def _by_id(self, text):
@@ -586,6 +591,9 @@ class Memory:
                 self.used.update(self.cur)
                 if self.pool:
                     self.used.update(self.pool.get(KEY(text), ((), ()))[1])
+        if r is not None and self.pending:          # нашёлся другой вариант того же текста — промах пробы не потеря
+            k = KEY(text)
+            self.pending[:] = [t for t in self.pending if not (KEY(t) == k or k in KEY(t) and 2 * len(k) >= len(KEY(t)))]
         return r
 
     def _get(self, text):
@@ -645,7 +653,7 @@ class Memory:
         if r is None and text.strip():
             self.missing.append(text)
             if self.inside:
-                self.lacking.append(text)
+                self.pending.append(text)
         return r
 
 

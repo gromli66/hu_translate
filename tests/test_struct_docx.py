@@ -460,6 +460,7 @@ def test_tagged_pdf_is_recognized_by_coverage(tmp_path):
 
 
 def test_pipeline_struct_fill_polish_assemble(tmp_path, monkeypatch):
+    monkeypatch.setenv("HU_U_SIDS", "1")      # E6: проверка ниже — о сборке с id
     import pipeline as P
     import translate as T
     from openpyxl import load_workbook

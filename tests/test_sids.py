@@ -356,4 +356,54 @@ def test_lacking_names_only_block_texts_not_header_lines():
     assert mem("Ismeretlen bekezdés") is None
     mem.at(None)                                            # блок без id (абзац дерева без пары) — всё равно блок
     assert mem("Másik ismeretlen") is None
+    mem.at((), False)                                       # блок кончился — промахи названы
     assert mem.missing == ["Oldalszám: 7.", "Ismeretlen bekezdés", "Másik ismeretlen"]         and mem.lacking == ["Ismeretlen bekezdés", "Másik ismeretlen"]
+
+
+def _para_block(runs, sids=None):
+    return dict({"k": "p", "runs": runs, "seg": True,
+                 "geom": {"page": 1, "top": 100, "x0": 60, "x1": 200, "bottom": 110, "first_x0": 60}},
+                **({"sids": sids} if sids else {}))
+
+
+def test_lacking_ignores_probes_with_a_fallback_and_counts_a_paragraph_once(tmp_path):
+    """Сборка пробует варианты: с метками начертания (а в памяти — простой текст), подпись рисунка целиком (а в памяти —
+    название). Нашёлся любой — это не потеря; не нашёлся ни один — один текст, без меток, а не тег-вариант и простой."""
+    bold = lambda t: {"t": t, "b": True, "size": 10}
+    plain = lambda t: {"t": t, "size": 10}
+    mem = B.Memory([("Megjegyzés: a szelep nyitva", "Примечание: клапан открыт", 1), ("Kapcsolási rajz", "Схема соединений", 2)])
+    B.Builder(mem, lambda img: png(), PROFILE).build(
+        [_para_block([bold("Megjegyzés:"), plain(" a szelep nyitva")], [1]), _para_block([plain("3. ábra Kapcsolási rajz")], [2])],
+        str(tmp_path / "a.docx"), dict(LAYOUT, exempt_ids={}))
+    assert mem.lacking == []
+    mem = B.Memory([])
+    B.Builder(mem, lambda img: png(), PROFILE).build(
+        [_para_block([bold("Figyelem:"), plain(" áram alatt")])], str(tmp_path / "b.docx"), dict(LAYOUT, exempt_ids={}))
+    assert mem.lacking == ["Figyelem: áram alatt"]
+
+
+def test_same_source_pick_carries_its_own_review_marks_and_abbreviation_rules():
+    """Замена перевода переносит замечания проверок выбранного перевода, а не прежнего текста; аббревиатура в скобках:
+    первое упоминание без неё у выбранных не обезглавливается, прочим скобки не раздаются; (kW) — не аббревиатура."""
+    import termvar
+    segs = [seg(i, "Szelep nyitva") for i in (1, 2, 3)] + [seg(i, "SZBV leállt") for i in (4, 5, 6)]         + [seg(i, "Teljesítmény") for i in (7, 8)]
+    res = {"1": {"ru": "Клапан открыт 5", "review": {"serious": True, "reason": "смысл"}, "issues": ["число"]},
+           "2": {"ru": "Клапан открыт"}, "3": {"ru": "Клапан открыт"},
+           "4": {"ru": "СУЗ (SZBV) остановилась"}, "5": {"ru": "СУЗ (SZBV) остановилась"}, "6": {"ru": "СУЗ прекратила"},
+           "7": {"ru": "Мощность (kW)"}, "8": {"ru": "Мощность (MW)"}}
+    out, was = termvar.same_source(segs, res)
+    assert out["1"]["ru"] == "Клапан открыт" and not out["1"].get("review") and not out["1"].get("issues")
+    assert was[1] == "Клапан открыт 5" and out["1"]["unified"] == "Клапан открыт 5"
+    assert out["6"]["ru"] == "СУЗ остановилась"                   # дальше — без скобок; слова — как у большинства
+    assert out["7"]["ru"] == "Мощность (kW)" and out["8"]["ru"] == "Мощность (MW)"    # (kW) — не аббревиатура, но и не равны
+    segs2 = [seg(1, "SZBV leállt"), seg(2, "SZBV leállt"), seg(3, "SZBV leállt")]
+    res2 = {"1": {"ru": "СУЗ (SZBV) прекратила"}, "2": {"ru": "СУЗ остановилась"}, "3": {"ru": "СУЗ остановилась"}}
+    out2, was2 = termvar.same_source(segs2, res2)
+    assert out2["1"]["ru"] == "СУЗ (SZBV) прекратила" and was2 == {}   # первое упоминание не лишается аббревиатуры
+
+
+def test_review_sheet_notes_unified_translation(monkeypatch):
+    r = {"ru": "Клапан открыт", "unified": "Клапан открыт 5", "issues": []}
+    assert "Единый перевод для того же текста в документе, было: Клапан открыт 5" in A._h_note(r)
+    monkeypatch.setenv("HU_U_SIDS", "0")
+    assert A._h_note(r) == ""                                   # без флага вычитка прежняя
