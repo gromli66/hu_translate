@@ -216,3 +216,21 @@ def test_footnote_gets_its_own_ids_not_its_hosts():
     blocks = [{"k": "p", "runs": [{"t": "Fő szöveg"}], "notes": [{"runs": [{"t": "Lábjegyzet szövege"}], "pos": 1.0}]}]
     B.attach_sids(blocks, segs)
     assert blocks[0]["sids"] == [1] and blocks[0]["notes"][0]["sids"] == [2]
+
+
+def test_lost_ids_in_docx_by_tree_checks_only_tree_paragraphs():
+    """DOCX по дереву разметки: сегмент страницы — не абзац дерева (строки склеены иначе), его «потерю» по id не судят;
+    абзац разметки (struct_only) не взят — потеря."""
+    segs = [seg(1, "Oldal sor"), seg(2, "Fa bekezdése", struct_only=True), seg(3, "Másik bekezdés", struct_only=True)]
+    res = {"1": {"ru": "ру"}, "2": {"ru": "ру"}, "3": {"ru": "ру"}}
+    assert [s["id"] for s, _ in A.lost_ids(segs, res, used={2}, tree=True)] == [3]
+    assert [s["id"] for s, _ in A.lost_ids(segs, res, used={2}, tree=False)] == [1]    # (struct_only — не здесь)
+
+
+def test_attach_claims_the_tree_segment_with_the_page_segment_of_the_same_text():
+    """Абзац дерева, текст которого есть и сегментом страницы, и сегментом разметки (с метками), получает оба id:
+    перевод ищется по тексту, и оба взяты."""
+    segs = [seg(1, "Zárni a szelepet"), seg(2, "<f1>Zárni</f1><f2> a szelepet</f2>", struct_only=True)]
+    blocks = [{"k": "p", "runs": [{"t": "Zárni", "b": True}, {"t": " a szelepet"}]}]
+    B.attach_sids(blocks, segs)
+    assert blocks[0]["sids"] == [1, 2]

@@ -525,6 +525,12 @@ class Memory:
         elif mh:                                    # перевод без метки (тире перевод опустил) — как есть
             self.add(mh.group(1) + hu[mh.end():], ru)
 
+    def expected(self, seg):
+        """Перевод, который сборка должна положить на место сегмента: его собственный (res[id].ru), без id — по тексту, как
+        прежде (lost_segments сверяет с этим текст готового DOCX)."""
+        own = self.ids.get(seg["id"])
+        return own[1] if own else self.get(seg["text"])
+
     def at(self, sids):
         """Блок со своими сегментами (sids) собирается: до сброса `at(prev)` перевод ищется сначала по их id. → прежние sids."""
         prev, self.cur = self.cur, tuple(sids or ())
@@ -2921,14 +2927,16 @@ def attach_sids(blocks, segs):
     документе: абзац получает id первого ещё не занятого сегмента с таким текстом (sids.py). Прочее — по тексту, как прежде."""
     if not SIDS.enabled():
         return
-    want = {}
+    want, tree = {}, {}
     for s in segs:
         if "shot" not in s["loc"] and s["text"].strip():
-            want.setdefault(KEY(s["text"]), []).append(s["id"])
+            (tree if "struct_only" in s["loc"] else want).setdefault(KEY(s["text"]), []).append(s["id"])
     for b in _paras(blocks):
         k, tgt = KEY(text_of(b["runs"])), b.get("note") or b           # сноска — своими id, не абзаца-хозяина
-        if k and want.get(k) and "sids" not in tgt:
-            tgt["sids"] = [want[k].pop(0)]
+        if k and (want.get(k) or tree.get(k)) and "sids" not in tgt:
+            # сегмент страницы и сегмент абзаца разметки (с метками начертания) с тем же текстом — оба id блока: перевод
+            # такого абзаца ищется по тексту (составной), и оба взяты
+            tgt["sids"] = [q.pop(0) for q in (want.get(k), tree.get(k)) if q]
 
 
 def job_memory(segs, res):

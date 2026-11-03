@@ -797,17 +797,23 @@ def lost_segments(out, segs, expect, skip_pages=(), H=842):
     return [(s, ru, n - blob.count(k)) for k, (s, ru, n) in groups.items() if blob.count(k) < n and k not in rep]
 
 
-def lost_ids(segs, res, used, exempt=None, dropped=(), skip_pages=(), H=842):
+def lost_ids(segs, res, used, exempt=None, dropped=(), skip_pages=(), H=842, tree=False):
     """Инвариант сборки по id (E6, П5, sids.py): сегмент с переводом, который сборка не взяла в документ, — потеря, если его
     никто не снял с причиной: exempt ({id: причина}: колонтитул, рисунок, маркер пункта — docx_layout.load; нет словаря —
     полосы колонтитула у края листа), dropped (повтор шапки таблицы — docx_struct.join_tables) и те же исключения, что у
     lost_segments (_out_of_body). Дополняет lost_segments, не дублирует: тот ищет перевод в тексте готового DOCX, этот —
-    что сборка спрашивала у памяти. → [(сегмент, перевод)]."""
+    что сборка спрашивала у памяти. tree — DOCX по дереву разметки: сегменты страницы там не абзацы дерева (строки листа
+    склеены и разрезаны иначе), поштучно сверяются только абзацы разметки (struct_only: их текст — абзац дерева). → [(сегмент, перевод)]."""
     import geom as GM
     out = []
     for s in segs:
         ru = (res.get(str(s["id"])) or {}).get("ru")
-        if not ru or _out_of_body(s, skip_pages) or s["id"] in used or s["id"] in dropped:
+        if not ru or s["id"] in used or s["id"] in dropped:
+            continue
+        if tree:
+            if "struct_only" not in s["loc"] or "shot" in s["loc"] or s["page"] in skip_pages:
+                continue
+        elif _out_of_body(s, skip_pages):
             continue
         bb = s["loc"].get("bbox")
         if exempt is not None:
@@ -951,12 +957,13 @@ def build_struct_docx(src, out, segs, res, rules=None, progress=None, mode="stru
     # потеря текста (аудит 29.10: подписи строк, пункты таблиц терялись молча). Только блоки по сегментам листа (text,
     # layout): сегмент — абзац или ячейка; у размеченного PDF абзацы — по дереву разметки, строки листа поштучно не идут
     skip = {b["geom"]["page"] - 1 for b in blocks if b.get("figure") and b.get("geom")}
-    lost = lost_segments(out, segs, lambda s: mem.get(s["text"]), skip, doc[0].rect.height)         if mode in ("text", "layout") else []
+    lost = lost_segments(out, segs, mem.expected, skip, doc[0].rect.height)         if mode in ("text", "layout") else []
     rows += lost_rows(lost)
     lost_i, n_lost_i = [], 0
     if SIDS.enabled():
         # что сборка не спрашивала у памяти (sids.py): громко — лог, лист «нарушения», «ВНИМАНИЕ» в info["attention"]
-        lost_i = lost_ids(segs, res, used, L.get("exempt_ids"), SIDS.dropped(blocks), skip, doc[0].rect.height)
+        lost_i = lost_ids(segs, res, used, L.get("exempt_ids"), SIDS.dropped(blocks), skip, doc[0].rect.height,
+                          tree=mode == "struct")
         more, n_lost_i = lost_id_rows(lost_i, {_key24(ru) for _, ru, _ in lost})
         rows += more
     tick(1.0)
