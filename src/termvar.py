@@ -263,6 +263,7 @@ def sheet(wb, d, entries=()):
     return groups
 
 
+FIRST_USE = re.compile(r"\s*\([A-Za-z][A-Za-z0-9 ./-]*\)")       # «СУЗ (SZBV)»: латиница в скобках — первое упоминание
 AUTH = ("edited", "tm", "polish", "ru_pdf")        # перевод редактора, память переводов, шлифовка, сокращение для PDF
 
 
@@ -272,7 +273,9 @@ def same_source(segs, res):
     стоял первый). Выбор: перевод, утверждённый редактором, из памяти, после шлифовки (AUTH), иначе самый частый, при
     равенстве — первый в документе (как было). Текст — точный (KEY: пробелы и метки — не в счёт, регистр и знаки — в счёт:
     «Nyomás:» и «nyomás» — разные), без меток начертания, надписей на картинках и копий без слов. Переводы с правкой
-    редактора, из памяти, после шлифовки и сокращённые для PDF (AUTH) решают выбор и сами не меняются.
+    редактора, из памяти, после шлифовки и сокращённые для PDF (AUTH) решают выбор и сами не меняются. Варианты, что
+    различаются только латиницей в скобках («СУЗ (SZBV)» при первом упоминании, дальше «СУЗ», pipeline.first_use), —
+    не разнобой: каждый блок остаётся со своим.
     → (res с исправленными ru — копия, id → прежний перевод); res не меняется."""
     from segments import needs_translation
     groups = defaultdict(list)
@@ -283,8 +286,8 @@ def same_source(segs, res):
     out, was = dict(res), {}
     for items in groups.values():
         votes = Counter(r["ru"] for _, r in items)
-        if len(votes) < 2:
-            continue
+        if len(votes) < 2 or len({FIRST_USE.sub("", ru) for ru in votes}) == 1:
+            continue            # одинаковы, либо различаются только аббревиатурой первого упоминания — это соглашение, не разнобой
         pool = [r["ru"] for _, r in items if any(r.get(f) for f in AUTH)] or [r["ru"] for _, r in items]
         c = Counter(pool)
         top = max(c.values())

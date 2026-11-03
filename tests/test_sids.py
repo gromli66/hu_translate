@@ -306,3 +306,12 @@ def test_same_source_leaves_polished_and_shortened_translations_alone():
     assert out["1"]["ru"] == "Проверка состояния" and out["3"]["ru"] == "Контроль состояния"   # защищены
     assert out["2"]["ru"] == "Проверка состояния" and was == {2: "Контроль состояния"}       # непривилегированный — к выбору
     assert out["4"]["ru"] == "Тип:	X" and out["5"]["ru"] == "Тип: X"                         # табуляция — не пробел
+
+
+def test_same_source_keeps_first_use_abbreviation():
+    """«СУЗ (SZBV)» при первом упоминании и «СУЗ» дальше — соглашение о первом упоминании, не разнобой: не унифицируется."""
+    import termvar
+    segs = [seg(1, "SZBV vizsgálata"), seg(2, "SZBV vizsgálata"), seg(3, "SZBV vizsgálata")]
+    res = {"1": {"ru": "Испытание СУЗ (SZBV)"}, "2": {"ru": "Испытание СУЗ"}, "3": {"ru": "Испытание СУЗ"}}
+    out, was = termvar.same_source(segs, res)
+    assert was == {} and out["1"]["ru"] == "Испытание СУЗ (SZBV)"
