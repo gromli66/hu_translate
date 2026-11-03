@@ -2,6 +2,7 @@
 """Сборка DOCX из блоков docx_struct.load: стили по оригиналу, настоящие списки и нумерация заголовков,
 подписи «Рисунок N. …» полем SEQ, оглавление и список рисунков полями TOC, колонтитулы со штампом.
 Прямого кегля и отступов на отдельных абзацах нет — всё стилями («как будто документ писали по-русски»)."""
+import contextlib
 import io
 import math
 import re
@@ -9,6 +10,7 @@ from collections import Counter
 
 import geom as GM
 import patterns as PT
+import sids as SIDS
 from docx_struct import text_of, insert_imgs, PAGE_MARK
 from segments import unpua
 
@@ -161,6 +163,7 @@ def merge_inline(blocks):
             out[-1] = dict(prev, runs=merged, last_top=g.get("top", prev.get("last_top")),
                            last_bottom=max(g.get("bottom") or 0, prev.get("last_bottom") or 0),
                            tail_inline=bool(b.get("inline")), **__import__("docx_struct").join_notes(prev, b))
+            SIDS.add(out[-1], b.get("sids"))
             continue
         out.append(b)
     return out
@@ -487,13 +490,18 @@ class Memory:
         from segments import needs_translation
         self.need = needs_translation
         self.m, self.tagged, self.missing, self.num, self.half = {}, {}, [], {}, {}
-        for hu, ru in pairs:
-            self.add(hu, ru)
+        # E6 (sids.py): перевод сегмента по его id; cur — id блока, который сейчас собирается (Builder._at); used — id,
+        # перевод которых сборка взяла (по id или по тексту составного блока)
+        self.ids, self.used, self.cur = {}, set(), ()
+        for pair in pairs:
+            self.add(*pair)
 
-    def add(self, hu, ru):
+    def add(self, hu, ru, sid=None):
         if not ru:
             return
         ru = unpua(ru)                              # значки символьных шрифтов — знаком Юникода (аудит 29.10)
+        if sid is not None and SIDS.enabled():
+            self.ids[sid] = (hu, ru)
         # «Alfanumerika |» — вертикаль таблицы, прочитанная OCR; сборка (docx_layout) спрашивает текст без неё
         c = PIPE.sub("", hu)
         if c != hu and c.strip():
@@ -517,7 +525,36 @@ class Memory:
         elif mh:                                    # перевод без метки (тире перевод опустил) — как есть
             self.add(mh.group(1) + hu[mh.end():], ru)
 
+    def at(self, sids):
+        """Блок со своими сегментами (sids) собирается: до сброса `at(prev)` перевод ищется сначала по их id. → прежние sids."""
+        prev, self.cur = self.cur, tuple(sids or ())
+        return prev
+
+    def _by_id(self, text):
+        """Перевод блока из ОДНОГО сегмента, если текст блока — текст этого сегмента: его собственный перевод, а не первый
+        из сегментов с тем же текстом (res[id].ru; правка редактора, вариант портала). Составной блок, текст с отброшенной
+        меткой пункта и прочее — по тексту (get)."""
+        if len(self.cur) != 1 or self.cur[0] not in self.ids:
+            return None
+        hu, ru = self.ids[self.cur[0]]
+        if TAGS.search(hu):
+            ok = TAGS.search(text) and text.strip() == hu.strip()
+        else:
+            ok = not TAGS.search(text) and KEY(text) == KEY(hu)
+        if not ok:
+            return None
+        self.used.add(self.cur[0])
+        return ru if TAGS.search(hu) else TAGS.sub("", ru)
+
     def get(self, text):
+        r = self._by_id(text) if self.cur else None
+        if r is None:
+            r = self._get(text)
+            if r is not None and self.cur:
+                self.used.update(self.cur)          # составной блок или текст не равен тексту сегмента — найден по тексту
+        return r
+
+    def _get(self, text):
         if not self.need(TAGS.sub("", text)):
             # значение без слов («1,7 kW»): портал не нужен, но res хранит его с единицей по глоссарию («1,7 кВт») —
             # отдаём это, а не исходный текст (аудит 29.10, C6: в таблицах оставалась латиница)
@@ -1062,7 +1099,24 @@ class Builder:
             pf.first_line_indent = Pt(-round(hang, 1))
 
     # ---------------------------------------------------------------- блоки
+    @contextlib.contextmanager
+    def _at(self, b):
+        """Блок b собирается: память ищет его перевод по id его сегментов (sids.py); без флага и без памяти с `at` — как есть."""
+        at = getattr(self.tr, "at", None) if SIDS.enabled() else None
+        if at is None:
+            yield
+            return
+        prev = at(b.get("sids"))
+        try:
+            yield
+        finally:
+            at(prev)
+
     def paragraph(self, b, style="Normal", tgt=None):
+        with self._at(b):
+            return self._paragraph(b, style, tgt)
+
+    def _paragraph(self, b, style="Normal", tgt=None):
         runs = b["runs"]
         tgt = tgt if tgt is not None else self.doc
         text = text_of(runs).strip()
@@ -1275,7 +1329,8 @@ class Builder:
 
     def heading(self, b):
         fresh = getattr(self, "fresh", False)
-        par = self._heading(b)
+        with self._at(b):
+            par = self._heading(b)
         if b.get("center") and par is not None:              # заголовок по центру в оригинале (НГТУ, docx_layout)
             par.alignment = 1
         if b.get("break") and par is not None and not fresh:     # разрыв листа оригинала (docx_struct.load)
@@ -1374,7 +1429,8 @@ class Builder:
                     par.paragraph_format.first_line_indent = Pt(m - t)
                 else:
                     par.paragraph_format.left_indent = Pt(t)
-                self._put_runs(par, runs)
+                with self._at(x):
+                    self._put_runs(par, runs)
                 for n in x.get("notes") or []:
                     self._footnote(par, n)
                 first = False
@@ -1694,7 +1750,8 @@ class Builder:
                             for r in x["runs"]:
                                 self._img_run(first, r["img"])
                         else:
-                            self._put_runs(first, x["runs"])
+                            with self._at(x):
+                                self._put_runs(first, x["runs"])
                         used, par = True, first
                     else:
                         par = self.paragraph(x, style, tgt=dc)
@@ -2694,6 +2751,12 @@ class Builder:
                     self._header(_first_page(sec), zl(first_of[j]))
         self.doc.save(out)
         font_table(out, (L or {}).get("font_class") or {})
+        return self.used_ids
+
+    @property
+    def used_ids(self):
+        """Id сегментов, перевод которых сборка взяла в документ (E6, sids.py); память без учёта id — пусто."""
+        return set(getattr(self.tr, "used", ()))
 
     def _page_bg(self, hdr, color, w, h):
         """Фон листа — картинка 1×1 цвета color во весь лист (w×h pt) за текстом, привязанная к листу, в шапке раздела:
@@ -2843,18 +2906,35 @@ def blocks_layout(pdf, segs, mode):
             dup = lambda r: any(half(r, i, "x0", "x1") and half(r, i, "top", "bottom") for i in him)
             blocks = [b for b in blocks if not (him and b["k"] == "p" and (b.get("geom") or {}).get("page") == 1
                                                 and b.get("runs") and all("img" in r and dup(r["img"]) for r in b["runs"]))]
-            return blocks, L
-        return blocks, docx_layout.layout(str(pdf), blocks, segs, info)
+            return blocks, SIDS.stamp(L, info)
+        return blocks, SIDS.stamp(docx_layout.layout(str(pdf), blocks, segs, info), info)
     blocks, _ = docx_struct.load(str(pdf))
     blocks = docx_struct.compose_figures(blocks, str(pdf))   # не в load: load зовёт и coverage при извлечении
     docx_struct.list_geo(blocks)
+    attach_sids(blocks, segs)
     return blocks, dict(docx_struct.layout(str(pdf), blocks), sizes=True)    # кегль — из знаков PDF, точный
+
+
+def attach_sids(blocks, segs):
+    """Размеченный PDF: блоки по дереву разметки сегментов не знают — id по точному совпадению текста (KEY), по порядку в
+    документе: абзац получает id первого ещё не занятого сегмента с таким текстом (sids.py). Прочее — по тексту, как прежде."""
+    if not SIDS.enabled():
+        return
+    want = {}
+    for s in segs:
+        if "shot" not in s["loc"] and s["text"].strip():
+            want.setdefault(KEY(s["text"]), []).append(s["id"])
+    for b in _paras(blocks):
+        k = KEY(text_of(b["runs"]))
+        if k and want.get(k) and "sids" not in b:
+            b["sids"] = [want[k].pop(0)]
 
 
 def job_memory(segs, res):
     """Память сборки из сегментов задачи: текст страниц, абзацы разметки (loc.struct_only) — переводы после проверки,
     шлифовки и правок редактора; надписи скриншотов — не здесь (их несут картинки)."""
-    return Memory([(s["text"], (res.get(str(s["id"])) or {}).get("ru")) for s in segs if "shot" not in s["loc"]])
+    return Memory([(s["text"], (res.get(str(s["id"])) or {}).get("ru"), s["id"]) for s in segs
+                   if "shot" not in s["loc"]])
 
 
 def word_export(meta):

@@ -14,6 +14,7 @@
 import re, html, zipfile
 from pathlib import Path
 
+import sids as SIDS
 from segments import W, STAYS, _own_runs, run_text
 
 TAG = re.compile(r"</?f\d+>")
@@ -749,6 +750,20 @@ def _p2d_child(pdf, out):
         print(" ".join(f"ERR {type(e).__name__}: {e}"[:200].split()), flush=True)
 
 
+def _key24(t):
+    """Начало текста без цифр, знаков препинания и регистра — по нему перевод сегмента ищут в тексте DOCX (lost_segments)."""
+    import docx_build as B
+    return re.sub(r"[\W\d_]+", "", B.TAGS.sub("", t or "")).lower()[:24]
+
+
+def _out_of_body(s, skip_pages):
+    """Сегмент, перевод которого в тексте DOCX не ищут (lost_segments, lost_ids): надпись на картинке, абзац разметки (его
+    текст — в сегментах листа, struct_only), лист со снимком, пустой текст, пометка о переносе листа оригинала."""
+    import patterns as PT
+    return ("shot" in s["loc"] or "struct_only" in s["loc"] or s["page"] in skip_pages or not s["text"].strip()
+            or bool(PT.CONT_MARK.fullmatch(s["text"])))
+
+
 def lost_segments(out, segs, expect, skip_pages=(), H=842):
     """Инвариант сборки: перевод каждого сегмента тела листа есть в готовом DOCX (абзацы, таблицы, сноски, колонтитулы) —
     столько раз, сколько таких сегментов с тем же исходником (повтор «Állapot» на девяти листах — девять вхождений).
@@ -759,7 +774,6 @@ def lost_segments(out, segs, expect, skip_pages=(), H=842):
     потери не падает — потерю смотрит человек (лог и лист «нарушения»)."""
     import docx_build as B
     import geom as GM
-    import patterns as PT
     from segments import needs_translation
     key = lambda t: re.sub(r"[\W\d_]+", "", B.TAGS.sub("", t or "")).lower()
     text = lambda x: key(html.unescape(re.sub(r"<[^>]+>", "", x.replace("</w:p>", " "))))
@@ -774,14 +788,47 @@ def lost_segments(out, segs, expect, skip_pages=(), H=842):
     groups = {}
     for s in segs:
         bb = s["loc"].get("bbox")
-        if "shot" in s["loc"] or "struct_only" in s["loc"] or s["page"] in skip_pages or not s["text"].strip()                 or (bb and (bb[3] < GM.HEAD_EDGE * H or bb[1] > GM.FOOT_EDGE * H)) or not needs_translation(B.TAGS.sub("", s["text"])) \
-                or PT.CONT_MARK.fullmatch(s["text"]):  # пометка о переносе листа — в DOCX её нет нарочно
+        if _out_of_body(s, skip_pages) or (bb and (bb[3] < GM.HEAD_EDGE * H or bb[1] > GM.FOOT_EDGE * H))                 or not needs_translation(B.TAGS.sub("", s["text"])):   # (пометка о переносе листа — в DOCX её нет нарочно)
             continue
         ru = expect(s)
-        k = key(ru)[:24] if ru else ""
+        k = _key24(ru) if ru else ""
         if len(k) >= 4:
             groups.setdefault(k, [s, ru, 0])[2] += 1
     return [(s, ru, n - blob.count(k)) for k, (s, ru, n) in groups.items() if blob.count(k) < n and k not in rep]
+
+
+def lost_ids(segs, res, used, exempt=None, dropped=(), skip_pages=(), H=842):
+    """Инвариант сборки по id (E6, П5, sids.py): сегмент с переводом, который сборка не взяла в документ, — потеря, если его
+    никто не снял с причиной: exempt ({id: причина}: колонтитул, рисунок, маркер пункта — docx_layout.load; нет словаря —
+    полосы колонтитула у края листа), dropped (повтор шапки таблицы — docx_struct.join_tables) и те же исключения, что у
+    lost_segments (_out_of_body). Дополняет lost_segments, не дублирует: тот ищет перевод в тексте готового DOCX, этот —
+    что сборка спрашивала у памяти. → [(сегмент, перевод)]."""
+    import geom as GM
+    out = []
+    for s in segs:
+        ru = (res.get(str(s["id"])) or {}).get("ru")
+        if not ru or _out_of_body(s, skip_pages) or s["id"] in used or s["id"] in dropped:
+            continue
+        bb = s["loc"].get("bbox")
+        if exempt is not None:
+            if s["id"] in exempt:
+                continue
+        elif bb and (bb[3] < GM.HEAD_EDGE * H or bb[1] > GM.FOOT_EDGE * H):
+            continue
+        out.append((s, ru))
+    return out
+
+
+def lost_id_rows(lost, seen=()):
+    """Сегменты, которых сборка не взяла (lost_ids), — в лог и строками листа «нарушения»; seen — ключи (_key24) переводов,
+    уже названных потерей по тексту DOCX (lost_segments): дважды одно и то же не пишем. → (строки, сколько сегментов)."""
+    pg = lambda s: s["page"] + 1 if s["page"] is not None else "—"
+    new = [(s, ru) for s, ru in lost if _key24(ru) not in seen]
+    if new:
+        print(f"DOCX: сборка не взяла {len(new)} сегментов с переводом: " + "; ".join(
+            f"л.{pg(s)} №{s['id']} «{s['text'][:30]}»" for s, _ in new[:8]), flush=True)
+    return [("", "потеря сегмента", f"сборка не взяла (№{s['id']}), лист {pg(s)}: {ru[:90]}", s["text"][:90])
+            for s, ru in new], len(new)
 
 
 def lost_rows(lost):
@@ -875,7 +922,7 @@ def build_struct_docx(src, out, segs, res, rules=None, progress=None, mode="stru
 
     bld = B.Builder(mem, image, prof)
     try:
-        bld.build(blocks, str(out), L)
+        used = bld.build(blocks, str(out), L)
     finally:
         if ov is not None:
             ov.close()                      # PDF из DOCX ляжет на его место (Windows держит открытый файл)
@@ -903,13 +950,21 @@ def build_struct_docx(src, out, segs, res, rules=None, progress=None, mode="stru
         + [("", r, f"в DOCX: {why}", t) for r, why, t in lang]
     # потеря текста (аудит 29.10: подписи строк, пункты таблиц терялись молча). Только блоки по сегментам листа (text,
     # layout): сегмент — абзац или ячейка; у размеченного PDF абзацы — по дереву разметки, строки листа поштучно не идут
-    lost = lost_segments(out, segs, lambda s: mem.get(s["text"]),
-                         {b["geom"]["page"] - 1 for b in blocks if b.get("figure") and b.get("geom")},
-                         doc[0].rect.height) if mode in ("text", "layout") else []
+    skip = {b["geom"]["page"] - 1 for b in blocks if b.get("figure") and b.get("geom")}
+    lost = lost_segments(out, segs, lambda s: mem.get(s["text"]), skip, doc[0].rect.height)         if mode in ("text", "layout") else []
     rows += lost_rows(lost)
+    lost_i, n_lost_i = [], 0
+    if SIDS.enabled():
+        # что сборка не спрашивала у памяти (sids.py): громко — лог, лист «нарушения», «ВНИМАНИЕ» в info["attention"]
+        lost_i = lost_ids(segs, res, used, L.get("exempt_ids"), SIDS.dropped(blocks), skip, doc[0].rect.height)
+        more, n_lost_i = lost_id_rows(lost_i, {_key24(ru) for _, ru, _ in lost})
+        rows += more
     tick(1.0)
     info = {"converter": {"layout": "сегменты листа", "text": "текстовый слой"}.get(mode, "разметка PDF"),
             "missed": len(set(mem.missing)), "format": len(viol), "lang": len(lang), "lost": len(lost)}
+    if SIDS.enabled():
+        info["used_ids"] = len(used)
+        info["lost_ids"] = n_lost_i
     if fit is not None:
         info["fit"] = fit
     return info, rows
@@ -1119,6 +1174,9 @@ def assemble_all(jf, d, out_dir=None, progress=None):
                                                        progress=lambda x: tick(0.4 + 0.6 * x), mode=mode,
                                                        overlay=outd / f"{stem}{sfx}.pdf" if d.get("struct") else None,
                                                        lang_check=L.parse_pair(d.get("pair")) == ("hu", "ru"))
+                if info["docx"].get("lost_ids"):        # потеря — громко (П5): задание «требует внимания», а не «готово»
+                    attention.append(f"DOCX: сборка не взяла {info['docx']['lost_ids']} сегментов с переводом "
+                                     f"(строки «потеря сегмента» листа «нарушения»)")
                 import subprocess
                 try:                                    # PDF — из этого DOCX; без LibreOffice — в вёрстке оригинала
                     info["pdf"] = pdf_from_docx(outd / f"{stem}{sfx}.docx", outd / f"{stem}{sfx}.pdf")
