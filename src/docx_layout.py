@@ -161,7 +161,7 @@ def _toc_line(group, right):
     if len(group) < 2 or not re.fullmatch(r"\d{1,4}(?:/\d+)?", group[-1]["text"].strip()):
         return False
     b = group[-1]["loc"]["bbox"]
-    return right is None or b[2] > right - 40 or b[0] - group[-2]["loc"]["bbox"][2] > 60
+    return b[2] > right - 40 or b[0] - group[-2]["loc"]["bbox"][2] > 60
 
 
 def _layer(doc):
@@ -1251,7 +1251,7 @@ def _page_rules(doc, text=False):
     return draw, lines, scans, marks, frames
 
 
-def _head_rows(doc, rules, body, keys, H):
+def _head_rows(rules, body, keys, H):
     """Содержимое таблиц, в которых под первой строкой сетки от двух столбцов есть текст тела (не повтор колонтитула), —
     тело, не колонтитул и не бегущее название. Шапка такой таблицы повторяется на каждом листе (Word печатает её на
     каждом листе) — и снималась как колонтитул или бегущее название: у 30RDGT шапка таблицы уходила в шапку DOCX
@@ -1506,7 +1506,7 @@ def load(src, segs, text=False):
     run_keys = _running(body, H, len(doc))
     rules = _page_rules(doc, text)
     # шапка таблицы (строка заголовков столбцов) повторяется на каждом листе, но это не колонтитул и не бегущее название
-    heads = _head_rows(doc, rules, body, run_keys, H)
+    heads = _head_rows(rules, body, run_keys, H)
     pool = [s for s in body if s["id"] not in heads and (_is_running(s, run_keys, H) or _portal_running(s))]
     content = [s for s in body if _role({
         "table_head": s["id"] in heads, "repeat": _is_running(s, run_keys, H), "ocr": bool(s["loc"].get("ocr")),
@@ -1794,13 +1794,12 @@ def load(src, segs, text=False):
     blocks = docx_struct.join_tables(blocks)
     # разрывы листа — правилом PDF с разметкой (docx_struct.mark_breaks): верх и низ тела листов; и для распознанных
     # листов — разделы 3SZ19 с нового листа шли подряд (18.10)
-    if True:
-        tops, bots = {}, {}
-        ys = [(s["page"] + 1, s["loc"]["bbox"][1], s["loc"]["bbox"][3]) for s in content_all]
-        ys += [(pno + 1, g["rect"].y0, g["rect"].y1) for pno, regs in regions.items() for g in regs]
-        for pn, a, b in ys:
-            tops[pn], bots[pn] = min(tops.get(pn, a), a), max(bots.get(pn, b), b)
-        docx_struct.mark_breaks(blocks, tops, bots)
+    tops, bots = {}, {}
+    ys = [(s["page"] + 1, s["loc"]["bbox"][1], s["loc"]["bbox"][3]) for s in content_all]
+    ys += [(pno + 1, g["rect"].y0, g["rect"].y1) for pno, regs in regions.items() for g in regs]
+    for pn, a, b in ys:
+        tops[pn], bots[pn] = min(tops.get(pn, a), a), max(bots.get(pn, b), b)
+    docx_struct.mark_breaks(blocks, tops, bots)
     boxes = {}
     for s in content_all:                                   # рамки текста тела по листам (от 1): колонтитулы — прочее
         for f in s["loc"].get("frags") or [s["loc"]["bbox"]]:
