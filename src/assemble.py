@@ -1123,6 +1123,13 @@ def assemble_all(jf, d, out_dir=None, progress=None):
         # известная форма (лист регистрации, титул инструкции, лист изменений): подписи — по словарю формы, не по портальным вариантам
         res, n_lab, form = FIG.apply_form_labels(d["segs"], d["res"])
         d = dict(d, res=res) if n_lab else d
+    n_uni = 0
+    if SIDS.enabled():
+        # блок берёт перевод своего сегмента: один исходный текст — один перевод на документ (termvar.same_source)
+        import termvar
+        res, was = termvar.same_source(d["segs"], d["res"])
+        if was:
+            d, n_uni = dict(d, res=res), len(was)
     sfx = L.suffix(d.get("pair"))                       # _RU (hu-ru), _EN, _HU — по паре проекта
     outd, stem = Path(out_dir or Path(jf).parent), Path(jf).stem
     outd.mkdir(parents=True, exist_ok=True)
@@ -1208,6 +1215,8 @@ def assemble_all(jf, d, out_dir=None, progress=None):
         rows += [("", "сборка", f"ВНИМАНИЕ: {a}", "") for a in attention]
     if form:
         info["form"] = {"id": form, "labels": n_lab}
+    if n_uni:
+        info["unified"] = n_uni                         # сегментов, чей перевод заменён единым для того же исходного текста
     review_xlsx(outd / f"{stem}_вычитка.xlsx", d["segs"], d["res"], stem, polish=d.get("polish"), extra_rows=rows,
                 pair=d.get("pair"))
     return info

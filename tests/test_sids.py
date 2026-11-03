@@ -187,3 +187,25 @@ def test_attach_sids_to_tag_tree_paragraphs_by_text():
     B.attach_sids(blocks, segs)
     assert [b.get("sids") for b in blocks[:2]] == [[1], [2]] and blocks[2]["items"][0][0]["sids"] == [3]
     assert "sids" not in blocks[3] and "sids" not in blocks[4]
+
+
+def test_same_source_text_gets_one_translation_per_document():
+    """termvar.same_source: тот же исходный текст в разных сегментах — один перевод: утверждённый редактором, иначе самый
+    частый, при равенстве — первый. Другой регистр или знак — другой текст; метки, копии и надписи на картинках не трогаются."""
+    import termvar
+    segs = [seg(1, "Állapot ellenőrzése"), seg(2, "Állapot ellenőrzése"), seg(3, "Állapot ellenőrzése"),
+            seg(4, "Állapot ellenőrzése:"), seg(5, "Szint mérése"), seg(6, "Szint mérése"),
+            seg(7, "Nyomás növelése"), seg(8, "Nyomás növelése"), seg(9, "Nyomás növelése", shot={"xref": 1}),
+            seg(10, "<f1>Zárni</f1>"), seg(11, "<f1>Zárni</f1>")]
+    res = {"1": {"ru": "Проверка состояния"}, "2": {"ru": "Контроль состояния"}, "3": {"ru": "Контроль состояния"},
+           "4": {"ru": "Проверка состояния:"}, "5": {"ru": "Измерение уровня"}, "6": {"ru": "Замер уровня", "edited": True},
+           "7": {"ru": "Повышение давления"}, "8": {"ru": "Рост давления"}, "9": {"ru": "Давление"},
+           "10": {"ru": "<f1>Закрыть</f1>"}, "11": {"ru": "<f1>Закрывать</f1>"}}
+    out, was = termvar.same_source(segs, res)
+    ru = lambda i: out[str(i)]["ru"]
+    assert [ru(1), ru(2), ru(3)] == ["Контроль состояния"] * 3 and ru(4) == "Проверка состояния:"
+    assert [ru(5), ru(6)] == ["Замер уровня"] * 2                       # утверждённый редактором
+    assert [ru(7), ru(8)] == ["Повышение давления"] * 2 and ru(9) == "Давление"   # равенство — первый, как было
+    assert ru(10) == "<f1>Закрыть</f1>" and ru(11) == "<f1>Закрывать</f1>"
+    assert was == {1: "Проверка состояния", 5: "Измерение уровня", 8: "Рост давления"}
+    assert res["1"]["ru"] == "Проверка состояния" and out["1"]["unified"] == "Проверка состояния"   # res не изменён
