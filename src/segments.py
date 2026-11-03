@@ -319,34 +319,6 @@ def _choose(t, p):
     return p if (_codeish(t) or _codeish(p)) else t
 
 
-def merge_readers(words, portal_text):
-    """words: слова Tesseract [{t, box, line, h}] в порядке чтения; правит w['t'] по второму чтению.
-    Возвращает новый список (слова, которых нет у Tesseract, приклеиваются к соседу слева)."""
-    ptoks = portal_text.split()
-    a = [_norm(w["t"]) for w in words]
-    b = [_norm(t) for t in ptoks]
-    out = [dict(w) for w in words]
-    keep = [True] * len(words)
-    sm = difflib.SequenceMatcher(None, a, b, autojunk=False)
-    for op, i1, i2, j1, j2 in sm.get_opcodes():
-        if op in ("equal", "replace") and i2 - i1 == j2 - j1:
-            for k in range(i2 - i1):
-                out[i1 + k]["t"] = _choose(words[i1 + k]["t"], ptoks[j1 + k])
-        elif op == "replace":
-            ts = [w["t"] for w in words[i1:i2]]
-            if any(_codeish(t) for t in ts + ptoks[j1:j2]):
-                out[i1]["t"] = " ".join(ptoks[j1:j2])
-                for k in range(i1 + 1, i2):
-                    keep[k] = False
-        elif op == "delete":
-            for k in range(i1, i2):
-                if not _norm(words[k]["t"]):        # мусор пунктуации («- .» на месте тире списка)
-                    keep[k] = False
-        elif op == "insert" and i1 > 0:
-            out[i1 - 1]["t"] += " " + " ".join(ptoks[j1:j2])
-    return [w for w, k in zip(out, keep) if k]
-
-
 # пунктир под подпись («Aláírás: ............») OCR читает буквами: «sszsseseeeeeeeseeee…» — такого венгерского слова
 # не бывает (30RDGT nyilv, 06.10: мусор уходил в перевод и раздувал строки формы); заменяем на «…»
 # шум начинается с точек после подписи поля («Aláírás:……sss») или стоит отдельным словом — иначе он съедал

@@ -315,14 +315,6 @@ def rules(page):
     return hs, vs
 
 
-def _in_cell(vs, bb):
-    """Фрагмент зажат вертикальными линейками слева и справа (ячейка таблицы)."""
-    x0, y0, x1, y1 = bb
-    left = any(x <= x0 + 1 and x0 - x < 250 and ry0 <= y1 and ry1 >= y0 for ry0, ry1, x in vs)
-    right = any(x >= x1 - 1 and x - x1 < 250 and ry0 <= y1 and ry1 >= y0 for ry0, ry1, x in vs)
-    return left and right
-
-
 def _right_limit(frags, vs, bb, page_right):
     """Где кончается место справа от строки: вертикальная линейка или соседний фрагмент на той же высоте."""
     x0, y0, x1, y1 = bb
