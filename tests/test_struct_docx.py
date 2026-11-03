@@ -460,6 +460,7 @@ def test_tagged_pdf_is_recognized_by_coverage(tmp_path):
 
 
 def test_pipeline_struct_fill_polish_assemble(tmp_path, monkeypatch):
+    monkeypatch.setenv("HU_U_SIDS", "1")      # E6: проверка ниже — о сборке с id
     import pipeline as P
     import translate as T
     from openpyxl import load_workbook
@@ -518,6 +519,8 @@ def test_pipeline_struct_fill_polish_assemble(tmp_path, monkeypatch):
     assert "Шлифовка (Я5, Я10; код), было: После пуска УТС" in main["Az UTS indítása után a felület üres."][7]
     assert "FIGYELEM! A teszt leállítása nem lehetséges." in main                # абзац разметки — строкой вычитки
     assert wb["шлифовка"].max_row == 1 + len(d["polish"]["edits"])
+    # E6: абзацы с метками и склейки (struct_only) собраны — сборка ничего не потеряла (ни «потеря сегмента», ни «нет перевода»)
+    assert not [r for r in wb["нарушения"].iter_rows(values_only=True) if r[1] in ("потеря сегмента", "нет перевода")]
 
 
 def test_editor_sheet_found_by_name_when_other_sheet_active(tmp_path):

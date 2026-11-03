@@ -23,6 +23,7 @@ from statistics import median
 import figures as FIG
 import geom as GM
 import patterns as PT
+import sids as SIDS
 
 FAMILY = {"monospace": "Courier New", "serif": "Times New Roman", "sans-serif": "Arial"}
 NUM = re.compile(r"^\s*(\d+(?:\.\d+)*)\.?\s+\S")
@@ -981,7 +982,8 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields
                 runs = _runs_of(group, bold, font, size, mono)
                 for ru in runs if pua else ():               # значки частной области — знаком по виду (_pua_glyph)
                     ru["t"] = "".join(pua.get(ch, ch) for ch in ru["t"])
-                paras.append({"k": "p", "runs": runs, "geom": gg, "seg": True, "align": group[0]["loc"].get("align")})
+                paras.append({"k": "p", "runs": runs, "geom": gg, "seg": True, "align": group[0]["loc"].get("align"),
+                              **SIDS.of(group)})
                 geom = gg if geom is None else dict(geom, x0=min(geom["x0"], gg["x0"]), x1=max(geom["x1"], gg["x1"]),
                                                      bottom=gg["bottom"], lines=geom["lines"] + gg["lines"])
             for img in (pics.get((r, ci), []) if first else []):
@@ -1078,7 +1080,8 @@ def _grids(items, bold, font, size, mono, sign=None):
                 # кегль — свой (перечень набран мельче текста: 9 pt против 11): таблица — мелким стилем, не переносится
                 gg = {"page": pno + 1, "top": b0[1], "bottom": b0[3], "x0": b0[0], "x1": b0[2], "first_x0": b0[0],
                       "size": min(size, x["loc"].get("size") or size), "lines": len(x["loc"].get("frags") or [1])}
-                row.append({"blocks": [{"k": "p", "runs": _runs_of([x], bold, font, size, mono), "geom": gg, "seg": True}],
+                row.append({"blocks": [{"k": "p", "runs": _runs_of([x], bold, font, size, mono), "geom": gg, "seg": True,
+                                        **SIDS.of([x])}],
                             "th": False, "geom": gg, "edges": dict.fromkeys(("top", "bottom", "left", "right"), False), "span": 1})
             rows.append(row)
         top = min(x["loc"]["bbox"][1] for x in run[0][2])
@@ -1611,7 +1614,8 @@ def load(src, segs, text=False):
     # рисунок без сегментов — перед первым сегментом листа ниже его верха
     taken = {i for regs in regions.values() for g in regs for i in g["ids"]}
     flow = [s for s in content if s["id"] not in taken]
-    marks = {}          # текстовый слой: маркер пункта — свой сегмент слева от текста пункта (layout.frags_from_text)
+    marks, exempt = {}, {}      # текстовый слой: маркер пункта — свой сегмент слева от текста пункта (frags_from_text);
+    #                             exempt — id сегментов, снятых из блоков с причиной (E6, sids.py)
     if text:            # только в потоке: «-» в ячейке таблицы — значение (НГТУ)
         bullet = [s for s in flow if re.fullmatch(rf"\s*[{PT.MARKERS}o\uf020-\uf0ff]\s*", s["text"])]
         # маркер — если справа на той же строке ближе 40 pt есть пункт; иначе «-» — значение («Revision: ⇥ -»);
@@ -1626,6 +1630,7 @@ def load(src, segs, text=False):
             if s["id"] in lone:
                 marks.setdefault(s["page"], []).append((s["loc"]["bbox"], s["text"].strip()))
         flow = [s for s in flow if s["id"] not in lone]
+        exempt = {i: "маркер пункта" for i in lone}
     items = [(group[0]["id"], 0, group) for group in _lines(sorted(flow, key=lambda s: s["id"]))]
     for pno, regs in regions.items():
         page_ids = sorted((s["id"], s["loc"]["bbox"][1]) for s in content if s["page"] == pno)
@@ -1693,10 +1698,11 @@ def load(src, segs, text=False):
             # листа, 3SZ19; его снимают правила повтора выше, а заплатка выбрасывала и настоящие подзаголовки разделов:
             # «1. Ismérvek:» 3SZ19 — 7 раз, 20.10)
             level = min(len(m.group(1).split(".")) if m else 1, 5)
-            blocks.append({"k": "h", "level": level, "runs": runs, "geom": geom, "center": loc.get("align") == "center"})
+            blocks.append({"k": "h", "level": level, "runs": runs, "geom": geom, "center": loc.get("align") == "center",
+                           **SIDS.of(group)})
             cur = None
             continue
-        para = {"k": "p", "runs": runs, "geom": geom, "seg": True}    # seg — абзац собран, merge_inline не клеит
+        para = {"k": "p", "runs": runs, "geom": geom, "seg": True, **SIDS.of(group)}   # seg — абзац собран, merge_inline не клеит
         if role == "item":
             ch = sign["ch"] if sign else None
             if sign and sign.get("mk"):
@@ -1750,6 +1756,7 @@ def load(src, segs, text=False):
         if role == "body" and not loc.get("roles") and len(group) == 1 and last is not None \
                 and _continues(last, s, lh):
             _join(last, runs, geom)
+            SIDS.add(last, [g["id"] for g in group])
             continue
         # продолжение пункта (OCR разбил пункт на сегменты)
         if role == "body" and not loc.get("roles") and cur is not None and cur["items"] \
@@ -1765,9 +1772,11 @@ def load(src, segs, text=False):
     # АЗ…»): название из рамки снято как повтор, номер оставался строкой-сиротой над каждым разделом (3PR42, 19.10)
     txt = lambda b: "".join(r.get("t", "") for r in b.get("runs") or []).strip()
     num = re.compile(r"\d+(?:\.\d+)*(?:/\d+)?\.?")
-    blocks = [b for i, b in enumerate(blocks)
-              if not (b["k"] in ("p", "h") and num.fullmatch(txt(b)) and i + 1 < len(blocks)
-                      and blocks[i + 1]["k"] in ("p", "h") and txt(blocks[i + 1]).startswith(txt(b).rstrip(".")))]
+    gone = [b for i, b in enumerate(blocks)
+            if b["k"] in ("p", "h") and num.fullmatch(txt(b)) and i + 1 < len(blocks)
+            and blocks[i + 1]["k"] in ("p", "h") and txt(blocks[i + 1]).startswith(txt(b).rstrip("."))]
+    exempt |= {i: "номер раздела" for b in gone for i in b.get("sids") or ()}
+    blocks = [b for b in blocks if not any(b is g for g in gone)]
     # уровень пункта — ступень его отступа среди отступов всех списков документа (3PR42: «-» у края рамки и «-»
     # под пунктом 2.1.1. — раньше один уровень, вложенность пропадала)
     xs = [b["x0"] for b in blocks if b["k"] == "list"]
@@ -1796,8 +1805,15 @@ def load(src, segs, text=False):
     for s in content_all:                                   # рамки текста тела по листам (от 1): колонтитулы — прочее
         for f in s["loc"].get("frags") or [s["loc"]["bbox"]]:
             boxes.setdefault(s["page"] + 1, []).append(tuple(f))
-    return blocks, {"width": W, "height": H, "pages": len(doc), "artifacts": {"chars": [], "imgs": []},
-                    "font": font, "size": size, "style": bold, "content_boxes": boxes}
+    info = {"width": W, "height": H, "pages": len(doc), "artifacts": {"chars": [], "imgs": []},
+            "font": font, "size": size, "style": bold, "content_boxes": boxes}
+    if SIDS.enabled():
+        # сегменты тела, снятые с причиной: колонтитул и повтор названия раздела (не в content), рисунок (текст в картинке)
+        kept = {s["id"] for s in content_all}
+        exempt |= {s["id"]: "колонтитул" for s in body if s["id"] not in kept}
+        exempt |= {i: "рисунок" for regs in regions.values() for g in regs if g["block"].get("figure") for i in g["ids"]}
+        info["exempt"] = exempt
+    return blocks, info
 
 
 def _continues(prev, s, lh):

@@ -2,6 +2,7 @@
 """Сборка DOCX из блоков docx_struct.load: стили по оригиналу, настоящие списки и нумерация заголовков,
 подписи «Рисунок N. …» полем SEQ, оглавление и список рисунков полями TOC, колонтитулы со штампом.
 Прямого кегля и отступов на отдельных абзацах нет — всё стилями («как будто документ писали по-русски»)."""
+import contextlib
 import io
 import math
 import re
@@ -9,6 +10,7 @@ from collections import Counter
 
 import geom as GM
 import patterns as PT
+import sids as SIDS
 from docx_struct import text_of, insert_imgs, PAGE_MARK
 from segments import unpua
 
@@ -161,6 +163,7 @@ def merge_inline(blocks):
             out[-1] = dict(prev, runs=merged, last_top=g.get("top", prev.get("last_top")),
                            last_bottom=max(g.get("bottom") or 0, prev.get("last_bottom") or 0),
                            tail_inline=bool(b.get("inline")), **__import__("docx_struct").join_notes(prev, b))
+            SIDS.add(out[-1], b.get("sids"))
             continue
         out.append(b)
     return out
@@ -487,13 +490,22 @@ class Memory:
         from segments import needs_translation
         self.need = needs_translation
         self.m, self.tagged, self.missing, self.num, self.half = {}, {}, [], {}, {}
-        for hu, ru in pairs:
-            self.add(hu, ru)
+        # E6 (sids.py): перевод сегмента по его id; cur — id блока, который сейчас собирается (Builder._at); used — id,
+        # перевод которых сборка взяла (по id или по тексту составного блока)
+        self.ids, self.used, self.cur, self.pool = {}, set(), (), {}
+        self.inside = False         # идёт сборка блока (Builder._at), пусть и без id
+        self.pending = []           # промахи текущего блока: сборка пробует варианты (с метками, без, часть) — нашёлся любой, и промах снят
+        self.lacking = []           # тексты блоков, которых память так и не нашла (missing — ещё и строки колонтитулов: у них поле, не перевод)
+        for pair in pairs:
+            self.add(*pair)
 
-    def add(self, hu, ru):
+    def add(self, hu, ru, sid=None, tree=False):
         if not ru:
             return
         ru = unpua(ru)                              # значки символьных шрифтов — знаком Юникода (аудит 29.10)
+        if sid is not None and SIDS.enabled():
+            self.ids[sid] = (hu, ru)
+            self.pool.setdefault(KEY(hu), ([], []))[tree].append(sid)
         # «Alfanumerika |» — вертикаль таблицы, прочитанная OCR; сборка (docx_layout) спрашивает текст без неё
         c = PIPE.sub("", hu)
         if c != hu and c.strip():
@@ -517,7 +529,74 @@ class Memory:
         elif mh:                                    # перевод без метки (тире перевод опустил) — как есть
             self.add(mh.group(1) + hu[mh.end():], ru)
 
+    def expected(self, seg):
+        """Перевод, который сборка должна положить на место сегмента: его собственный (res[id].ru), без id — по тексту, как
+        прежде (lost_segments сверяет с этим текст готового DOCX)."""
+        own = self.ids.get(seg["id"])
+        return own[1] if own else self.get(seg["text"])
+
+    def attach(self, blocks):
+        """Размеченный PDF: блоки по дереву разметки сегментов не знают — id по точному совпадению текста (KEY) в порядке
+        документа: абзац получает первый ещё не занятый сегмент страницы с таким текстом и сегмент абзаца разметки
+        (struct_only: с метками начертания или склейка соседних элементов дерева — merge_inline) — оба id блока, перевод
+        такого абзаца ищется по тексту, и оба взяты (sids.py). Блоки с id и абзацы без пары не трогает."""
+        pool = {k: (list(a), list(b)) for k, (a, b) in self.pool.items()}
+        for b in _paras(blocks):
+            k, tgt = KEY(text_of(b["runs"])), b.get("note") or b           # сноска — своими id, не абзаца-хозяина
+            if k and k in pool and "sids" not in tgt:
+                plain, tree = pool[k]
+                ids = plain[:1] + tree                   # сегменты разметки с этим текстом (с метками и без) — все, каждому абзацу
+                del plain[:1]
+                if ids:
+                    tgt["sids"] = ids
+
+    def take(self, sids):
+        """Сегменты взяты без перевода: маркер пункта, что сборка снимает вместе с его знаком."""
+        self.used.update(sids or ())
+
+    def at(self, sids, inside=True, pending=None):
+        """Блок со своими сегментами (sids; у блока без id — пусто) собирается: перевод ищется сначала по их id, пока не
+        вызван `at(*prev)`. → прежнее состояние (sids, внутри ли блока, промахи объемлющего блока)."""
+        prev = (self.cur, self.inside, self.pending)
+        if self.pending:                            # блок (или его пробы) кончился: что не нашлось — потеря перевода
+            self.lacking += [t for t in dict.fromkeys(TAGS.sub("", t) for t in self.pending) if t not in self.lacking]
+            del self.pending[:]
+        self.cur, self.inside = tuple(sids or ()), inside
+        self.pending = [] if pending is None else pending
+        return prev
+
+    def _by_id(self, text):
+        """Перевод блока из ОДНОГО сегмента, если текст блока — текст этого сегмента: его собственный перевод, а не первый
+        из сегментов с тем же текстом (res[id].ru; правка редактора, вариант портала). Составной блок, текст с отброшенной
+        меткой пункта и прочее — по тексту (get)."""
+        if len(self.cur) != 1 or self.cur[0] not in self.ids:
+            return None
+        hu, ru = self.ids[self.cur[0]]
+        if TAGS.search(hu):
+            ok = TAGS.search(text) and text.strip() == hu.strip()
+        else:
+            ok = not TAGS.search(text) and KEY(text) == KEY(hu)
+        if not ok:
+            return None
+        self.used.add(self.cur[0])
+        return ru if TAGS.search(hu) else TAGS.sub("", ru)
+
     def get(self, text):
+        r = self._by_id(text) if self.cur else None
+        if r is None:
+            r = self._get(text)
+            if r is not None:
+                # составной блок или текст не равен тексту сегмента — найден по тексту: id блока взяты, как и сегмент
+                # разметки с этим текстом (struct_only: один на текст; его спрашивают и вне абзаца — подпись рисунка)
+                self.used.update(self.cur)
+                if self.pool:
+                    self.used.update(self.pool.get(KEY(text), ((), ()))[1])
+        if r is not None and self.pending:          # нашёлся другой вариант того же текста — промах пробы не потеря
+            k = KEY(text)
+            self.pending[:] = [t for t in self.pending if not (KEY(t) == k or k in KEY(t) and 2 * len(k) >= len(KEY(t)))]
+        return r
+
+    def _get(self, text):
         if not self.need(TAGS.sub("", text)):
             # значение без слов («1,7 kW»): портал не нужен, но res хранит его с единицей по глоссарию («1,7 кВт») —
             # отдаём это, а не исходный текст (аудит 29.10, C6: в таблицах оставалась латиница)
@@ -528,7 +607,7 @@ class Memory:
         r = self.m.get(KEY(text))
         if r is None and "\t" in text:
             parts = [p for p in text.split("\t")]
-            got = [self.get(p) if p.strip() else p for p in parts]
+            got = [self._get(p) if p.strip() else p for p in parts]
             if all(g is not None for g in got):
                 r = "\t".join(g.strip() if p.strip() else g for p, g in zip(parts, got))
         # значение известного сегмента «подпись: значение» — раньше склейки по частям: название в шапке «KRITIKUS … /
@@ -573,6 +652,8 @@ class Memory:
         r = self.get(text)
         if r is None and text.strip():
             self.missing.append(text)
+            if self.inside:
+                self.pending.append(text)
         return r
 
 
@@ -1062,7 +1143,24 @@ class Builder:
             pf.first_line_indent = Pt(-round(hang, 1))
 
     # ---------------------------------------------------------------- блоки
+    @contextlib.contextmanager
+    def _at(self, b):
+        """Блок b собирается: память ищет его перевод по id его сегментов (sids.py); без флага и без памяти с `at` — как есть."""
+        at = getattr(self.tr, "at", None) if SIDS.enabled() else None
+        if at is None:
+            yield
+            return
+        prev = at(b.get("sids"))
+        try:
+            yield
+        finally:
+            at(*prev)
+
     def paragraph(self, b, style="Normal", tgt=None):
+        with self._at(b):
+            return self._paragraph(b, style, tgt)
+
+    def _paragraph(self, b, style="Normal", tgt=None):
         runs = b["runs"]
         tgt = tgt if tgt is not None else self.doc
         text = text_of(runs).strip()
@@ -1175,7 +1273,8 @@ class Builder:
         self.note_id += 1
         nid = str(self.note_id)
         tmp = self.doc.add_paragraph(style="Footnote Text")    # перевод — тем же путём, что у абзаца
-        self._put_runs(tmp, [dict(r) for r in note["runs"]])
+        with self._at(note):
+            self._put_runs(tmp, [dict(r) for r in note["runs"]])
         p_el = tmp._p
         p_el.getparent().remove(p_el)
         ref = parse_xml('<w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:rPr>'
@@ -1275,7 +1374,8 @@ class Builder:
 
     def heading(self, b):
         fresh = getattr(self, "fresh", False)
-        par = self._heading(b)
+        with self._at(b):
+            par = self._heading(b)
         if b.get("center") and par is not None:              # заголовок по центру в оригинале (НГТУ, docx_layout)
             par.alignment = 1
         if b.get("break") and par is not None and not fresh:     # разрыв листа оригинала (docx_struct.load)
@@ -1360,6 +1460,8 @@ class Builder:
                         runs = runs[1:]
                         if runs and "t" in runs[0]:
                             runs[0]["t"] = runs[0]["t"].lstrip()
+                        elif not runs and hasattr(self.tr, "take"):
+                            self.tr.take(x.get("sids"))   # пункт был одним знаком маркера: взят без перевода
                 # картинка и подпись «Рисунок N» внутри пункта — своими абзацами (по центру, как в оригинале), не
                 # продолжением пункта с отступом (JPDS, 17.10)
                 if not first and (all("img" in r for r in runs)
@@ -1374,7 +1476,8 @@ class Builder:
                     par.paragraph_format.first_line_indent = Pt(m - t)
                 else:
                     par.paragraph_format.left_indent = Pt(t)
-                self._put_runs(par, runs)
+                with self._at(x):
+                    self._put_runs(par, runs)
                 for n in x.get("notes") or []:
                     self._footnote(par, n)
                 first = False
@@ -1694,7 +1797,8 @@ class Builder:
                             for r in x["runs"]:
                                 self._img_run(first, r["img"])
                         else:
-                            self._put_runs(first, x["runs"])
+                            with self._at(x):
+                                self._put_runs(first, x["runs"])
                         used, par = True, first
                     else:
                         par = self.paragraph(x, style, tgt=dc)
@@ -2444,6 +2548,8 @@ class Builder:
         head_x = {i["xref"] for i in L.get("head_imgs") or []}
         logos_head = False
         blocks = merge_inline(blocks)
+        if SIDS.enabled() and L.get("exempt_ids") is None and hasattr(self.tr, "attach"):
+            self.tr.attach(blocks)              # размеченный PDF: id абзацев — по тексту после склейки (Memory.attach)
         if in_title:                            # титул — сверху вниз по листу (логотип OAH в дереве — после названия)
             n1 = next((i for i, b in enumerate(blocks) if ((b.get("geom") or {}).get("page") or 1) >= 2), len(blocks))
             blocks = sorted(blocks[:n1], key=lambda b: (b.get("geom") or {}).get("top") or 0) + blocks[n1:]
@@ -2694,6 +2800,12 @@ class Builder:
                     self._header(_first_page(sec), zl(first_of[j]))
         self.doc.save(out)
         font_table(out, (L or {}).get("font_class") or {})
+        return self.used_ids
+
+    @property
+    def used_ids(self):
+        """Id сегментов, перевод которых сборка взяла в документ (E6, sids.py); память без учёта id — пусто."""
+        return set(getattr(self.tr, "used", ()))
 
     def _page_bg(self, hdr, color, w, h):
         """Фон листа — картинка 1×1 цвета color во весь лист (w×h pt) за текстом, привязанная к листу, в шапке раздела:
@@ -2818,7 +2930,7 @@ def _paras(blocks):
         elif b.get("runs"):
             yield b
             for n in b.get("notes") or []:
-                yield {"k": "p", "runs": n["runs"]}
+                yield {"k": "p", "runs": n["runs"], "note": n}
 
 
 def blocks_layout(pdf, segs, mode):
@@ -2843,8 +2955,8 @@ def blocks_layout(pdf, segs, mode):
             dup = lambda r: any(half(r, i, "x0", "x1") and half(r, i, "top", "bottom") for i in him)
             blocks = [b for b in blocks if not (him and b["k"] == "p" and (b.get("geom") or {}).get("page") == 1
                                                 and b.get("runs") and all("img" in r and dup(r["img"]) for r in b["runs"]))]
-            return blocks, L
-        return blocks, docx_layout.layout(str(pdf), blocks, segs, info)
+            return blocks, SIDS.stamp(L, info)
+        return blocks, SIDS.stamp(docx_layout.layout(str(pdf), blocks, segs, info), info)
     blocks, _ = docx_struct.load(str(pdf))
     blocks = docx_struct.compose_figures(blocks, str(pdf))   # не в load: load зовёт и coverage при извлечении
     docx_struct.list_geo(blocks)
@@ -2854,7 +2966,8 @@ def blocks_layout(pdf, segs, mode):
 def job_memory(segs, res):
     """Память сборки из сегментов задачи: текст страниц, абзацы разметки (loc.struct_only) — переводы после проверки,
     шлифовки и правок редактора; надписи скриншотов — не здесь (их несут картинки)."""
-    return Memory([(s["text"], (res.get(str(s["id"])) or {}).get("ru")) for s in segs if "shot" not in s["loc"]])
+    return Memory([(s["text"], (res.get(str(s["id"])) or {}).get("ru"), s["id"], "struct_only" in s["loc"])
+                   for s in segs if "shot" not in s["loc"]])
 
 
 def word_export(meta):

@@ -21,6 +21,7 @@ from collections import Counter
 
 import geom as GM
 import patterns as PT
+import sids as SIDS
 
 HEAD = {"H1": 1, "H2": 2, "H3": 3, "H4": 4, "H5": 5, "H6": 6}
 SKIP = {"Artifact"}
@@ -325,7 +326,7 @@ def _cut_rows(rows):
                 k = len(head[-1]["runs"])
                 if k < len(runs) and "t" in runs[k] and runs[k - 1].get("t", " ")[-1:] not in (" ", "-"):
                     runs[k]["t"] = " " + runs[k]["t"]
-                head[-1] = dict(head[-1], runs=runs)
+                head[-1] = SIDS.add(dict(head[-1], runs=runs), tail[0].get("sids"))
                 tail = tail[1:]
             elif head and tail and head[-1]["k"] == "list" == tail[0]["k"] and head[-1].get("kind") == tail[0].get("kind"):
                 head[-1] = dict(head[-1], items=head[-1]["items"] + tail[0]["items"])     # список, разрезанный листом
@@ -538,6 +539,7 @@ def join_tables(bs):
                 prev = dict(prev, rows=rows0[:k], **({"frame": dict(fr, ys=ys0[:k + 1])} if len(ys0) == len(rows0) + 1
                                                      else {}))
             rows = b["rows"][rep:]
+            dropped = SIDS.ids([x for r in b["rows"][:rep] for c in r for x in c.get("blocks", [])])
             # картинки, что Word вложил в повтор шапки (значки строк прошлого листа, JPDS табл. 15), — не прочь:
             # их по месту на листе переселит adopt
             strays = [x for r in b["rows"][:rep] for c in r for x in c.get("blocks", [])
@@ -562,6 +564,8 @@ def join_tables(bs):
                 out[-1]["frame"] = dict(prev["frame"], ys=ya + [round(ya[-1] + y - yb[0], 1) for y in yb[1:]])
             if strays:
                 out[-1]["strays"] = prev.get("strays", []) + strays
+            if dropped:                             # повтор шапки снят нарочно: его сегменты — не потеря (sids.py)
+                out[-1]["sids_dropped"] = SIDS.join(prev.get("sids_dropped"), sorted(dropped))
             continue
         if b["k"] == "table":
             b = dict(b, rows=_cut_rows(b["rows"]))
