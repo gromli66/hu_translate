@@ -148,6 +148,36 @@ def test_first_sheet_without_title_is_a_sheet_section(tmp_path):
         t.text for t in sec.header._element.iter(qn("w:t")))
 
 
+def test_landscape_sheet_and_sheet_after_it_continue_with_own_number(tmp_path):
+    """Путь А и альбомный лист (30HU*75GT, 01-02FMP0BIGT, 3FI18): раздел альбомного листа и раздел книжного листа сразу
+    после него открывает смена ориентации, а не «лист» — перелив такого листа шёл с номером следующего листа (N+1), и
+    следующий раздел, начатый с номера своего листа, повторял его («4, 4»); книжный лист после альбомного не ужимался
+    docx_fit. Теперь и они — разделы-листы: перелив — «N (прод.)», в fit_want — по одному листу."""
+    src = tmp_path / "land.pdf"
+    segs = _sheets_pdf(src, pages=5, head=lambda pno: (0, pno + 1))
+    blocks, info = DL.load(str(src), segs, text=True)
+    L = D.layout(str(src), blocks, content=info.get("content_boxes"))
+    assert L["sheet_no"] == {1: 1, 2: 2, 3: 3, 4: 4, 5: 5}
+    blocks = D.split_at_zones(blocks, L.get("variants"), D.sheet_closed(L, blocks))
+    sizes = [(595, 842)] * 5
+    sizes[2] = (842, 595)                                           # лист 3 — альбомный
+    out = tmp_path / "land.docx"
+    bld = B.Builder(B.Memory([(s["text"], s["text"]) for s in segs]), lambda img: png(), PROFILE)
+    bld.build(blocks, str(out), dict(LAYOUT, page_sizes=sizes, **{k: v for k, v in L.items() if k in (
+        "head_grid", "variants", "page_marked", "page_tok", "stamp", "stamp_widths", "stamp_box", "stamp_inner",
+        "stamp_paras", "stamp_aligns", "stamp_merge", "head_rule", "head_imgs", "head_lines", "first_is_body",
+        "sheet_no", "num_start")}))
+    doc = Document(str(out))
+    land = [i for i, s in enumerate(doc.sections) if s.page_width > s.page_height]
+    assert len(land) == 1
+    for i in (land[0], land[0] + 1):                                # альбомный лист 3 и книжный лист 4 после него
+        sec = doc.sections[i]
+        assert sec._sectPr.find(qn("w:pgNumType")).get(qn("w:start")) == str(i + 1)
+        assert bld.fit_want.get(i) == 1
+        assert sec.different_first_page_header_footer and "(прод.)" in "".join(
+            t.text for t in sec.header._element.iter(qn("w:t")))
+
+
 def test_body_bottom_of_three_sheet_document_is_not_its_short_last_sheet(tmp_path):
     """Документ в три листа без подвала (30BLM1M2GT): низ тела — по самому низкому листу после первого, а не только по
     третьему: тот короткий (две строки), и поле тела всех листов выходило 280 pt — лист 2 шёл на две страницы."""
