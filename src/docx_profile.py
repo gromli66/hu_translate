@@ -18,7 +18,7 @@ from statistics import median
 from docx_struct import text_of
 import docx_build as B
 
-ROLES = ("body", "list", "td", "th", "caption", "code", "H1", "H2", "H3", "H4", "H5")
+ROLES = ("body", "td", "caption", "code", "H1", "H2", "H3", "H4", "H5")
 
 
 def _flat(blocks, ctx="body", depth=0):
@@ -123,7 +123,7 @@ def extract(path, blocks, L):
     for role, b, _ in items:
         if role in fonts:
             fonts[role] += _font(b["runs"])
-    P = {"page": {k: round(L[k], 1) for k in ("W", "H", "left", "right", "top", "bottom")}}
+    P = {"page": {k: round(L[k], 1) for k in ("left", "right")}}
     P["roles"] = {}
     for r, c in fonts.items():
         if c:
@@ -254,11 +254,7 @@ def extract(path, blocks, L):
     def med(key):
         v = [f[key] for f in frames if key in f]
         return round(median(v), 1) if v else None
-    P["table"] = {"pad_left": med("pad_left"), "pad_top": med("pad_top"), "pad_bottom": med("pad_bottom"),
-                  "fill": Counter(f["fill"] for f in frames if f.get("fill")).most_common(1)[0][0]
-                  if any(f.get("fill") for f in frames) else None,
-                  "line": Counter(f["line"] for f in frames if f.get("line")).most_common(1)[0][0]
-                  if any(f.get("line") for f in frames) else "000000"}
+    P["table"] = {"pad_left": med("pad_left"), "pad_top": med("pad_top"), "pad_bottom": med("pad_bottom")}
     pdf.close()
     return P
 
