@@ -42,6 +42,21 @@ def stamp(L, info):
     return L
 
 
+def ids(blocks):
+    """Id всех блоков списка, со вложенными списками и ячейками таблиц."""
+    out = set()
+    for b in blocks:
+        out.update(b.get("sids") or ())
+        if b["k"] == "list":
+            for it in b["items"]:
+                out |= ids(it)
+        elif b["k"] == "table":
+            for r in b["rows"]:
+                for c in r:
+                    out |= ids(c.get("blocks") or [])
+    return out
+
+
 def dropped(blocks):
     """Id сегментов, снятых при склейке блоков нарочно (повтор шапки таблицы на новом листе: docx_struct.join_tables)."""
     out = set()

@@ -263,31 +263,34 @@ def sheet(wb, d, entries=()):
     return groups
 
 
+AUTH = ("edited", "tm", "polish", "ru_pdf")        # перевод редактора, память переводов, шлифовка, сокращение для PDF
+
+
 def same_source(segs, res):
     """E6 (sids.py): одинаковый исходный текст сегментов — один перевод на документ. Блок берёт перевод своего сегмента (по id),
     и там, где портал или редактор перевёл тот же текст по-разному, в одном документе вышло бы два варианта (прежде везде
-    стоял первый). Выбор: перевод, утверждённый редактором или из памяти переводов (edited, tm), иначе самый частый, при
+    стоял первый). Выбор: перевод, утверждённый редактором, из памяти, после шлифовки (AUTH), иначе самый частый, при
     равенстве — первый в документе (как было). Текст — точный (KEY: пробелы и метки — не в счёт, регистр и знаки — в счёт:
-    «Nyomás:» и «nyomás» — разные), без меток начертания, надписей на картинках и копий без слов.
+    «Nyomás:» и «nyomás» — разные), без меток начертания, надписей на картинках и копий без слов. Переводы с правкой
+    редактора, из памяти, после шлифовки и сокращённые для PDF (AUTH) решают выбор и сами не меняются.
     → (res с исправленными ru — копия, id → прежний перевод); res не меняется."""
-    from docx_build import KEY
     from segments import needs_translation
     groups = defaultdict(list)
     for s in segs:
         r = res.get(str(s["id"])) or {}
         if r.get("ru") and "shot" not in s["loc"] and not r.get("copied") and not TAG.search(s["text"])                 and not TAG.search(r["ru"]) and needs_translation(s["text"]):
-            groups[KEY(s["text"])].append((s["id"], r))
+            groups[s["text"].strip()].append((s["id"], r))
     out, was = dict(res), {}
     for items in groups.values():
         votes = Counter(r["ru"] for _, r in items)
         if len(votes) < 2:
             continue
-        pool = [r["ru"] for _, r in items if r.get("edited") or r.get("tm")] or [r["ru"] for _, r in items]
+        pool = [r["ru"] for _, r in items if any(r.get(f) for f in AUTH)] or [r["ru"] for _, r in items]
         c = Counter(pool)
         top = max(c.values())
         pick = next(ru for ru in pool if c[ru] == top)               # первый среди самых частых
         for i, r in items:
-            if r["ru"] != pick:
+            if r["ru"] != pick and not any(r.get(f) for f in AUTH):
                 was[i] = r["ru"]
                 out[str(i)] = dict(r, ru=pick, unified=r.get("unified") or r["ru"])
     return out, was

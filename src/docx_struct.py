@@ -539,7 +539,7 @@ def join_tables(bs):
                 prev = dict(prev, rows=rows0[:k], **({"frame": dict(fr, ys=ys0[:k + 1])} if len(ys0) == len(rows0) + 1
                                                      else {}))
             rows = b["rows"][rep:]
-            dropped = [i for r in b["rows"][:rep] for c in r for x in c.get("blocks", []) for i in x.get("sids") or ()]
+            dropped = SIDS.ids([x for r in b["rows"][:rep] for c in r for x in c.get("blocks", [])])
             # картинки, что Word вложил в повтор шапки (значки строк прошлого листа, JPDS табл. 15), — не прочь:
             # их по месту на листе переселит adopt
             strays = [x for r in b["rows"][:rep] for c in r for x in c.get("blocks", [])
@@ -565,7 +565,7 @@ def join_tables(bs):
             if strays:
                 out[-1]["strays"] = prev.get("strays", []) + strays
             if dropped:                             # повтор шапки снят нарочно: его сегменты — не потеря (sids.py)
-                out[-1]["sids_dropped"] = SIDS.join(prev.get("sids_dropped"), dropped)
+                out[-1]["sids_dropped"] = SIDS.join(prev.get("sids_dropped"), sorted(dropped))
             continue
         if b["k"] == "table":
             b = dict(b, rows=_cut_rows(b["rows"]))

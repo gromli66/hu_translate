@@ -12,6 +12,12 @@ from test_assembly_sheets import _sheets_pdf
 from test_struct_docx import LAYOUT, PROFILE, png
 from test_text_forms import _segs
 
+@pytest.fixture(autouse=True)
+def _flag_on(monkeypatch):
+    """Тесты этапа — с включённым флагом, что бы ни стояло в среде; выключенный проверяют свои тесты."""
+    monkeypatch.setenv("HU_U_SIDS", "1")
+
+
 seg = lambda i, text, page=0, y=300.0, **loc: {"id": i, "page": page, "text": text,
                                                "loc": dict({"bbox": [60.0, y, 200.0, y + 10]}, **loc)}
 
@@ -240,3 +246,63 @@ def test_attach_claims_the_tree_segment_with_the_page_segment_of_the_same_text()
     blocks = [{"k": "p", "runs": [{"t": "Zárni", "b": True}, {"t": " a szelepet"}]}]
     attach(blocks, segs)
     assert blocks[0]["sids"] == [1, 2]
+
+
+def test_attach_gives_every_tree_segment_of_the_text_to_the_paragraph():
+    """Второй круг struct_fill: тот же абзац есть сегментом с метками и без них — оба сегмента разметки у абзаца
+    (перевод тела берётся по тексту из любого), и каждому повтору абзаца."""
+    segs = [seg(1, "Zárni a szelepet"), seg(2, "<f1>Zárni</f1><f2> a szelepet</f2>", struct_only=True),
+            seg(3, "Zárni a szelepet", struct_only=True), seg(4, "Zárni a szelepet")]
+    blocks = [{"k": "p", "runs": [{"t": "Zárni", "b": True}, {"t": " a szelepet"}]},
+              {"k": "p", "runs": [{"t": "Zárni", "b": True}, {"t": " a szelepet"}]}]
+    attach(blocks, segs)
+    assert blocks[0]["sids"] == [1, 2, 3] and blocks[1]["sids"] == [4, 2, 3]
+
+
+def test_part_found_in_a_tabbed_text_does_not_mark_the_block_used():
+    """Текст с табуляцией ищется по частям; целого нет — ничего не взято (потерю видно)."""
+    mem = B.Memory([("Kódszám neve", "Название кода", 1)])
+    mem.at([5])
+    assert mem("Kódszám neve	Ismeretlen érték szöveg") is None and mem.used == set()
+
+
+def test_memory_context_is_restored_when_a_block_fails(tmp_path):
+    """Исключение внутри блока не оставляет память в его контексте: следующий поиск (колонтитул) идёт вне блока."""
+    mem = B.Memory([("Egy", "Один", 1)])
+    bld = B.Builder(mem, lambda img: png(), PROFILE)
+    bld._put_runs = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("картинка не вставилась"))
+    with pytest.raises(RuntimeError):
+        bld.paragraph({"k": "p", "runs": [{"t": "Egy", "size": 10}], "sids": [1]})
+    assert mem.cur == () and mem.used == set()
+
+
+def test_flag_off_builder_ignores_sids_in_blocks(tmp_path, monkeypatch):
+    """HU_U_SIDS=0: блоки с sids собираются так же, как без них (document.xml тот же), id не берутся."""
+    import zipfile
+    para = lambda t, sids: dict({"k": "p", "runs": [{"t": t, "size": 10}], "seg": True,
+                                 "geom": {"page": 1, "top": 100, "x0": 60, "x1": 200, "bottom": 110, "first_x0": 60}},
+                                **({"sids": sids} if sids else {}))
+    pairs = [("Állapot ellenőrzése", "Проверка состояния", 1), ("Állapot ellenőrzése", "Контроль состояния", 2)]
+    monkeypatch.setenv("HU_U_SIDS", "0")
+    xml = []
+    for name, ids in (("a", ([1], [2])), ("b", (None, None))):
+        mem = B.Memory(pairs)
+        used = B.Builder(mem, lambda img: png(), PROFILE).build(
+            [para("Állapot ellenőrzése", ids[0]), para("Állapot ellenőrzése", ids[1])], str(tmp_path / f"{name}.docx"),
+            LAYOUT)
+        assert used == set()
+        xml.append(zipfile.ZipFile(tmp_path / f"{name}.docx").read("word/document.xml"))
+    assert xml[0] == xml[1]
+
+
+def test_same_source_leaves_polished_and_shortened_translations_alone():
+    import termvar
+    segs = [seg(1, "Állapot ellenőrzése"), seg(2, "Állapot ellenőrzése"), seg(3, "Állapot ellenőrzése"),
+            seg(4, "Típus:	X"), seg(5, "Típus: X")]
+    res = {"1": {"ru": "Проверка состояния", "polish": {"of": "x"}}, "2": {"ru": "Контроль состояния"},
+           "3": {"ru": "Контроль состояния", "ru_pdf": "Контроль", "ru_pdf_of": "Контроль состояния"},
+           "4": {"ru": "Тип:	X"}, "5": {"ru": "Тип: X"}}
+    out, was = termvar.same_source(segs, res)
+    assert out["1"]["ru"] == "Проверка состояния" and out["3"]["ru"] == "Контроль состояния"   # защищены
+    assert out["2"]["ru"] == "Проверка состояния" and was == {2: "Контроль состояния"}       # непривилегированный — к выбору
+    assert out["4"]["ru"] == "Тип:	X" and out["5"]["ru"] == "Тип: X"                         # табуляция — не пробел

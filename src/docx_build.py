@@ -541,7 +541,9 @@ class Memory:
         for b in _paras(blocks):
             k, tgt = KEY(text_of(b["runs"])), b.get("note") or b           # сноска — своими id, не абзаца-хозяина
             if k and k in pool and "sids" not in tgt:
-                ids = [q.pop(0) for q in pool[k] if q]
+                plain, tree = pool[k]
+                ids = plain[:1] + tree                   # сегменты разметки с этим текстом (с метками и без) — все, каждому абзацу
+                del plain[:1]
                 if ids:
                     tgt["sids"] = ids
 
@@ -589,7 +591,7 @@ class Memory:
         r = self.m.get(KEY(text))
         if r is None and "\t" in text:
             parts = [p for p in text.split("\t")]
-            got = [self.get(p) if p.strip() else p for p in parts]
+            got = [self._get(p) if p.strip() else p for p in parts]
             if all(g is not None for g in got):
                 r = "\t".join(g.strip() if p.strip() else g for p, g in zip(parts, got))
         # значение известного сегмента «подпись: значение» — раньше склейки по частям: название в шапке «KRITIKUS … /
