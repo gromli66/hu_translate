@@ -47,8 +47,9 @@
 Правила, которых в описи нет (с тестами): перенос слова и ряд — `tests/test_segment_rows.py` (E4, E5); `sids` и единый
 перевод — `tests/test_sids.py` (E6); фигуры, формы, сверка скана — `tests/test_figures.py` (E7); путь А и «(прод.)» —
 `tests/test_assembly_sheets.py`, `tests/test_docx_fit.py`, `tests/test_assemble_path.py`. Заплатки из таблиц ниже, которые
-по плану E3–E7 должны были стать лишними (`_stable_running`, `_portal_running`, `_typical_page`, `roles.repeats`,
-`fit_rows`, `sub_rows`, `hyphen_cont`, `_foot_top`), всё ещё вызываются и участвуют в выходе.
+по плану E3–E7 должны были стать лишними (`_stable_running`, `_typical_page`, `roles.repeats`,
+`fit_rows`, `sub_rows`, `hyphen_cont`, `_foot_top`), всё ещё вызываются и участвуют в выходе; `_portal_running` слит в
+факт роли (`_role`, E9.4).
 
 ## Конфликты — по шагам договора
 

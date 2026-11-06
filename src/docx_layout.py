@@ -77,13 +77,6 @@ def _is_running(s, keys, H):
     return bool(z) and ((z, _sig(s["text"])) in keys or (z, round(s["loc"]["bbox"][1] / 4)) in keys)
 
 
-def _portal_running(s):
-    """Колонтитул распознанного листа по метке портала (roles.py): OCR читает шапку по-разному на разных листах («T0.7. sz.
-    útmutató» / «3.7. sz. útmutató»), и повтор по тексту её не узнаёт — шапка печаталась посреди текста (замер на сканах
-    18.10: колонтитулы правилами 0,27)."""
-    return bool(s["loc"].get("ocr")) and s["loc"].get("role") == "header"
-
-
 def _stable_running(s, pool, keys, H):
     """Колонтитул — строка, что стоит так же почти на всех листах: повтор по тексту (_is_running) или строка с меткой
     портала, если на 80 % листов с колонтитулами (pool — повторы и метки портала) на той же высоте похожий текст (OCR
@@ -1435,16 +1428,20 @@ def load(src, segs, text=False):
     rules = _page_rules(doc, text)
     # шапка таблицы (строка заголовков столбцов) повторяется на каждом листе, но это не колонтитул и не бегущее название
     heads = _head_rows(rules, body, run_keys, H)
-    pool = [s for s in body if s["id"] not in heads and (_is_running(s, run_keys, H) or _portal_running(s))]
+    # распознанная строка с меткой портала «колонтитул» (roles.py) — свидетельство колонтитула второго ранга (_role, п. 1):
+    # OCR читает шапку по-разному на разных листах («T0.7. sz. útmutató» / «3.7. sz. útmutató»), и повтор по тексту её
+    # не узнаёт (замер на сканах 18.10: колонтитулы правилами 0,27); колонтитул — если стоит так же почти на всех листах
+    hdr = {s["id"] for s in body if s["loc"].get("ocr") and s["loc"].get("role") == "header"}
+    pool = [s for s in body if s["id"] not in heads and (_is_running(s, run_keys, H) or s["id"] in hdr)]
     content = [s for s in body if _role({
         "table_head": s["id"] in heads, "repeat": _is_running(s, run_keys, H), "ocr": bool(s["loc"].get("ocr")),
-        "label": s["loc"].get("role"), "stable": _portal_running(s) and _stable_running(s, pool, run_keys, H)})
+        "label": s["loc"].get("role"), "stable": s["id"] in hdr and _stable_running(s, pool, run_keys, H)})
         != "running"]
     # меняющееся название раздела в рамке (метка портала, но не на всех листах одинаково) — один раз, первым появлением:
     # OCR читает его на каждом листе чуть по-разному, и точное сравнение с предыдущим листом ниже оставляло копии
     # посреди раздела (3SZ19, 19.10); похожие строки верхней зоны — одна группа
     from difflib import SequenceMatcher
-    titles = {_sig(s["text"]) for s in pool if _portal_running(s) and not _stable_running(s, pool, run_keys, H)}
+    titles = {_sig(s["text"]) for s in pool if s["id"] in hdr and not _stable_running(s, pool, run_keys, H)}
     titles = [k for k in titles if len(k) >= 6]
     like = lambda k, q: SequenceMatcher(None, k, q).ratio() >= 0.8
     seen, drop = [], set()
@@ -1867,7 +1864,8 @@ def layout(src, blocks, segs, info):
     W, H = doc[0].rect.width, doc[0].rect.height
     body = [s for s in segs if "shot" not in s["loc"] and s["loc"].get("bbox") and s["text"].strip()]
     run_keys = _running(body, H, len(doc))
-    runs = [s for s in body if _is_running(s, run_keys, H) or _portal_running(s)]
+    # колонтитул: повтор по тексту или распознанная строка с меткой портала «колонтитул» (как в load, _role п. 1)
+    runs = [s for s in body if _is_running(s, run_keys, H) or s["loc"].get("ocr") and s["loc"].get("role") == "header"]
     geoms = [b["geom"] for b in blocks if b.get("geom") and b["k"] in ("p", "h")] + \
         [p["geom"] for b in blocks if b["k"] == "list" for it in b["items"] for p in it if p.get("geom")]
     left = sorted(g["x0"] for g in geoms)[len(geoms) // 10] if geoms else 62
