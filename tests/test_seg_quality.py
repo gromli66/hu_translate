@@ -218,3 +218,16 @@ def test_code_enumeration_continues_after_short_line():
     codes = ["02TD95S201,", "02TD95S202,", "02TD96S201,"]
     fr = [_fr(c, (70.8, 270.7 + 24.3 * k, 143.4, 289.5 + 24.3 * k), 11.04) for k, c in enumerate(codes)]
     assert _texts(fr) == codes
+
+
+def test_blank_line_ends_paragraph_with_tall_monospace_boxes():
+    """Пустая строка — конец абзаца, и когда рамки моноширинных строк выше шага (зазор рамок её не видит): «02TK47S298
+    Nyitási feltétel, … zárva.» и ряд псевдотаблицы «30TD97S201» ниже через пустую строку (02VE25 л. 44: середины через
+    24,3 pt при кегле 11 — 2,2 кегля; строки абзаца — через 14,4, 1,3 кегля) шли одним сегментом, и код ряда уезжал в
+    конец чужого условия. Контрпример: строки абзаца при обычном шаге склеиваются, как прежде."""
+    a = _fr("02TK47S298 Nyitási feltétel, 02TD82S212, 02TD94S201, 02TD80S401 zárva.", (70.8, 435.4, 524.5, 454.2), 11.04)
+    b = _fr("30TD97S201", (70.8, 459.6, 143.4, 478.4), 11.04)
+    assert _texts([a, b]) == [a["t"], b["t"]]
+    c = _fr("02TD90D001 Indítási feltétel, (a kiválasztott tartály ürítő és töltő", (70.8, 76.1, 531.1, 94.9), 11.04)
+    d = _fr("vezetéke nyitva, a többi tartály ürítő és töltő vezetéke zárva és", (70.8, 90.4, 531.1, 109.1), 11.04)
+    assert _texts([c, d]) == [c["t"] + " " + d["t"]]

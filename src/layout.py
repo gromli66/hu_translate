@@ -476,6 +476,12 @@ def group(frags, hs, vs=(), form=False, rows=None):
                 tall = tall or (cont and gap < 0 and 0.85 * size <= (y0 + y1 - last[1] - last[3]) / 2 <= 1.8 * size)
                 if not (-0.35 * size <= gap <= 0.6 * size or tall):
                     continue
+                # пустая строка между строками — абзац кончился: середины строк дальше 1,8 кегля (строки абзаца — через
+                # 1,0–1,4 кегля, через пустую строку — 2,1–2,4; замер по 7 документам). Рамки моноширинных строк выше шага,
+                # и зазор рамок пустую строку не видел: «02TK47S298 … zárva.» + ряд псевдотаблицы «30TD97S201» (02VE25
+                # л. 44), «… 1*RD31S062,» + «Az alábbi armatúrák ZÁRVA:» (1SZ01 л. 8)
+                if (y0 + y1 - last[1] - last[3]) / 2 > 1.8 * size:
+                    continue
                 if min(x1, px1) - max(x0, px0) <= 0:
                     continue
                 if p["bold"] != f["bold"] or abs(p["size"] - f["size"]) > 1.5:

@@ -1035,7 +1035,9 @@ def test_orphan_tail_after_section_number_joins_previous_line():
         "A 1*CSTH I fokozat csapadéka táptartályra",
         "A 1*RN06D001 INDÍTANI az 1SZ03 KU 4.10. szerint.",
         "A 1*RN15D001-et INDÍTANI az 1SZ03 KU 4.11. szerint.",
-        "Az 1*RN06D001 elindítva, RENDBEN üzemel. Az 1*RN15D001 elindítva, RENDBEN üzemel."]
+        # два состояния «Állapot» через пустую строку (середины через 20,4 pt при кегле 9), каждое против своего действия, —
+        # раздельно (layout.group: пустая строка — конец абзаца, 06.11); прежде склеивались
+        "Az 1*RN06D001 elindítva, RENDBEN üzemel.", "Az 1*RN15D001 elindítva, RENDBEN üzemel."]
 
 
 def test_head_box_with_double_right_edge_splits_by_gap(tmp_path):
