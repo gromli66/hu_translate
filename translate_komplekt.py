@@ -48,7 +48,7 @@ def main():
     if a.cmd == "run":
         P.fit(a.work, prj)
     if a.cmd in ("run", "assemble"):
-        P.assemble(a.work)
+        P.assemble(a.work, prj=prj)
     if a.cmd == "edits":
         P.edits(a.work, prj, a.sim, a.workers)
     if a.cmd == "terms":

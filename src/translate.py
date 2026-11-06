@@ -14,6 +14,7 @@ from pathlib import Path
 
 import glossary as G
 import morph
+from conventions import is_tag
 from llm import chat, STAT
 
 
@@ -588,10 +589,30 @@ def badness(issues):
 FALSE_FRIEND = re.compile(r"(?<![\wÀ-ɏ])fokozatos\w*", re.I)
 
 
-def gloss_misses(src, ru, entries, outer=None):
+def _alt_in(alt, low):
+    """Вариант из скобок записи («место установки (по месту)» → «по месту») есть в переводе: слова подряд, по основам
+    (то же правило основы, что у основных вариантов); короткое «по» — слово целиком: «по месту» — не «место»."""
+    ws = [w.lower().replace("ё", "е") for w in re.findall(r"[А-Яа-яЁёA-Za-z0-9]+", alt)]
+    if not ws:
+        return False
+    pat = r"\W+".join(re.escape(w[:max(3, min(5, len(w) - 2))]) if len(w) >= 4 else re.escape(w) + r"(?![а-яa-z0-9])"
+                      for w in ws)
+    return re.search(r"(?<![а-яa-z0-9])" + pat, low.replace("ё", "е")) is not None
+
+
+def whole_segment(src, e):
+    """Ячейка = термин: все слова сегмента (числа, единицы, коды — не слова) — формы, записанные в ключе записи e
+    («0,0m helyszín»). Найденное по основе («feladat» у «felad») сюда не входит."""
+    forms = {w.lower() for w in re.findall(r"\w+", e.hu)}
+    words = [t for t, _ in G._tokens(src) if re.fullmatch(r"[A-Za-zÁÉÍÓÖŐÚÜŰáéíóöőúüű]{3,}", t)]
+    return bool(words) and all(t.lower() in forms for t in words)
+
+
+def gloss_misses(src, ru, entries, outer=None, alts=False):
     """Мягкая проверка: русские термины найденных записей глоссария есть в переводе (по основам).
     Запись, все места которой лежат внутри более длинного термина (outer — весь глоссарий), не проверяется:
-    «főgőz → острый пар» внутри «főgőz kollektor → главный паровой коллектор» давало ложные тревоги (v3, 02.10)."""
+    «főgőz → острый пар» внутри «főgőz kollektor → главный паровой коллектор» давало ложные тревоги (v3, 02.10).
+    alts — вариант в скобках записи («… (по месту)») тоже засчитывается (модели он назван «в глоссарии также»)."""
     low = ru.lower()
     miss = []
     src = FALSE_FRIEND.sub(" ", src)
@@ -614,6 +635,8 @@ def gloss_misses(src, ru, entries, outer=None):
                 ok = True; break
             if all(w.lower()[:max(3, min(5, len(w) - 2))] in low for w in ws):
                 ok = True; break
+        if not ok and alts:
+            ok = any(_alt_in(a, low) for p in re.findall(r"\(([^)]*)\)", e.ru) for a in re.split(r"\s+/\s+|;|,", p))
         if not ok:
             miss.append(e.hu)
     return miss
@@ -659,6 +682,15 @@ class Translator:
             self.extra_n, self.extra_entries = len(add), add
         # строгие термины комплекта — один и тот же список на все проверки (кэш индекса узнаёт список по объекту)
         self.strict_entries = [e for e in self.extra_entries if "строгий" in (e.note or "")] or self.extra_entries
+        # «риск высокий» без «строгий»: в запросе есть, обязательным не был — «0,0m helyszín» из записи «место установки (по
+        # месту)» выходило «место 0,0 м» (3SZ23, 06.11). Обязателен там, где смысл ячейки — сам термин (term_issues);
+        # целиком «риск высокий» давал бы ложные повторы: 1879 замечаний на 10 320 парах корпуса, у большинства записей
+        # русская сторона — пояснение («снять электропитание с привода»), не форма. Короткая форма в скобках — знак того,
+        # что автор записи назвал, как термин пишется в ячейке
+        strict_ids = {id(e) for e in self.strict_entries}
+        # (запись с контекстом в скобках у венгерского ключа — «kikapcsol (armatúrát)» — к одиночной ячейке не применяется)
+        self.cell_entries = [e for e in self.extra_entries if "риск высокий" in (e.note or "") and "(" not in e.hu
+                             and re.search(r"\([^)]+\)", e.ru) and id(e) not in strict_ids]
         self.abbrs = G.abbreviations(self.entries)
         self.allowed_latin = self._allowed_latin()
         self.ru_caps = frozenset(w for e in self.entries for w in re.findall(r"(?<![А-ЯЁа-яё])[А-ЯЁ]{5,}(?![А-ЯЁа-яё])", e.ru))
@@ -689,8 +721,13 @@ class Translator:
         strict = self.strict_entries
         if not strict:
             return []
-        miss = gloss_misses(TAG.sub("", src), ru, strict, outer=self.entries)
+        plain = TAG.sub("", src)
+        miss = gloss_misses(plain, ru, strict, outer=self.entries)
         ru_of = {e.hu: e.ru for e in strict}
+        cell = [e for e in G.find(plain, self.cell_entries) if whole_segment(plain, e)] if self.cell_entries else []
+        if cell:                                    # ячейка = термин: основной вариант записи или короткий из скобок
+            miss += [m for m in gloss_misses(plain, ru, cell, outer=self.entries, alts=True) if m not in miss]
+            ru_of.update({e.hu: e.ru for e in cell})
         return [f"термин документа: {m} → {ru_of.get(m, '?')}" for m in miss[:3]]
 
     def full_check(self, src, ru):
@@ -780,9 +817,14 @@ class Translator:
         return got, r
 
     def run_batch(self, plan):
-        units = plan["units"]
+        # тег по виду («@.BSZG.TBE») — код: как есть, на портал не уходит (conventions.is_tag)
+        asis = {u["key"]: {"ru": u["text"], "issues": [], "tries": 0, "copied": True}
+                for u in plan["units"] if is_tag(u["text"])}
+        units = [u for u in plan["units"] if u["key"] not in asis]
+        if not units:
+            return asis
         got, r = self._call(units, plan["first_abbr"], plan["context"], self.think, plan.get("note", ""))
-        res = {}
+        res = dict(asis)
         for i, u in enumerate(units):
             ru = got.get(i, "")
             res[u["key"]] = {"ru": ru, "issues": self.full_check(u["text"], ru), "tries": 1}
