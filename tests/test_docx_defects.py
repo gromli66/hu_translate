@@ -199,3 +199,18 @@ def test_series_counter_is_a_word_not_digits_glued_to_print_time(tmp_path):
         assert any(t.endswith("08:28") for t in texts), texts           # минуты — текстом
         marked = [t for t in texts if D.PAGE_MARK in t]
         assert marked and all(t == D.PAGE_MARK + "/46" for t in marked), texts   # полем — только номер листа
+
+
+def test_number_slash_number_is_a_field_only_for_the_marked_counter():
+    """«число/число» в колонтитуле становилось PAGE/NUMPAGES всегда (штамп UTS): у титулов 30RL2126GT и 30RR0102ÁTJGT
+    «Nyomtatva: … 08:28 1/1» на печати выходило «1/<листов перевода>» (E9_DESIGN §5, F-4). Теперь полем — только если в
+    документе счётчик листа помечен (тогда номер приходит меткой); где счётчика нет вовсе — как прежде (UTS)."""
+    from docx import Document as Doc
+    bld = B.Builder(B.Memory([]), lambda img: png(), PROFILE)
+    p = Doc().add_paragraph()
+    bld._zone_text(p, "Nyomtatva: 2026-06-01 08:28 1/1", False, "6", page_marked=True)
+    xml = p._p.xml
+    assert "NUMPAGES" not in xml and "PAGE" not in xml and p.text.endswith("1/1")
+    p2 = Doc().add_paragraph()
+    bld._zone_text(p2, "12/40", False, None, page_marked=False)                 # счётчика в документе нет — штамп UTS
+    assert "NUMPAGES" in p2._p.xml and " PAGE" in p2._p.xml

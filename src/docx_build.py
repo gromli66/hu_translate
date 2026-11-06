@@ -2338,7 +2338,10 @@ class Builder:
         """Текст ячейки колонтитула: «N/NN» → PAGE/NUMPAGES (штамп UTS), число листа из колонтитула оригинала
         («85. oldal», docx_struct._typical_page) → PAGE в переводе на том же месте; прочее — перевод."""
         m = re.match(r"^(.*?)(\d+)\s*/\s*(\d+)\s*$", txt)
-        if m:
+        # «число/число» — поле, только если счётчик листа в документе не нашёлся вовсе (штамп UTS); найден — номер
+        # приходит меткой (ниже), а «1/1» титулов 30RL2126GT, 30RR0102ÁTJGT — текст: полем печаталось «1/<листов
+        # перевода>» (E9_DESIGN §5, F-4)
+        if m and not page_tok and not page_marked:
             head = (m.group(1).strip() + "    ") if m.group(1).strip() else ""
             r = p.add_run(head); r.bold = bold
             f = _field(p, "PAGE", m.group(2)); f.bold = bold
