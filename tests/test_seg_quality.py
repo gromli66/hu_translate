@@ -202,3 +202,19 @@ def test_paragraph_does_not_skip_a_line_of_its_column():
     b = _fr("blokk teljesítménye csökken, a kezelő a táblán", (71.0, 162.0, 300.0, 177.0), 9.0)
     c = _fr("ellenőrzi az állapotot.", (71.0, 172.0, 180.0, 187.0), 9.0)
     assert _texts([a, b, c], vs=vs) == [a["t"] + " " + b["t"] + " " + c["t"]]
+
+
+def test_code_enumeration_continues_after_short_line():
+    """Перечень кодов через запятую в ячейке (1SZ01 л. 20, под «ZÁRNAK:»): строки при обычном шаге с одного края —
+    один абзац, короткая строка «1*RB11S801, RB12S801,» его не закрывает (запятая: перечень идёт дальше). Прежде шёл
+    кусками по 1–2 строки. Контрпример: коды через пустую строку (ряды псевдотаблицы «02TD95S201,» / «02TD95S202,»,
+    02VE25 л. 44, шаг 24 pt при кегле 11) — каждый свой абзац."""
+    rows_ = ["1*SE10S801, S802, S803, S804,", "1*SE10S401, S402, S403, S404,", "1*RB11S801, RB12S801,",
+             "1*RA11S203, RA12S203, RA14S203, RA15S201,", "1*RM21S201."]
+    ends = (470, 470, 435, 540, 385)
+    fr = [_fr(t, (325, 300 + 10.3 * k, x1, 315 + 10.3 * k), 9.2) for k, (t, x1) in enumerate(zip(rows_, ends))]
+    vs = [(280, 420, 320.0), (280, 420, 562.0)]
+    assert _texts(fr, vs=vs) == [" ".join(rows_)]
+    codes = ["02TD95S201,", "02TD95S202,", "02TD96S201,"]
+    fr = [_fr(c, (70.8, 270.7 + 24.3 * k, 143.4, 289.5 + 24.3 * k), 11.04) for k, c in enumerate(codes)]
+    assert _texts(fr) == codes
