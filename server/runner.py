@@ -112,7 +112,7 @@ def main(job_dir, mode="translate"):
         pr = Progress(jd / "progress.json", W_EDITS)
         if items:
             P.propagate(work, prj, [(p[0], p[1]) for p in items], progress=pr)
-        P.assemble(work, pr)
+        P.assemble(work, pr, prj=prj)         # пересборка добирает то, чего не хватает сейчас (struct_fill)
         pend.unlink(missing_ok=True)          # только после успешной пересборки: при сбое правки не теряются
         edit_terms(items, jd / "edit_terms.json", pr)
         pr.write({"stage": "готово", "pct": 100, "summary": summary(work)})

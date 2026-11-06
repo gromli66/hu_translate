@@ -609,16 +609,21 @@ def struct_fill(work, prj, progress=_quiet):
     после текста своей страницы). Дальше они идут как все: проверка, шлифовка, таблица вычитки, правки редактора.
     Второй круг — то, что сборка спросит из-за первого: перевод с метками вернулся без меток — тот же абзац без них.
     Распознанный PDF (d["struct"]["mode"] == "layout", docx_layout) — так же: абзацы с полужирными и курсивными
-    словами (по картинке листа) переводятся с метками начертания."""
+    словами (по картинке листа) переводятся с метками начертания.
+    Добор, а не разовый шаг: при каждом вызове (перевод, пересборка с правками, assemble с проектом) пробная сборка
+    говорит, чего не хватает СЕЙЧАС, — старый JSON, добранный до правки сборки (30.10, docx_build.missing начал
+    спрашивать пункты «− …»), получает недостающее, а прежнее не переспрашивается: оно уже сегмент с переводом
+    (st["filled"] — только счёт добранного). Портал недоступен — добор не удался, JSON не тронут, сборка идёт дальше
+    («нет перевода» остаётся до следующей пересборки); ответы портала кэшируются (llm.chat), тот же набор — из кэша."""
     import docx_build as B
     files = doc_files(work)
     for i, f in enumerate(files):
         d = json.loads(f.read_text(encoding="utf-8"))
         st = d.get("struct")
-        if not st or "filled" in st or not d.get("res"):
+        if not st or not d.get("res"):
             continue
         progress("структура", i, len(files))
-        t0, tr, added = time.time(), None, 0
+        t0, tr, added, failed = time.time(), None, 0, set()
         for _ in range(2):
             try:
                 miss = B.missing(d["file"], d["segs"], d["res"], st.get("mode") or "struct")
@@ -633,31 +638,42 @@ def struct_fill(work, prj, progress=_quiet):
                 set_vocab(tr, d["segs"])
                 tm = {tmkey(k): v for k, v in (tr.tm or {}).items()}
                 main = [e for e in tr.entries if id(e) in tr.main_ids]
-            units = [t for t, _, _ in miss if tmkey(t) not in tm]
+            units = [t for t, _, _ in miss if tmkey(t) not in tm and t not in failed]
             got = {}
             for j in range(0, len(units), 12):
                 chunk = units[j:j + 12]
-                out = tr.run_batch({"units": [{"key": k, "text": t} for k, t in enumerate(chunk)], "first_abbr": [],
-                                    "context": ""})
+                try:
+                    out = tr.run_batch({"units": [{"key": k, "text": t} for k, t in enumerate(chunk)], "first_abbr": [],
+                                        "context": ""})
+                except RuntimeError as e:            # нет токена / отказ портала: пересборка идёт без добора
+                    log(f"структура: {f.stem} — добор не удался ({str(e)[:120]}), повтор при следующей пересборке")
+                    failed.update(chunk)
+                    continue
                 got.update({t: out[k] for k, t in enumerate(chunk)})
                 progress("структура", i + 0.9 * (j + len(chunk)) / len(units), len(files))
             for t, page, code in miss:
                 if tmkey(t) in tm:
                     r = {"ru": tm[tmkey(t)], "issues": [], "tries": 0, "tm": True}
                 else:
-                    r = dict(got[t])
-                    if r["ru"]:
-                        # моноширинные части: команды — дословно, заполнитель <…> — в скобках (docx_build.code_part)
-                        r["ru"] = B.keep_code(t, tr.post(t, r["ru"]), code)
-                        r["issues"] = tr.full_check(t, r["ru"])
-                        r["gloss_miss"] = gloss_misses(TAG.sub("", t), r["ru"], main, outer=tr.entries)
+                    r = dict(got.get(t) or {"ru": ""})
+                    if not r["ru"]:
+                        # пустой ответ — сегмента не заводим: пустой перевод сборка за перевод не считает, и при каждой
+                        # пересборке рос бы повтор; следующий добор спросит этот текст снова
+                        failed.add(t)
+                        continue
+                    # моноширинные части: команды — дословно, заполнитель <…> — в скобках (docx_build.code_part)
+                    r["ru"] = B.keep_code(t, tr.post(t, r["ru"]), code)
+                    r["issues"] = tr.full_check(t, r["ru"])
+                    r["gloss_miss"] = gloss_misses(TAG.sub("", t), r["ru"], main, outer=tr.entries)
                 sid = max(int(s["id"]) for s in d["segs"]) + 1
                 pos = next((k for k, s in enumerate(d["segs"]) if page is not None and s["page"] is not None
                             and s["page"] > page), len(d["segs"]))
                 d["segs"].insert(pos, {"id": sid, "text": t, "src": t, "page": page, "loc": {"struct_only": True}})
                 d["res"][str(sid)] = r
                 added += 1
-        st["filled"] = added
+        if not added and "filled" in st:            # добирать было нечего — JSON не переписываем
+            continue
+        st["filled"] = st.get("filled", 0) + added
         save_doc(work, f.stem, d)
         log(f"структура: {f.stem} — абзацев разметки без пары в сегментах {added}, {time.time() - t0:.0f} с")
     progress("структура", len(files), len(files))
@@ -908,8 +924,12 @@ def fit(work, prj=None):
 
 
 # ------------------------------------------------------------------ 4. сборка
-def assemble(work, progress=_quiet):
+def assemble(work, progress=_quiet, prj=None):
+    """Сборка всех документов. С проектом (prj) — сначала добор недостающего (struct_fill): пересборка старого JSON после
+    правки сборки не оставляет «нет перевода» там, где сборка начала спрашивать новые тексты."""
     from assemble import assemble_all
+    if prj is not None:
+        struct_fill(work, prj)
     files = doc_files(work)
     for i, f in enumerate(files):
         progress("сборка", i, len(files))
