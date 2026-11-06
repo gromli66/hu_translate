@@ -166,3 +166,60 @@ def test_polish_restores_tag_translated_by_older_build():
     items = {"1": {"hu": hu, "ru": bad, "kind": "text", "page": 25, "id": 1703}}
     edits, left = PL.run(items, rules, chat=None, log=lambda *a: None)
     assert items["1"]["ru"] == hu and left == [] and edits[0]["who"] == "код"
+
+
+# ---------------------------------------------------------------- 3. термин «риск высокий» в ячейке, равной термину
+TERMS_MD = """## Проверенные
+
+| Венгерский | Русский | Комментарий |
+|---|---|---|
+| tömörségpróba | испытание на плотность | строгий |
+| helyszín / helyszíni / helyszínét / helyszínen | место установки (по месту) | риск высокий; варианты: место (по месту), по месту |
+| kikapcsol (armatúrát) / ki kell kapcsolni | снять электропитание с привода (арматуры) | риск высокий |
+| tápfej | узел питания ПГ | риск высокий |
+| felad / feladni / feladva | подать (среду) | риск высокий |
+"""
+
+
+def _tr_terms(tmp_path):
+    terms = tmp_path / "terms.md"
+    terms.write_text(TERMS_MD, encoding="utf-8")
+    return T.Translator(glossary=_project(tmp_path)["glossary"], extra=str(terms))
+
+
+def test_cell_equal_to_risk_term_must_carry_the_term(tmp_path):
+    """3SZ23 стр. 24: «0,0m helyszín» → «место 0,0 м»; запись «место установки (по месту)» стоит в запросе, но она
+    «риск высокий», не «строгий», и проверка её не знала."""
+    tr = _tr_terms(tmp_path)
+    bad = tr.full_check("0,0m helyszín", "место 0,0 м")
+    assert len(bad) == 1 and bad[0].startswith("термин документа: helyszín")
+    assert "место установки (по месту)" in bad[0]
+    for ok in ("по месту 0,0 м", "место установки 0,0 м", "0,0 м, по месту"):      # основной вариант и короткий из скобок
+        assert tr.full_check("0,0m helyszín", ok) == [], ok
+    assert tr.full_check("-3,6m helyszín", "место -3,6 м") != []
+
+
+def test_risk_term_in_a_sentence_or_without_short_form_is_not_enforced(tmp_path):
+    """Длинная фраза, запись без короткой формы в скобках, ключ с контекстом в скобках, слово «по основе» — как прежде:
+    подсказка модели, обязательным термин не становится (на корпусе «риск высокий» целиком давал 1879 ложных замечаний
+    на 10 320 пар; правило ячейки — 14 замечаний на 10 пар)."""
+    tr = _tr_terms(tmp_path)
+    assert tr.full_check("A helyszínen a szelep zárva van.", "Клапан на месте закрыт.") == []
+    assert tr.full_check("kikapcsol", "отключается") == []                   # ключ записи — с контекстом «(armatúrát)»
+    assert tr.full_check("tápfej", "питательный узел") == []                 # у записи нет короткой формы в скобках
+    assert tr.full_check("feladat", "задача") == []                          # найдено по основе «felad», формы нет в ключе
+    assert tr.full_check("tömörségpróba", "проверка плотности") != []        # строгая — как прежде
+
+
+def test_retry_fixes_the_cell(tmp_path, monkeypatch):
+    """Проверка не просто метит ячейку: упавший сегмент уходит на повтор с замечанием, и верный ответ принимается."""
+    tr = _tr_terms(tmp_path)
+    notes = []
+
+    def call(self, units, first_abbr, context, think, note=""):
+        notes.append(note)
+        return {0: "место 0,0 м" if not note else "по месту 0,0 м"}, {}
+    monkeypatch.setattr(T.Translator, "_call", call)
+    out = tr.run_batch({"units": [{"key": 0, "text": "0,0m helyszín"}], "first_abbr": [], "context": ""})
+    assert out[0]["ru"] == "по месту 0,0 м" and out[0]["issues"] == [] and out[0]["tries"] == 2
+    assert "термин документа: helyszín" in notes[1]
