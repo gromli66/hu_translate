@@ -497,7 +497,7 @@ def build_pdf(src, out, segs, res, progress=None, check=True):
         # минимум по всей форме мельчил её целиком (30RDIT_TU: медиана 10 → 9 pt, красная команда 15.10)
         tabs = [] if ocr or page.rotation else [r for r in (fitz.Rect(t.bbox) for t in page.find_tables().tables)
                                                  if r.get_area() < 0.5 * page.rect.get_area()]
-        plates = []
+        plates, hmask = [], None
         if ocr and not page.rotation:                   # краска листа — где кончается слово (_ink_span)
             import numpy as np
             pm = page.get_pixmap(dpi=150, annots=False)
@@ -521,7 +521,8 @@ def build_pdf(src, out, segs, res, progress=None, check=True):
                     e1 = _guard("assemble._ink_span", lambda: _ink_span(
                         dark, 150 / 72, (x0, y0, x1, y1), [f for f in lines if f != (x0, y0, x1, y1)], reach + 2), x1,
                         steps_failed, f"{name}, лист {pno + 1}") if not page.rotation and reach > 0 else x1
-                    plates.append(_trim_rules(fitz.Rect(x0 - left, y0 - 1.5, max(x1 + 2, e1 + 1), y1 + 1.5), hmask))
+                    plate = fitz.Rect(x0 - left, y0 - 1.5, max(x1 + 2, e1 + 1), y1 + 1.5)
+                    plates.append(_trim_rules(plate, hmask) if hmask is not None else plate)
                     page.add_redact_annot(plates[-1] * der, fill=(1, 1, 1))
             else:
                 for bb in s["loc"]["frags"]:

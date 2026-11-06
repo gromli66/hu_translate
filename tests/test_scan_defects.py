@@ -159,3 +159,17 @@ def test_plate_does_not_erase_table_rules_at_its_edges(tmp_path):
         pm = page.get_pixmap(dpi=150, clip=fitz.Rect(100, y - 0.5, 160, y + 1.5), colorspace=fitz.csGRAY)
         cols = np.frombuffer(pm.samples, np.uint8).reshape(pm.height, pm.width).min(axis=0)
         assert (cols < 100).mean() > 0.9, y                                         # в каждом столбце — тёмная линия
+
+
+def test_rotated_scan_page_is_built_without_rule_trimming(tmp_path):
+    """Повёрнутый лист скана (/Rotate): краска листа для линеек и края слов не читается (плашки и чужая краска — только без поворота) —
+    плашка рисуется как была, сборка не падает."""
+    src = tmp_path / "rot.pdf"
+    _scan_pdf(src)
+    d = fitz.open(src)
+    d[0].set_rotation(90)
+    d.save(tmp_path / "rot90.pdf")
+    seg = _ocr_seg(0, "Budapest, 2020.", [[60, 300, 160, 312]])
+    out = tmp_path / "ru.pdf"
+    build_pdf(str(tmp_path / "rot90.pdf"), str(out), [seg], {"0": {"ru": "Будапешт, 2020."}}, check=False)
+    assert "Будапешт" in fitz.open(out)[0].get_text()
