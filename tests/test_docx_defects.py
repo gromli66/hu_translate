@@ -263,3 +263,14 @@ def test_sub_line_with_own_mark_keeps_indent_under_its_item():
     assert ind["30TE61S201 tömören zár"] is not None and round(ind["30TE61S201 tömören zár"].pt) == 35
     assert round(ind["30TE62S201 tömören zár"].pt) == 35
     assert ind["30TE63S201 nyitva"] is None
+
+
+def test_minus_sign_is_list_marker_for_memory_and_text_layer():
+    """«−» (U+2212, минус символьного шрифта Word) — маркер пунктов TU пп. 1.16–1.17 (SEG_QUALITY_REPORT, «Нужно от
+    сборки» п. 1). Память знала метки «-», «–», «•», но не «−»: дерево разметки, отдающее метку отдельно, спрашивало
+    «30YP15S101 zárva (…)» и не находило; перевод находился с «−» текстом — на печати двойной маркер «• − 30YP15S101 …».
+    И текстовый слой (docx_layout.SIGN) не узнавал «−» маркером. «−5 °C» (минус числа) — не маркер."""
+    import docx_layout as DLx
+    m = B.Memory([("− 30YP15S101 zárva (lámpajelzés)", "− 30YP15S101 закрыта (световая сигнализация)")])
+    assert m("30YP15S101 zárva (lámpajelzés)") == "30YP15S101 закрыта (световая сигнализация)"
+    assert DLx.SIGN.match("− 30YP15S101 zárva") and not DLx.SIGN.match("−5 °C")
