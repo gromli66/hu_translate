@@ -178,6 +178,33 @@ def test_landscape_sheet_and_sheet_after_it_continue_with_own_number(tmp_path):
             t.text for t in sec.header._element.iter(qn("w:t")))
 
 
+def test_section_opened_on_sheet_without_number_does_not_repeat_previous_sheet_number(tmp_path):
+    """Раздел, открытый на листе без номера в sheet_no (смена ориентации, серия-зона), копировал sectPr прошлого раздела
+    вместе с pgNumType start и начинал нумерацию заново с номера прошлого листа: с полем PAGE в шапке лист печатался
+    «2, 2» (ревью 03.11, 🟡1). Теперь у такого раздела начала нумерации нет — номер идёт дальше по документу."""
+    src = tmp_path / "nonum.pdf"
+    segs = _sheets_pdf(src, pages=5, head=lambda pno: (0, pno + 1))
+    blocks, info = DL.load(str(src), segs, text=True)
+    L = D.layout(str(src), blocks, content=info.get("content_boxes"))
+    blocks = D.split_at_zones(blocks, L.get("variants"), D.sheet_closed(L, blocks))
+    sizes = [(595, 842)] * 5
+    sizes[2] = (842, 595)                                           # лист 3 — альбомный, номер его не распознан
+    out = tmp_path / "nonum.docx"
+    bld = B.Builder(B.Memory([(s["text"], s["text"]) for s in segs]), lambda img: png(), PROFILE)
+    bld.build(blocks, str(out), dict(LAYOUT, page_sizes=sizes, **{k: v for k, v in L.items() if k in (
+        "head_grid", "variants", "page_marked", "page_tok", "stamp", "stamp_widths", "stamp_box", "stamp_inner",
+        "stamp_paras", "stamp_aligns", "stamp_merge", "head_rule", "head_imgs", "head_lines", "first_is_body",
+        "num_start")}, sheet_no={k: v for k, v in L["sheet_no"].items() if k != 3}))
+    doc = Document(str(out))
+    starts = [(s.page_width > s.page_height, s._sectPr.find(qn("w:pgNumType")) is not None and
+               s._sectPr.find(qn("w:pgNumType")).get(qn("w:start"))) for s in doc.sections]
+    land = [i for i, (ls, _) in enumerate(starts) if ls]
+    assert len(land) == 1
+    assert starts[land[0]][1] is False                              # номера у альбомного раздела нет — не «2» прошлого листа
+    assert starts[land[0] - 1][1] == str(land[0])                   # а раздел перед ним свой номер держит
+    assert starts[land[0] + 1][1] == str(land[0] + 2)               # и следующий лист — со своего номера
+
+
 def test_body_bottom_of_three_sheet_document_is_not_its_short_last_sheet(tmp_path):
     """Документ в три листа без подвала (30BLM1M2GT): низ тела — по самому низкому листу после первого, а не только по
     третьему: тот короткий (две строки), и поле тела всех листов выходило 280 pt — лист 2 шёл на две страницы."""

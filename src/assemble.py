@@ -265,6 +265,43 @@ def _toc_line(page, s, r, rect, fam, sz, busy):
     return True
 
 
+def _guard(step, fn, fallback, sink, ctx):
+    """Необязательный шаг сборки (подписи формы, единый перевод, флажки-буквы, чужая краска и край краски скана): сбой не
+    роняет сборку всего задания, а пишется громко — в лог (причина и место) и в sink (→ info["attention"], лист «нарушения»);
+    документ собирается без шага (fallback). Тот же сбой в том же месте — одна запись (ревью 03.11, 🟡2)."""
+    import traceback
+    try:
+        return fn()
+    except Exception as e:                  # noqa: BLE001 — громко (sink и лог), не молча
+        msg = f"шаг {step} не выполнен ({ctx}), документ собран без него: {type(e).__name__}: {e}"[:300]
+        if msg not in sink:
+            sink.append(msg)
+            print(f"СБОРКА {ctx}: {msg}\n{traceback.format_exc()}", flush=True)
+        return fallback
+
+
+def prepare_translation(d, ctx, sink):
+    """Перевод, каким его рисует сборка: подписи известной формы — по словарю (figures.apply_form_labels, одна пара hu-ru) и
+    один перевод на одинаковый исходный текст (termvar.same_source). → (d с исправленным res, форма, подписей заменено,
+    текстов приведено к единому переводу). Сюда же идёт пробная сборка сокращений (pipeline.fit): сокращение мерится по
+    тому тексту, что потом нарисуют. Шаги необязательные — сбой в _guard (sink — список записей для info["attention"])."""
+    import figures as FIG
+    import langs as L
+    form, n_lab, n_uni = None, 0, 0
+    if FIG.enabled() and L.parse_pair(d.get("pair")) == ("hu", "ru"):
+        # известная форма (лист регистрации, титул инструкции, лист изменений): подписи — по словарю формы, не по портальным вариантам
+        res, n_lab, form = _guard("figures.apply_form_labels", lambda: FIG.apply_form_labels(d["segs"], d["res"]),
+                                  (d["res"], 0, None), sink, ctx)
+        d = dict(d, res=res) if n_lab else d
+    if SIDS.enabled():
+        # блок берёт перевод своего сегмента: один исходный текст — один перевод на документ (termvar.same_source)
+        import termvar
+        res, was = _guard("termvar.same_source", lambda: termvar.same_source(d["segs"], d["res"]), (d["res"], {}), sink, ctx)
+        if was:
+            d, n_uni = dict(d, res=res), len(was)
+    return d, form, n_lab, n_uni
+
+
 def _foreign_ink(page, plates, dpi=150):
     """Краска скана, которую перевод не должен задеть: подписи, штампы, чужие надписи. Возвращает (поверх, место):
     поверх — [(рамка, PNG с прозрачностью)]: цветные штрихи (не серые), что выходят за белые плашки строк, своими
@@ -372,8 +409,11 @@ def build_pdf(src, out, segs, res, progress=None, check=True):
     n_shots, shot_err = SH.apply(doc, segs, res)
     # текст страницы — сегменты с рамками строк; надписи скриншотов и абзацы DOCX вписываются не здесь
     segs = [s for s in segs if "frags" in s["loc"]]
+    steps_failed = []                   # необязательные шаги, что упали (_guard): громко, лист — без шага
+    name = Path(src).name
     if FIG.enabled():                   # флажки бланка, прочитанные буквами, — пиксели оригинала (figures.split_checkboxes)
-        segs, res = FIG.split_checkboxes(segs, res)
+        segs, res = _guard("figures.split_checkboxes", lambda: FIG.split_checkboxes(segs, res), (segs, res), steps_failed,
+                           name)
     shrink = []
     sub = fitz.open()
     for k, pno in enumerate(pages):
@@ -425,15 +465,17 @@ def build_pdf(src, out, segs, res, progress=None, check=True):
                                                                                        s["loc"]["bbox"][0]) if one else 0
                 for i, (x0, y0, x1, y1) in enumerate(s["loc"]["frags"]):
                     left = 16 if i == 0 and re.match(r"\s*[-–•]", s["text"]) else 2
-                    e1 = _ink_span(dark, 150 / 72, (x0, y0, x1, y1), [f for f in lines if f != (x0, y0, x1, y1)],
-                                   reach + 2) if not page.rotation and reach > 0 else x1
+                    e1 = _guard("assemble._ink_span", lambda: _ink_span(
+                        dark, 150 / 72, (x0, y0, x1, y1), [f for f in lines if f != (x0, y0, x1, y1)], reach + 2), x1,
+                        steps_failed, f"{name}, лист {pno + 1}") if not page.rotation and reach > 0 else x1
                     plates.append(fitz.Rect(x0 - left, y0 - 1.5, max(x1 + 2, e1 + 1), y1 + 1.5))
                     page.add_redact_annot(plates[-1] * der, fill=(1, 1, 1))
             else:
                 for bb in s["loc"]["frags"]:
                     page.add_redact_annot(fitz.Rect(bb) * der, fill=False)
         # подписи и штампы, задетые плашками, — поверх перевода (лист без поворота: рамки сегментов = рамки листа)
-        ink, room = _foreign_ink(page, plates) if ocr and not page.rotation else ([], None)
+        ink, room = _guard("assemble._foreign_ink", lambda: _foreign_ink(page, plates), ([], None), steps_failed,
+                           f"{name}, лист {pno + 1}") if ocr and not page.rotation else ([], None)
         # скан: пиксели под белой плашкой стираются в самой картинке — иначе её вытаскивает конвертер в DOCX
         # и под русским текстом проступает венгерский (30RDGT nyilv, 06.10)
         page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS if ocr else fitz.PDF_REDACT_IMAGE_NONE,
@@ -579,6 +621,8 @@ def build_pdf(src, out, segs, res, progress=None, check=True):
         info["verify"] = verify
     if notes:
         info["verify_notes"] = notes
+    if steps_failed:
+        info["steps_failed"] = steps_failed
     if len(pages) < len(doc):
         # лист без сегментов (рисунок без текста, пустой разделитель) в этот PDF не попадает: где PDF потом печатается
         # из DOCX, это неважно, а без LibreOffice (и для сканов) он итоговый и короче оригинала — сигнал в отчёт сборки
@@ -1141,24 +1185,13 @@ def assemble_all(jf, d, out_dir=None, progress=None):
     out_dir — куда класть файлы (по умолчанию рядом с JSON). progress(доля 0..1) — ход по страницам PDF и DOCX."""
     tick = progress or (lambda x: None)
     src = source_path(d)
-    import figures as FIG
     import langs as L
-    form = None
-    if FIG.enabled() and L.parse_pair(d.get("pair")) == ("hu", "ru"):
-        # известная форма (лист регистрации, титул инструкции, лист изменений): подписи — по словарю формы, не по портальным вариантам
-        res, n_lab, form = FIG.apply_form_labels(d["segs"], d["res"])
-        d = dict(d, res=res) if n_lab else d
-    n_uni = 0
-    if SIDS.enabled():
-        # блок берёт перевод своего сегмента: один исходный текст — один перевод на документ (termvar.same_source)
-        import termvar
-        res, was = termvar.same_source(d["segs"], d["res"])
-        if was:
-            d, n_uni = dict(d, res=res), len(was)
-    sfx = L.suffix(d.get("pair"))                       # _RU (hu-ru), _EN, _HU — по паре проекта
-    outd, stem = Path(out_dir or Path(jf).parent), Path(jf).stem
-    outd.mkdir(parents=True, exist_ok=True)
+    stem = Path(jf).stem
     rows, attention = [], []
+    d, form, n_lab, n_uni = prepare_translation(d, stem, attention)     # сбой шага — в attention, сборка идёт без него
+    sfx = L.suffix(d.get("pair"))                       # _RU (hu-ru), _EN, _HU — по паре проекта
+    outd = Path(out_dir or Path(jf).parent)
+    outd.mkdir(parents=True, exist_ok=True)
 
     def from_pdf():
         """DOCX из переведённого PDF конвертером; что в нём потерялось от перевода PDF — в лист «нарушения»."""
@@ -1231,6 +1264,7 @@ def assemble_all(jf, d, out_dir=None, progress=None):
                 attention.append(f"DOCX из переведённого PDF: листы {', '.join(map(str, info['docx']['failed_pages']))} "
                                  f"pdf2docx не сконвертировал — пустыми листами ({info['docx'].get('failed_why')})")
     attention += info.get("verify") or []               # коды и числа, не найденные на листе скана после рисования
+    attention += info.get("steps_failed") or []         # необязательные шаги листов, что упали (build_pdf, _guard)
     # PDF «на месте» — только листы с сегментами: если он итоговый (не напечатан из DOCX), лист без текста выпал
     if info.get("pages_missing") and (info.get("pdf") or {}).get("from") != "DOCX (LibreOffice)":
         miss = info["pages_missing"]

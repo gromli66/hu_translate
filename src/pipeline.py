@@ -864,25 +864,29 @@ def fit(work, prj=None):
     import langs as L
     from llm import chat
     from translate import CODE
-    from assemble import build_pdf
+    from assemble import build_pdf, prepare_translation
     sl, tl = L.pair_of(prj)
     hu_ru = (sl, tl) == ("hu", "ru")
     for f in doc_files(work):
         d = json.loads(f.read_text(encoding="utf-8"))
         if not d["file"].lower().endswith(".pdf"):
             continue
+        # пробная сборка — по тому переводу, что нарисует настоящая (подписи формы по словарю, единый перевод одинаковых
+        # текстов): иначе единый, более длинный перевод в узкой ячейке не проверялся на тесноту (ревью 03.11, 🟡3)
+        dp = prepare_translation(d, f.stem, [])[0]          # сбой шага — в лог (_guard); в сведения сборки он попадёт при сборке
         with tempfile.TemporaryDirectory() as tmp:
-            info = build_pdf(d["file"], Path(tmp) / "trial.pdf", d["segs"], d["res"], check=False)   # пробная: сверка листов не нужна
+            info = build_pdf(d["file"], Path(tmp) / "trial.pdf", d["segs"], dp["res"], check=False)   # пробная: сверка листов не нужна
         by_id = {str(s["id"]): s for s in d["segs"]}
         done = 0
         for it in info.get("shrunk", []):
-            s, r = by_id[str(it["id"])], d["res"][str(it["id"])]
-            ru = cl(r["ru"])
+            # r — запись в JSON (сюда сокращение), pr — тот же сегмент, каким его рисуют (мерится и сокращается он)
+            s, r, pr = by_id[str(it["id"])], d["res"][str(it["id"])], dp["res"][str(it["id"])]
+            ru = cl(pr["ru"])
             # место под текст ~ квадрат кегля: до масштаба 0,75 — длина × (масштаб/0,75)², но не короче 60 %
             # (сокращать вдвое — терять смысл)
             n = max(8, int(len(ru) * max((it["scale"] / 0.75) ** 2, 0.6)))
             label = len(ru.split()) <= 3
-            if r.get("ru_pdf") and r.get("ru_pdf_of") == r["ru"] and (not label or _abbr_of(r["ru_pdf"], ru, cl(s["text"]))):
+            if r.get("ru_pdf") and r.get("ru_pdf_of") == pr["ru"] and (not label or _abbr_of(r["ru_pdf"], ru, cl(s["text"]))):
                 continue
             r.pop("ru_pdf", None); r.pop("ru_pdf_of", None)
             if n >= len(ru):
@@ -898,7 +902,7 @@ def fit(work, prj=None):
             codes = lambda t: sorted(CODE.findall(t))
             if short and len(short) < len(ru) and codes(short) == codes(ru) \
                     and (not label or _abbr_of(short, ru, cl(s["text"]))):
-                r["ru_pdf"], r["ru_pdf_of"] = short, r["ru"]; done += 1
+                r["ru_pdf"], r["ru_pdf_of"] = short, pr["ru"]; done += 1
         save_doc(work, f.stem, d)
         log(f"сокращение: {f.stem} — ужато {len(info.get('shrunk', []))}, сокращено {done}")
 

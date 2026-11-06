@@ -268,6 +268,19 @@ REVIEW = ("issues", "review", "gloss_miss", "autofix", "warn")      # замеч
 AUTH = ("edited", "tm", "polish", "ru_pdf")        # перевод редактора, память переводов, шлифовка, сокращение для PDF
 
 
+def own_short(r):
+    """Сокращение для PDF (ru_pdf) сделано для этого же перевода. pipeline.fit мерит тесноту по переводу, который нарисует
+    сборка (единый для того же текста, подпись по словарю формы), и пишет сокращение в запись с её прежним переводом
+    (ru_pdf_of — тот, для которого оно сделано): пока этот перевод не подставлен, сокращение «чужое» и перевод записи не
+    защищает — иначе подстановка единого перевода не состоялась бы (ревью 03.11, 🟡3)."""
+    return bool(r.get("ru_pdf") and r.get("ru_pdf_of") == r.get("ru"))
+
+
+def authored(r):
+    """Перевод не меняется подстановкой: правка редактора, память, шлифовка, своё сокращение для PDF."""
+    return any(r.get(f) for f in AUTH if f != "ru_pdf") or own_short(r)
+
+
 def same_source(segs, res):
     """E6 (sids.py): одинаковый исходный текст сегментов — один перевод на документ. Блок берёт перевод своего сегмента (по id),
     и там, где портал или редактор перевёл тот же текст по-разному, в одном документе вышло бы два варианта (прежде везде
@@ -290,7 +303,7 @@ def same_source(segs, res):
     for items in groups.values():
         if len({base(r["ru"]) for _, r in items}) < 2:
             continue            # одинаковы, либо различаются только аббревиатурой первого упоминания — это соглашение, не разнобой
-        pool = [r for _, r in items if any(r.get(f) for f in AUTH)] or [r for _, r in items]
+        pool = [r for _, r in items if authored(r)] or [r for _, r in items]
         # перевод с замечанием проверки или смысловой проверки не растиражировать, если есть чистый
         clean = [r for r in pool if not r.get("issues") and not (r.get("review") or {}).get("serious")] or pool
         c = Counter(base(r["ru"]) for r in clean)
@@ -301,7 +314,7 @@ def same_source(segs, res):
                 forms[r["ru"]] += 1
                 src.setdefault(r["ru"], r)
         for i, r in items:
-            if base(r["ru"]) == win or any(r.get(f) for f in AUTH):
+            if base(r["ru"]) == win or authored(r):
                 continue
             # скобки с латиницей — как у самого сегмента: первое упоминание остаётся первым, дальше — без них
             own = bool(FIRST_USE.search(r["ru"]))
