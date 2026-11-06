@@ -1703,15 +1703,6 @@ def load(src, segs, text=False):
         if indent >= 9 and loc.get("align") != "center":
             para["indent"] = min(indent, 90)                # отступ по оригиналу — уровнем стиля (сборщик)
         blocks.append(para)
-    # номер раздела из рамки отдельной строкой («1.1.») прямо перед заголовком с тем же номером («1.1. Срабатывание
-    # АЗ…»): название из рамки снято как повтор, номер оставался строкой-сиротой над каждым разделом (3PR42, 19.10)
-    txt = lambda b: "".join(r.get("t", "") for r in b.get("runs") or []).strip()
-    num = re.compile(r"\d+(?:\.\d+)*(?:/\d+)?\.?")
-    gone = [b for i, b in enumerate(blocks)
-            if b["k"] in ("p", "h") and num.fullmatch(txt(b)) and i + 1 < len(blocks)
-            and blocks[i + 1]["k"] in ("p", "h") and txt(blocks[i + 1]).startswith(txt(b).rstrip("."))]
-    exempt |= {i: "номер раздела" for b in gone for i in b.get("sids") or ()}
-    blocks = [b for b in blocks if not any(b is g for g in gone)]
     # уровень пункта — ступень его отступа среди отступов всех списков документа (3PR42: «-» у края рамки и «-»
     # под пунктом 2.1.1. — раньше один уровень, вложенность пропадала)
     xs = [b["x0"] for b in blocks if b["k"] == "list"]
