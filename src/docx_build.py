@@ -1023,10 +1023,18 @@ class Builder:
             else:
                 plain = self.tr("".join(parts))
                 out = _restyle(plain if plain is not None else "".join(parts), groups, parts)
-        # верхний индекс оригинала («10» + приподнятое «-4», docx_layout: loc["sup"]) — индексом и в переводе
-        for base, up in {p for r in runs for p in r.get("sup") or ()}:
+        # верхний индекс оригинала («10» + приподнятое «-4», docx_layout: loc["sup"]) — индексом и в переводе, но не в
+        # большем числе мест, чем в оригинале: то же сочетание цифр в другом месте абзаца («10-4 … 10-4 мм») плоское.
+        # Список loc["sup"] — один на сегмент, у всех его прогонов тот же объект: считается раз на список
+        for (base, up), n in Counter(p for lst in {id(r["sup"]): r["sup"] for r in runs if r.get("sup")}.values()
+                                     for p in lst).items():
             pat = re.compile(rf"(?<![\d.,]){re.escape(base)}\s?{re.escape(up)}(?![\d])")
-            out = [(k, pat.sub(f"{base}<sup>{up}</sup>", t) if t else t) for k, t in out]
+            left = [n]
+
+            def put(m, base=base, up=up, left=left):
+                left[0] -= 1
+                return f"{base}<sup>{up}</sup>" if left[0] >= 0 else m.group(0)
+            out = [(k, pat.sub(put, t) if t else t) for k, t in out]
         if lead_img:
             for im in imgs:
                 self._img_run(par, im["img"])

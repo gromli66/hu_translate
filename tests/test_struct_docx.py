@@ -1197,6 +1197,25 @@ def test_ocr_sub_sup_tags_become_indices(tmp_path):
     assert [r.text for r in par.runs if r.font.subscript] == ["R"] and [r.text for r in par.runs if r.font.superscript] == ["3"]
 
 
+def test_original_superscript_marks_only_as_many_places_as_the_original_has(tmp_path):
+    """Верхний индекс оригинала («10» + приподнятое «-4», loc["sup"]) ставился регуляркой по всему переводу абзаца: то же
+    сочетание цифр в другом месте («10-4 … 10-4 мм») тоже становилось индексом (ревью 03.11, 🟡5). Теперь индексов не
+    больше, чем в оригинале (по порядку в переводе); сколько их в оригинале — столько и в переводе."""
+    from docx import Document
+
+    def build(sup, ru, name):
+        hu = "Nyomás 10-4 Pa, tűrés 10-4 mm"
+        blk = p(hu, 3)
+        blk["runs"][0]["sup"] = sup
+        out = tmp_path / name
+        B.Builder(B.Memory([(hu, ru)]), lambda img: None, PROFILE).build([blk], str(out), dict(LAYOUT, first_is_body=True))
+        par = next(x for x in Document(out).paragraphs if x.text.startswith("Давление"))
+        return par.text, [r.text for r in par.runs if r.font.superscript]
+    ru = "Давление 10-4 Па, допуск 10-4 мм"
+    assert build([("10", "-4")], ru, "one.docx") == ("Давление 10-4 Па, допуск 10-4 мм", ["-4"])        # индекс один
+    assert build([("10", "-4"), ("10", "-4")], ru, "two.docx")[1] == ["-4", "-4"]                       # в оригинале оба
+
+
 def test_notes_of_both_halves_survive_page_join():
     """Абзац, разрезанный листом, — сноски обеих половин остаются, место — долей общего текста (ревью 17.10)."""
     a = dict(p("Első fele", 3, 700), notes=[{"runs": [{"t": "A"}], "pos": 1.0}])
