@@ -13,7 +13,9 @@ import re
 from lines import hyphen_break, mid_phrase
 
 ANCHOR = re.compile(r"^\(?\d+(?:\.\d+)*\.?\)?$")
-FORM_MARK = re.compile(r"^[○□△▲◉☒✓✔✗✘■●O]$")
+# отметка бланка; значки символьных шрифтов (частная область \uf020–\uf0ff: □ Wingdings у пунктов «30YA62P401ZQ35 p = …,»
+# 30PR132GT л. 5) — тоже
+FORM_MARK = re.compile(r"^[○□△▲◉☒✓✔✗✘■●O\uf020-\uf0ff]$")
 
 
 def code_line(t):
@@ -119,6 +121,17 @@ def rule_between(hs, a, b, soft=True, vs=()):
     return False
 
 
+def blank_between(fa, fb):
+    """Между строкой fa и строкой fb под ней пустая строка — абзац кончился: середины дальше 1,8 кегля (строки абзаца — через
+    1,0–1,4 кегля, через пустую строку — 2,1–2,4; замер по 7 документам). Рамки моноширинных строк выше шага, и зазор
+    рамок пустую строку не видит: «02TK47S298 … zárva.» + ряд «30TD97S201» (02VE25 л. 44). Кроме фразы, что явно
+    продолжается (mid_phrase): «Várakozási idő: 10 perc,» / пустая строка / «vagy ha a kezelő …» (02VE25 л. 13), и слова,
+    разорванного переносом: шапка таблицы с просторным межстрочием «Megjelení-» / «tés helye» (1SZ01 л. 90, шаг 2,3 кегля)."""
+    size = max(fa.get("size") or 0, fb.get("size") or 0)
+    return size > 0 and _mid(fb["bbox"]) - _mid(fa["bbox"]) > 1.8 * size \
+        and not (mid_phrase(fa["t"], fb["t"]) or hyphen_break(fa["t"], fb["t"]))
+
+
 class Rows:
     """Границы рядов листа: frags — куски строк листа ({t, bbox, size}), hs, vs — линейки (layout.rules), gutter — x
     просвета двух колонок сплошного текста (layout.gutter) или None: через него якоря не берутся."""
@@ -126,6 +139,7 @@ class Rows:
     def __init__(self, frags, hs, vs=(), gutter=None):
         self.hs, self.vs, self.gutter = hs, vs, gutter
         self.frags = sorted(frags, key=lambda f: (round(f["bbox"][1] / 3), f["bbox"][0]))     # порядок layout.group
+        self.marks = [tuple(f["bbox"]) for f in self.frags if FORM_MARK.match(f["t"].strip())]
         flag = [is_anchor(f["t"]) for f in self.frags]
         self.anchors = []
         for f, ok in zip(self.frags, flag):
@@ -177,16 +191,32 @@ class Rows:
         # 3FI18 л. 38): новый ряд — только через зазор рядов
         return _mid(b) - _mid(a) > 1.5 * size
 
+    def right_mark(self, b):
+        """Отметка бланка (○ □ O …) справа от строки b на её линии (перекрывает больше половины меньшей рамки) — ближайшая,
+        её рамка; нет — None."""
+        best = None
+        for m in self.marks:
+            if m[0] >= b[2] - 1 and min(b[3], m[3]) - max(b[1], m[1]) > 0.5 * min(b[3] - b[1], m[3] - m[1]) \
+                    and (best is None or m[0] < best[0]):
+                best = m
+        return best
+
     def apart(self, fa, fb, soft=False):
-        """Строки fa (выше) и fb — в разных рядах: причина («линейка», «якорь», «отметка») или None. soft=True — граница и
-        сторона белой подложки (layout.group, строка не продолжает фразу); метки портала через подложку склеивают
-        (roles.apply: 30RL2126GT — плашка под каждой строкой, «…akkor a» / «30RL21S001 zárva van.» рвались)."""
+        """Строки fa (выше) и fb — в разных рядах или абзацах: причина («линейка», «якорь», «отметка», «пустая строка») или
+        None. soft=True — граница и сторона белой подложки (layout.group, строка не продолжает фразу); метки портала через
+        подложку склеивают (roles.apply: 30RL2126GT — плашка под каждой строкой, «…akkor a» / «30RL21S001 zárva van.»
+        рвались). У двух строк справа свои отметки бланка — пункты перечня, каждый со своей отметкой: «30TJ13 ág: …» и
+        «30TJ23 ág: …» (30PR25GT л. 13) шли одним абзацем. Пустая строка (blank_between) — и для меток портала: пункты
+        «A, …» / «B, …» через пустую строку (1SZ01 л. 112) портал склеивал."""
         a, b = fa["bbox"], fb["bbox"]
         if rule_between(self.hs, a, b, soft, self.vs):
             return "линейка"
         a1, a2 = row_anchor(self.frags, a), row_anchor(self.frags, b)
         if a1 is not None and a2 is not None and a1 != a2 or self.new_row(fa, fb):
             return "якорь"
-        if FORM_MARK.match(fa["t"].strip()) or FORM_MARK.match(fb["t"].strip()):
+        m1, m2 = self.right_mark(a), self.right_mark(b)
+        if FORM_MARK.match(fa["t"].strip()) or FORM_MARK.match(fb["t"].strip()) or m1 and m2 and m1 != m2:
             return "отметка"
+        if blank_between(fa, fb):
+            return "пустая строка"
         return None

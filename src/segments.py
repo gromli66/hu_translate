@@ -700,7 +700,7 @@ def _dehyphen(words):
     out = []
     for w in words:
         prev = out[-1] if out else None
-        word = glue(prev["t"], w["t"]) if prev and prev["line"] != w["line"] and prev["key"] == w["key"] else None
+        word = glue(prev["t"], w["t"], ranges=False) if prev and prev["line"] != w["line"] and prev["key"] == w["key"] else None
         if word:
             out[-1] = dict(out[-1], t=word)
         else:
