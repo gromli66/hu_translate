@@ -132,3 +132,30 @@ def test_overlapping_scan_segments_are_a_stamp_and_stay_pixels(tmp_path):
     assert "Будапешт" in page.get_text() and "Пакш" not in page.get_text() and "Контроль" not in page.get_text()
     pm = page.get_pixmap(dpi=72, clip=fitz.Rect(391, 745, 500, 778), colorspace=fitz.csGRAY)
     assert int((np.frombuffer(pm.samples, np.uint8) < 100).mean() * 100) > 90                       # штамп цел, не закрыт плашкой
+
+
+def test_plate_does_not_erase_table_rules_at_its_edges(tmp_path):
+    """Белая плашка строки скана стирала линейки таблицы, лежащие у её верхнего и нижнего края: рамка красной плашки «AZ UT_ÜVIG_25 …»
+    (верхняя и нижняя линии в 1,5 pt от букв) оставалась без линий на всю ширину надписи. Линейка у края плашки (длинная, тонкая,
+    сплошная) остаётся — плашка обрезается по ней."""
+    k = 150 / 72
+    im = Image.new("RGB", (round(595 * k), round(842 * k)), "white")
+    px = np.array(im)
+    for y in (300, 316):                                                            # две линейки рамки: сверху и снизу надписи
+        px[round(y * k):round(y * k) + 2, round(50 * k):round(400 * k)] = 0
+    px[round(305 * k):round(311 * k), round(100 * k):round(160 * k)] = 0              # буквы между ними
+    src = tmp_path / "frame.pdf"
+    buf = io.BytesIO()
+    Image.fromarray(px).save(buf, "PNG")
+    d = fitz.open()
+    d.new_page(width=595, height=842).insert_image(fitz.Rect(0, 0, 595, 842), stream=buf.getvalue())
+    d.save(src)
+    seg = _ocr_seg(0, "KÉSZÜLT!", [[100, 299.5, 160, 317.5]], 9.0)                    # рамка строки захватывает обе линейки
+    out = tmp_path / "ru.pdf"
+    build_pdf(str(src), str(out), [seg], {"0": {"ru": "СОСТАВЛЕНО!"}}, check=False)
+    page = fitz.open(out)[0]
+    assert "СОСТАВЛЕНО" in page.get_text()
+    for y in (300, 316):                                                            # обе линейки целы по всей ширине плашки
+        pm = page.get_pixmap(dpi=150, clip=fitz.Rect(100, y - 0.5, 160, y + 1.5), colorspace=fitz.csGRAY)
+        cols = np.frombuffer(pm.samples, np.uint8).reshape(pm.height, pm.width).min(axis=0)
+        assert (cols < 100).mean() > 0.9, y                                         # в каждом столбце — тёмная линия
