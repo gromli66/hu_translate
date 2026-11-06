@@ -440,3 +440,14 @@ def test_short_phrases_are_not_checkboxes_and_bars_are_linear():
     t0 = time.time()
     assert FIG.drawn_text("x" + " |" * 40000 + "x") == "x" + " |" * 40000 + "x" and time.time() - t0 < 2
     assert FIG.label_key("| | Név: | |") == "Név:"
+
+
+def test_russian_words_with_digit_are_not_codes_to_verify(monkeypatch):
+    """«Коды и числа» для сверки скана — слова с цифрой, кроме русских слов («7-барной», «3-го»): второе распознавание
+    читает обычные слова иначе, и три промаха из десяти давали ложное «ВНИМАНИЕ» (30RDGT nyilv 06.10; ревью 03.11, 🟡4).
+    Коды, числа, даты и русские обозначения заглавными («ТЭН-3») остаются."""
+    text = "Манометр 7-барной линии 3-го блока, 30RDGT, 140387, 2017.04.20, 10:30, ТЭН-3, 5-й и 10-кратный"
+    assert FIG.codes_of(text) == {FIG._tok(t) for t in ("30RDGT", "140387", "2017.04.20", "10:30", "ТЭН-3")}
+    page = fitz.open().new_page()
+    monkeypatch.setattr(FIG, "ocr_words", lambda pg, **k: ["30RDGT", "140387", "2017.04.20", "10:30", "ТЭН-3"])
+    assert FIG.verify_page(page, [text], 0) is None                                   # слов с цифрой в кодах нет — не искали
