@@ -2069,6 +2069,22 @@ def test_short_capital_abbreviations_are_not_hungarian_leftovers():
     assert C._hungarian("с идентификатором 30BLHÜT, TLÜ302") == []                           # обозначения с цифрами
 
 
+def test_join_tables_same_grid_for_every_table_with_column_frame_and_after_last_page():
+    """E9.6: «та же сетка» — у любых таблиц с рамкой столбцов (frame.xs: линии листа, вертикали размеченного PDF, сетка
+    выравнивания), не только по линиям листа; продолжение — на листе после последнего листа склеенной таблицы: другая
+    таблица на листе 2 не приклеивается к таблице листов 1–2."""
+    cell = lambda t, pg: {"blocks": [{"k": "p", "runs": [{"t": t}]}], "th": False,
+                          "geom": {"page": pg, "top": 100, "bottom": 110, "x0": 0, "x1": 10}}
+    tab = lambda a, b, pg, xs: {"k": "table", "rows": [[cell(a, pg), cell(b, pg)]], "geom": {"page": pg},
+                                "frame": {"xs": xs, "ys": [100, 110]}}
+    assert len(D.join_tables([tab("A", "B", 1, [50, 200, 500]), tab("C", "D", 2, [50, 300, 500])])) == 2   # другая сетка
+    assert len(D.join_tables([tab("A", "B", 1, [50, 200, 500]), tab("C", "D", 2, [51, 201, 499])])) == 1   # та же
+    assert len(D.join_tables([tab("A", "B", 1, []), tab("C", "D", 2, [50, 300, 500])])) == 1       # без рамки — не мерим
+    got = D.join_tables([tab("A", "B", 1, [50, 200, 500]), tab("C", "D", 2, [50, 200, 500]),
+                         tab("E", "F", 2, [50, 200, 500])])
+    assert [len(t["rows"]) for t in got] == [2, 1]                       # листы 1–2 и своя таблица на листе 2
+
+
 def test_join_tables_with_different_grid_stay_separate_even_with_repeated_header():
     """Форма на много листов: повтор шапки не склеивает таблицы листов с разным числом столбцов сетки (30BOXFELTEL, 10 и 12
     столбцов) — склеенные, они делили сетку первой: ширин нет, столбцы поровну. С той же сеткой — одна таблица, как прежде."""
