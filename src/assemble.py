@@ -288,7 +288,7 @@ def prepare_translation(d, ctx, sink):
     import figures as FIG
     import langs as L
     form, n_lab, n_uni = None, 0, 0
-    if FIG.enabled() and L.parse_pair(d.get("pair")) == ("hu", "ru"):
+    if L.parse_pair(d.get("pair")) == ("hu", "ru"):
         # известная форма (лист регистрации, титул инструкции, лист изменений): подписи — по словарю формы, не по портальным вариантам
         res, n_lab, form = _guard("figures.apply_form_labels", lambda: FIG.apply_form_labels(d["segs"], d["res"]),
                                   (d["res"], 0, None), sink, ctx)
@@ -441,9 +441,8 @@ def build_pdf(src, out, segs, res, progress=None, check=True):
     segs = [s for s in segs if "frags" in s["loc"]]
     steps_failed = []                   # необязательные шаги, что упали (_guard): громко, лист — без шага
     name = Path(src).name
-    if FIG.enabled():                   # флажки бланка, прочитанные буквами, — пиксели оригинала (figures.split_checkboxes)
-        segs, res = _guard("figures.split_checkboxes", lambda: FIG.split_checkboxes(segs, res), (segs, res), steps_failed,
-                           name)
+    # флажки бланка, прочитанные буквами, — пиксели оригинала (figures.split_checkboxes)
+    segs, res = _guard("figures.split_checkboxes", lambda: FIG.split_checkboxes(segs, res), (segs, res), steps_failed, name)
     shrink = []
     sub = fitz.open()
     for k, pno in enumerate(pages):
@@ -535,7 +534,7 @@ def build_pdf(src, out, segs, res, progress=None, check=True):
                 align = "center"
             # ru_pdf — сокращённая порталом формулировка для тесного места (pipeline.fit); в DOCX — полный перевод
             ru = pdf_text(r)
-            if ocr and FIG.enabled():                   # линия ячейки, прочитанная как «|», — не буква перевода
+            if ocr:                                     # линия ячейки, прочитанная как «|», — не буква перевода
                 ru = FIG.drawn_text(ru)
             txt = html.escape(TAG.sub("", ru)).replace("\n", "<br>").replace("\t", "&emsp;")
             if loc.get("bold"):
@@ -639,7 +638,7 @@ def build_pdf(src, out, segs, res, progress=None, check=True):
                 shrink += [{"page": pno + 1, "id": it[0]["id"], "scale": round(scale * min(k, 1.0), 2)} for it in mem]
         for r, png in ink:
             page.insert_image(r, stream=png, overlay=True)
-        if ocr and FIG.enabled() and check:      # коды и числа перевода читаются на листе вторым распознаванием
+        if ocr and check:                        # коды и числа перевода читаются на листе вторым распознаванием
             warn = FIG.verify_page(page, [TAG.sub("", pdf_text(r)) for _, r in todo], pno)
             if warn:
                 (verify if warn[1] else notes).append(warn[0])

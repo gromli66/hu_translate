@@ -15,14 +15,6 @@ def seg(i, text, x0, y0, x1, y1=None, **loc):
     return {"id": i, "page": 0, "text": text, "loc": dict({"bbox": [x0, y0, x1, y1 or y0 + 10]}, **loc)}
 
 
-# ---------------------------------------------------------------- флаг
-def test_flag_default_on_and_zero_means_old_path(monkeypatch):
-    monkeypatch.delenv("HU_U_FIG", raising=False)
-    assert FIG.enabled()
-    monkeypatch.setenv("HU_U_FIG", "0")
-    assert not FIG.enabled()
-
-
 # ---------------------------------------------------------------- схема: один набор признаков
 def _arrows_page(with_arrows=True):
     page = fitz.open().new_page(width=595, height=842)
@@ -97,6 +89,9 @@ def test_figure_decisions_live_in_figures_only():
     assert FIG.graphic_page(page, labels, big) is True
     assert FIG.is_scan(page) is False
     assert not any(hasattr(DL, n) for n in ("is_scan", "_graphic_page", "_ocr_layer", "_chart_table"))
+    # E9.2: флага HU_U_FIG и прежних схем (_vector_figures, _scheme_figures, _on_rule) нет — один путь
+    assert not hasattr(FIG, "enabled")
+    assert not any(hasattr(DL, n) for n in ("_vector_figures", "_scheme_figures", "_on_rule"))
 
 
 # ---------------------------------------------------------------- снимок листа: без колонтитула оригинала
@@ -155,15 +150,11 @@ def test_sheet_snapshot_of_poster_excludes_header_frame(tmp_path, monkeypatch):
         segs.append({"id": len(segs), "page": 2, "text": "szöveg",
                      "loc": {"bbox": [x + 4, y + 10, x + 40, y + 22], "frags": [[x + 4, y + 10, x + 40, y + 22]],
                              "size": 7, "family": "serif"}})
-    clips = {}
-    for flag in ("0", "1"):
-        monkeypatch.setenv("HU_U_FIG", flag)
-        blocks, info = DL.load(str(f), segs, text=True)
-        figs = [b for b in blocks if b.get("figure")]
-        assert len(figs) == 1, flag
-        clips[flag] = figs[0]["runs"][0]["img"]["clip"]
-    assert clips["0"][1] < 64 < clips["1"][1]                        # раньше — с обрывком шапки, теперь — ниже её рамки
-    assert clips["1"][1] == 66 and clips["0"][3] == clips["1"][3]
+    blocks, info = DL.load(str(f), segs, text=True)
+    figs = [b for b in blocks if b.get("figure")]
+    assert len(figs) == 1
+    clip = figs[0]["runs"][0]["img"]["clip"]
+    assert 64 < clip[1] == 66                                         # ниже рамки шапки (раньше — с её обрывком)
 
 
 # ---------------------------------------------------------------- формы-шаблоны
@@ -264,9 +255,6 @@ def test_build_pdf_scan_page_strips_cell_line_and_reports_lost_code(tmp_path, mo
     info = build_pdf(str(src), str(out), [s, s2], {"0": {"ru": "Дата: 2022-01-11"},
                                                     "1": {"ru": "Версия 30YCGT 2022-01-11 10135772"}})
     assert info["verify"] and "30YCGT" in info["verify"][0]                        # три из трёх — громко
-    monkeypatch.setenv("HU_U_FIG", "0")                                         # выключено — как раньше: «|» рисуется, сверки нет
-    info = build_pdf(str(src), str(out), [s], {"0": {"ru": "Дата: 2022-01-11 |"}})
-    assert "|" in fitz.open(out)[0].get_text() and "verify" not in info
 
 
 def test_split_checkboxes_cuts_mark_letters_and_keeps_articles_and_edits():
@@ -300,18 +288,11 @@ def test_build_pdf_keeps_checkbox_pixels_and_draws_only_yes_no(tmp_path, monkeyp
          "loc": {"bbox": [100, 300, 160, 312], "avail": [100, 300, 400, 312], "frags": [[100, 300, 160, 312]], "size": 10,
                  "bold": False, "family": "serif", "ocr": True}}
     monkeypatch.setattr(FIG, "ocr_words", lambda pg, **kw: None)
-    for flag in ("1", "0"):
-        monkeypatch.setenv("HU_U_FIG", flag)
-        out = tmp_path / ("ru%s.pdf" % flag)
-        build_pdf(str(src), str(out), [s], {"0": {"ru": "CI нет"}})
-        q = fitz.open(out)[0]
-        pm = q.get_pixmap(dpi=150, clip=fitz.Rect(99, 300, 109, 310), colorspace=fitz.csGRAY)
-        dark = int((np.frombuffer(pm.samples, np.uint8) < 100).sum())
-        text = q.get_text().strip()
-        if flag == "1":
-            assert dark > 20 and text == "нет"                                  # флажок цел, «CI» не рисуется
-        else:
-            assert text == "CI нет"                                              # прежнее: на месте флажка — буквы «CI»
+    build_pdf(str(src), str(out), [s], {"0": {"ru": "CI нет"}})
+    q = fitz.open(out)[0]
+    pm = q.get_pixmap(dpi=150, clip=fitz.Rect(99, 300, 109, 310), colorspace=fitz.csGRAY)
+    dark = int((np.frombuffer(pm.samples, np.uint8) < 100).sum())
+    assert dark > 20 and q.get_text().strip() == "нет"                          # флажок цел, «CI» не рисуется
 
 
 # ---------------------------------------------------------------- по ревью: схема, формы, сверка
