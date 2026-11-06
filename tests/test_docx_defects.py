@@ -119,3 +119,31 @@ def test_heading_just_under_header_frame_with_other_code_is_kept(tmp_path):
     for code in ("30RR24S002", "30RR25S002", "30RR26S002"):
         assert f"A {code} ellenőrzése" in texts
 
+
+
+def test_top_line_repeated_lower_is_dropped_only_before_its_heading(tmp_path):
+    """L33 (E9_DESIGN §5, F-2): строка вверху листа, чей текст ниже на том же листе повторён, снималась при любом
+    повторе — «Sziasztok!» письма 31/32SDTÖMGT, «Schnepp Péter» (30RYBSZGT), «BLOKKINDÍTÁSKOR» (титул 30TKBSZ36BIGT)
+    молча пропадали и писались «колонтитулом». Правило писалось под 3PR42: название раздела в рамке сверху и тот же
+    текст ниже заголовком. Теперь снимается только перед заголовком (полужирный, по центру или метка «заголовок»)."""
+    pages = [[("Sziasztok!", 72, 60, 140, "left", None, False),
+              ("A mellékelt utasítást átnéztük, észrevételünk nincs.", 72, 90, 420, "left", None, False),
+              ("Sziasztok!", 72, 300, 140, "left", None, False),
+              ("Schnepp Péter", 72, 330, 170, "left", None, False)],
+             [("1.3/1. SZBV kazetta leesése", 160, 75, 400, "center", None, False),   # не на высоте «Sziasztok!»
+              ("1.3/1. SZBV kazetta leesése", 72, 200, 300, "left", "heading", True),
+              ("A kazetta leesése esetén a reaktort leállítani.", 72, 230, 400, "left", None, False)]]
+    doc = fitz.open()
+    segs = []
+    for pno, lines in enumerate(pages):
+        doc.new_page(width=595, height=842)
+        for text, x0, y0, x1, align, role, bold in lines:
+            segs.append({"id": len(segs), "page": pno, "text": text,
+                         "loc": {"bbox": [x0, y0, x1, y0 + 9], "frags": [[x0, y0, x1, y0 + 9]], "size": 9.7,
+                                 "bold": bold, "align": align, "family": "serif", "ocr": False, "roles": True,
+                                 "role": role}})
+    doc.save(tmp_path / "l33.pdf")
+    blocks, _ = DL.load(str(tmp_path / "l33.pdf"), segs, text=True)
+    texts = _texts(blocks)
+    assert sum(t == "Sziasztok!" for _, t in texts) == 2                 # обычный повтор ниже — оба на месте
+    assert sum(t == "1.3/1. SZBV kazetta leesése" for _, t in texts) == 1  # название в рамке перед заголовком — прочь

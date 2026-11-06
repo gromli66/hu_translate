@@ -1566,8 +1566,11 @@ def load(src, segs, text=False):
     # («1.3/1. SZBV kazetta leesése» дважды подряд, 3PR42)
     norm = lambda t: re.sub(r"\s+", " ", _sig(t))
     lower = {}                                  # лист → [(верх, текст)]; заголовок бывает и в верхней пятой части листа
+    # только заголовок ниже (полужирный, по центру, метка портала «заголовок»): при любом повторе пропадали «Sziasztok!»
+    # письма 31/32SDTÖMGT, «Schnepp Péter» 30RYBSZGT, «BLOKKINDÍTÁSKOR» титула 30TKBSZ36BIGT (E9_DESIGN §5, F-2)
     for s in content:
-        lower.setdefault(s["page"], []).append((s["loc"]["bbox"][1], norm(s["text"])))
+        if s["loc"].get("bold") or s["loc"].get("align") == "center" or s["loc"].get("role") == "heading":
+            lower.setdefault(s["page"], []).append((s["loc"]["bbox"][1], norm(s["text"])))
     content = [s for s in content if not (s["loc"]["bbox"][3] < 0.2 * H and titled(s) and any(
         y > s["loc"]["bbox"][3] and t == norm(s["text"]) for y, t in lower.get(s["page"], ())))]
     if not content:
