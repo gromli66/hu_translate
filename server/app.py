@@ -263,7 +263,8 @@ def check_token(token):
         with urllib.request.urlopen(req, timeout=15) as r:
             return r.status == 200, "Токен действует."
     except urllib.error.HTTPError as e:
-        return False, ("Портал не принял токен. Возьмите новый в настройках портала." if e.code in (401, 403)
+        return False, ('Портал не принял токен — возможно, он истёк. Как взять новый, написано в <a href="/help">справке</a>.'
+                       if e.code in (401, 403)
                        else f"Портал ответил ошибкой {e.code}. Попробуйте позже.")
     except (urllib.error.URLError, TimeoutError, OSError):
         return False, "Портал недоступен с сервера. Сообщите администратору."

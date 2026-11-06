@@ -13,8 +13,42 @@
 | docx_layout, layout, segments, roles | 110 | ~65 | ~45 |
 | docx_build, docx_profile | 110 | ~10 прямых (остальные косвенно через `build`) | ~50 |
 
-Тестами не покрыты целиком: ветки текстового слоя `docx_layout.load(text=True)`; `docx_profile.extract`/`check`.
-Мёртвый код: `layout._in_cell` (L79), `segments.merge_readers` (L81).
+На 20.10 тестами не были покрыты целиком: ветки текстового слоя `docx_layout.load(text=True)`; `docx_profile.extract`/`check`.
+С тех пор `load(text=True)` покрыт (`test_text_forms.py`, `test_role_order.py`, `test_assembly_sheets.py`, `test_figures.py`,
+`test_sids.py`), `docx_profile.check` и `extract` — `test_role_order.py`, `test_cloud_sidefixes.py`.
+Мёртвый код на 20.10: `layout._in_cell` (L79), `segments.merge_readers` (L81) — **удалены 03.11 (E8, `e3d35d3`)**.
+Одноимённая `docx_layout._in_cell` — другая функция, живая.
+
+## Состояние на 06.11.2026 (после шагов 2–3 договора и этапов E0–E8)
+
+Опись и таблицы `RULES_*.md` — снимок кода на 20.10 (HEAD `992c3ef`); строки таблиц не переписывались. Номера строк в
+колонке «где» — те же, 20.10: искать по имени функции. С тех пор в код влиты шаги 2–3 договора (`docx_layout._role`,
+`docx_build.item_ind` — [STEP2_3.md](STEP2_3.md)) и единая модель вёрстки (E0–E8 — [DEV.md](../DEV.md), раздел «Единая
+модель вёрстки»). Что в описи теперь иначе — проверено по коду на `7f99d5a`:
+
+| в описи | теперь |
+|---|---|
+| перенос слова в трёх местах: L76 `layout.join_lines`, L97 `segments._dehyphen`, L47 `docx_layout._join` | первые два — через `lines.py` (E4): `join_lines` и `glue`, общие исключения («és», «ÜFK-» + «s», «KI-» + «KAPCSOLVA»); `docx_layout._join` держит свою копию правил — не слита |
+| L61 `layout.code_line`; L72 «горизонталь между строками — разные абзацы»; L74 «строки кодов — разные абзацы» | `rows.py` (E5): `code_line`, `rule_between`, `Rows.apart` («линейка» / «якорь» / «отметка») — граница ряда решается до склейки строк в абзацы; `layout.group` и `roles.apply` через неё не клеят |
+| L1 `is_scan`, L19 `_vector_figures`, L25–L28 условие «снимок листа» в `_regions`; `_graphic_page`, `_ocr_layer`, `_chart_table` | `figures.py` (E7): `is_scan`, `ocr_layer`, `graphic_page`, `chart_table` — те же признаки, `docx_layout._…` — тонкие обёртки; «снимок листа» — `figures.figure_kind` (скан / схема / график); схема — один набор признаков `figures.scheme_regions` вместо `_vector_figures` и `_scheme_figures` (они живы при `HU_U_FIG=0`); рамка снимка без колонтитула — `figures.clamp_zones` |
+| B22–B26 `_list_ind`, `_lvl_ind` | `docx_build.list_ind` (запас по профилю), `lvl_ind` + `_marker_room` (B25, B26); место маркера и текста — с листа, `item_ind` — один источник (шаг 3) |
+| L79 `layout._in_cell`, L81 `segments.merge_readers` | удалены (E8) |
+| блок и сегмент не связаны: перевод — по тексту, «первый побеждает» | блоки несут `sids` (E6, `sids.py`): перевод блока из одного сегмента — по его id, потеря громко (`info["lost_ids"]`, «ВНИМАНИЕ»); по тексту — составные блоки; `termvar.same_source` — один исходный текст, один перевод |
+| колонтитулы: образец с одного листа, номер листа — застывшее число | путь А: лист оригинала — раздел DOCX со своим номером, шапкой и подвалом, перелив — «N (прод.)», подгонка кеглем `docx_fit` (`docx_struct.layout` → `L["sheet_no"]`, `docx_build.Builder.build`) |
+
+Пороги одной величины (таблица ниже): в `geom.py` (E2, значения те же) теперь — полоса колонтитула 0,14/0,86 H
+(`HEAD_EDGE`/`FOOT_EDGE`), подвал текстового слоя 0,6 H и размеченного 0,7 H (`FOOT_TEXT`, `FOOT_TAGGED`, `FOOT_GAP`),
+линия — толщина меньше 3 pt (`LINE`) и двойная линия — ближе 5 pt (`DOUBLE`), «цветная» заливка (`WHITE` 0,97 / `DARK`),
+ширина знака (`CHAR_W*`), пороги схемы, плаката и графика (`SCHEME_*`, `POSTER_*`, `CHART_*`). Остальные значения таблицы
+(12/88 %, 0,2 H, 1/7 H, 0,95 у «белого» S73/S77/S78, «по центру» ±30/±10/±15, «короткий текст») остались по месту.
+Текстовые признаки — метка пункта, якорь ряда, знаки маркера, отметки бланка — в `patterns.py`; регулярки меток
+`docx_struct` (`LABEL`, `PLABEL`, …) собраны не все.
+
+Правила, которых в описи нет (с тестами): перенос слова и ряд — `tests/test_segment_rows.py` (E4, E5); `sids` и единый
+перевод — `tests/test_sids.py` (E6); фигуры, формы, сверка скана — `tests/test_figures.py` (E7); путь А и «(прод.)» —
+`tests/test_assembly_sheets.py`, `tests/test_docx_fit.py`, `tests/test_assemble_path.py`. Заплатки из таблиц ниже, которые
+по плану E3–E7 должны были стать лишними (`_stable_running`, `_portal_running`, `_typical_page`, `roles.repeats`,
+`fit_rows`, `sub_rows`, `hyphen_cont`, `_foot_top`), всё ещё вызываются и участвуют в выходе.
 
 ## Конфликты — по шагам договора
 
