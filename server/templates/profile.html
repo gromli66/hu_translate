@@ -8,7 +8,7 @@
   <p>{% if has_token %}<span class="ok">Токен сохранён.</span>{% else %}<span class="warn">Токена нет.</span>{% endif %}</p>
   <form method="post" action="/profile/token">
     <label>Новый токен
-      <input name="token" type="password" autocomplete="off" placeholder="вставьте токен из настроек портала">
+      <input name="token" type="password" autocomplete="off" placeholder="вставьте токен портала (где взять — в справке)">
     </label>
     <div class="row">
       <button type="submit">Сохранить</button>
