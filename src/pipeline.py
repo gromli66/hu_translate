@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 import glossary as G
 import segments as S
 from translate import Translator, TAG, NUM, HU_CAPS_WORDS, LAT_ABBR, fix_units, gloss_misses, badness
+from conventions import is_tag
 from llm import STAT
 
 SEC_CHARS, CTX_CHARS, STREAM_CHARS = 6000, 3000, 250000
@@ -547,6 +548,8 @@ def translate(work, prj, workers=4, redo=False, progress=_quiet):
         for sec in secs:
             units, by_text = [], {}
             for s in sec:
+                if is_tag(s["text"]):                # тег по виду («@.BSZG.TBE») — код, не текст: как есть, без портала
+                    res[s["id"]] = {"ru": s["text"], "issues": [], "tries": 0, "copied": True}; continue
                 if not S.needs_translation(s["text"]) or keep_abbr(s["text"]) or (s["text"].strip() not in known and S.is_code_word(s["text"], code_words)):
                     # значение без слов («1,7 kW», «6 t/h»): портал не зовётся, но единица — по глоссарию («1,7 кВт»);
                     # сборка берёт это из res (docx_build.Memory.get), иначе в таблицах оставалась латиница (аудит 29.10, C6)
@@ -638,7 +641,7 @@ def struct_fill(work, prj, progress=_quiet):
                 set_vocab(tr, d["segs"])
                 tm = {tmkey(k): v for k, v in (tr.tm or {}).items()}
                 main = [e for e in tr.entries if id(e) in tr.main_ids]
-            units = [t for t, _, _ in miss if tmkey(t) not in tm and t not in failed]
+            units = [t for t, _, _ in miss if tmkey(t) not in tm and t not in failed and not is_tag(t)]
             got = {}
             for j in range(0, len(units), 12):
                 chunk = units[j:j + 12]
@@ -652,7 +655,9 @@ def struct_fill(work, prj, progress=_quiet):
                 got.update({t: out[k] for k, t in enumerate(chunk)})
                 progress("структура", i + 0.9 * (j + len(chunk)) / len(units), len(files))
             for t, page, code in miss:
-                if tmkey(t) in tm:
+                if is_tag(t):
+                    r = {"ru": t, "issues": [], "tries": 0, "copied": True}
+                elif tmkey(t) in tm:
                     r = {"ru": tm[tmkey(t)], "issues": [], "tries": 0, "tm": True}
                 else:
                     r = dict(got.get(t) or {"ru": ""})

@@ -14,6 +14,7 @@ from pathlib import Path
 
 import glossary as G
 import morph
+from conventions import is_tag
 from llm import chat, STAT
 
 
@@ -780,9 +781,14 @@ class Translator:
         return got, r
 
     def run_batch(self, plan):
-        units = plan["units"]
+        # тег по виду («@.BSZG.TBE») — код: как есть, на портал не уходит (conventions.is_tag)
+        asis = {u["key"]: {"ru": u["text"], "issues": [], "tries": 0, "copied": True}
+                for u in plan["units"] if is_tag(u["text"])}
+        units = [u for u in plan["units"] if u["key"] not in asis]
+        if not units:
+            return asis
         got, r = self._call(units, plan["first_abbr"], plan["context"], self.think, plan.get("note", ""))
-        res = {}
+        res = dict(asis)
         for i, u in enumerate(units):
             ru = got.get(i, "")
             res[u["key"]] = {"ru": ru, "issues": self.full_check(u["text"], ru), "tries": 1}

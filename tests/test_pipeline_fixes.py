@@ -94,3 +94,75 @@ def test_assemble_with_project_tops_up_first(tmp_path, monkeypatch):
     P.assemble(work, prj=_project(tmp_path))
     assert len(asked) == 2
     assert sum(1 for s in _doc(work)["segs"] if s["loc"].get("struct_only")) == 2
+
+
+# ---------------------------------------------------------------- 2. код-тег по виду не переводится
+TAGS_AS_IS = ["@.BSZG.TBE", "@.BSZG.BC", "@.MEAS.I5", "@.FIL.1_1", "@BSZG.TBE", "<f1>@.BSZG.TBE</f1>", "BSZG.TBE.X"]
+NOT_TAGS = ["Szervezet:UBO", "KI.BE", "AUT.IND", "BSZG.TBE", "BSZG", "1.2.3", "É.K.", "pl.", "mm/s", "g/kg", "4.1.9.",
+            "A.B", "NYIT.", "Oszt.vez", "AZONOSÍTÓ:", "FIGYELEM!", "ZÁRVA.NYITVA.X", "30YP15S101 zárva", "@ BSZG.TBE",
+            "@.bszg.tbe", "@.BSZG.TBE érték", "FESZ.GJ."]       # AUT.IND, BSZG.TBE — две группы без «@»: сокращения
+
+
+@pytest.mark.parametrize("text", TAGS_AS_IS)
+def test_tag_shape_is_recognized(text):
+    import conventions as C
+    assert C.is_tag(text)
+
+
+@pytest.mark.parametrize("text", NOT_TAGS)
+def test_ordinary_text_is_not_a_tag(text):
+    import conventions as C
+    assert not C.is_tag(text)
+
+
+def _tr(tmp_path):
+    return T.Translator(glossary=_project(tmp_path)["glossary"])
+
+
+def test_run_batch_does_not_send_tags_to_the_portal(tmp_path, monkeypatch):
+    """01-02FMP0BIGT, id 1703: «@.BSZG.TBE» → «@.ИВС (BSZG).температура на входе в реактор» (портал расшифровал тег,
+    проверка кодов пропустила: у тега нет цифр и «_»)."""
+    asked = []
+
+    def call(self, units, *a, **k):
+        asked.extend(u["text"] for u in units)
+        return {i: "@.ИВС (BSZG).температура на входе в реактор" for i, u in enumerate(units)}, {}
+    monkeypatch.setattr(T.Translator, "_call", call)
+    out = _tr(tmp_path).run_batch({"units": [{"key": 0, "text": "@.BSZG.TBE"}, {"key": 1, "text": "FIGYELEM!"}],
+                                   "first_abbr": [], "context": ""})
+    assert asked == ["FIGYELEM!"]
+    assert out[0] == {"ru": "@.BSZG.TBE", "issues": [], "tries": 0, "copied": True}
+    assert out[1]["ru"] == "@.ИВС (BSZG).температура на входе в реактор"      # прочее идёт как прежде
+
+
+def test_translate_keeps_tags_as_is(tmp_path, monkeypatch):
+    asked = []
+
+    def call(self, units, *a, **k):
+        asked.extend(u["text"] for u in units)
+        return {i: "Идентификатор" for i, u in enumerate(units)}, {}
+    monkeypatch.setattr(T.Translator, "_call", call)
+    work = tmp_path / "work"
+    (work / "json").mkdir(parents=True)
+    segs = [{"id": i, "text": t, "src": t, "page": 1, "loc": {}} for i, t in
+            enumerate(["@.BSZG.TBE", "Azonosító", "@.BSZG.BC", "<f1>@.BSZG.TBE</f1>"])]
+    (work / "json" / "doc.json").write_text(json.dumps({"file": "x.pdf", "segs": segs, "res": {}, "info": {}}),
+                                            encoding="utf-8")
+    P.translate(work, _project(tmp_path))
+    res = json.loads((work / "json" / "doc.json").read_text(encoding="utf-8"))["res"]
+    assert asked == ["Azonosító"]
+    assert [res[str(i)]["ru"] for i in (0, 2, 3)] == ["@.BSZG.TBE", "@.BSZG.BC", "<f1>@.BSZG.TBE</f1>"]
+    assert all(res[str(i)].get("copied") for i in (0, 2, 3)) and res["1"]["ru"] == "Идентификатор"
+
+
+def test_polish_restores_tag_translated_by_older_build():
+    """JSON, переведённый до правки: в res уже стоит расшифрованный тег — шлифовка (код, без портала) возвращает его."""
+    import conventions as C
+    import polish as PL
+    rules = {"latin": [], "cyrillic_to_latin": {}}
+    hu, bad = "@.BSZG.TBE", "@.ИВС (BSZG).температура на входе в реактор"
+    assert [v[0] for v in C.check(hu, bad, rules)] == ["Я6"] and C.check(hu, bad, rules)[0][2] is True
+    assert C.check(hu, hu, rules) == []
+    items = {"1": {"hu": hu, "ru": bad, "kind": "text", "page": 25, "id": 1703}}
+    edits, left = PL.run(items, rules, chat=None, log=lambda *a: None)
+    assert items["1"]["ru"] == hu and left == [] and edits[0]["who"] == "код"
