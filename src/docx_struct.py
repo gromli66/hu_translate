@@ -348,9 +348,12 @@ def _cut_rows(rows):
         for j, c in pairs:
             head, tail = list(last[j]["blocks"]), list(c["blocks"])
             if head and tail and head[-1]["k"] == "p" and tail[0]["k"] == "p":     # абзац, разрезанный листом, — один
-                runs = list(head[-1]["runs"]) + [dict(x) for x in tail[0]["runs"]]
+                runs = [dict(x) for x in head[-1]["runs"]] + [dict(x) for x in tail[0]["runs"]]
                 k = len(head[-1]["runs"])
-                if k < len(runs) and "t" in runs[k] and runs[k - 1].get("t", " ")[-1:] not in (" ", "-"):
+                if k < len(runs) and "t" in runs[k] and runs[k - 1].get("t", " ")[-1:] == "-":
+                    runs[k]["t"] = BREAK + runs[k]["t"]          # перенос слова через лист — по glue (_unbreak)
+                    _unbreak(runs)
+                elif k < len(runs) and "t" in runs[k] and runs[k - 1].get("t", " ")[-1:] != " ":
                     runs[k]["t"] = " " + runs[k]["t"]
                 head[-1] = SIDS.add(dict(head[-1], runs=runs), tail[0].get("sids"))
                 tail = tail[1:]
