@@ -53,3 +53,20 @@ def test_section_break_after_table_takes_no_room(tmp_path):
         assert not (prev is not None and prev.tag == qn("w:p") and not _text(prev).strip()
                     and prev.find(".//" + qn("w:drawing")) is None)
 
+
+
+def _sec_head(sec):
+    return "".join(t.text for t in sec.header._element.iter(qn("w:t")))
+
+
+def test_last_sheet_before_blank_tail_page_is_one_sheet(tmp_path):
+    """Последний лист перед пустой страницей в конце оригинала (30THHAGT: стр. 19 пустая, без номера): граница
+    последнего раздела — «листов в документе + 1», и пустой хвост считался листом раздела — раздел выходил «в два
+    листа»: без шапки «N (прод.)» и без ужатия docx_fit; перелив последнего листа печатался с номером «17» (просмотр
+    06.11). Пустой хвост теперь не лист раздела: раздел в один лист, как у остальных."""
+    bld, doc, L = _build_sheets(tmp_path, pages=3, sizes=[(595, 842)] * 4)     # 4-я страница оригинала — пустая
+    assert L["sheet_no"] == {1: 1, 2: 2, 3: 3}
+    last = len(doc.sections) - 1
+    assert bld.fit_want.get(last) == 1
+    sec = doc.sections[last]
+    assert sec.different_first_page_header_footer and "(прод.)" in _sec_head(sec)
