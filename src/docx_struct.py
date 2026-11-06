@@ -1083,7 +1083,7 @@ def attach_icons(blocks, imgs, height):
 
 NUMBERED = {"Decimal", "LowerAlpha", "UpperAlpha", "LowerRoman", "UpperRoman"}
 LABEL = re.compile(r"^\s*(\d{1,3}|[A-Za-z]|[ivxIVX]{2,5})(\.\)|[.)])(?=\s|$)\s*")
-DASH = re.compile(r"^\s*[–—\-](?=\s)")
+DASH = re.compile(r"^\s*[–—−\-](?=\s)")                          # «−» — U+2212, минус шрифта Word (TU)
 OWN_LABEL = re.compile(r"^\s*(?:\(\w{1,3}\)|[a-z]{2}\)|\d{1,3}[a-z]\))\s")      # «(a)», «(5a)», «ba)», «12a)»
 
 

@@ -20,7 +20,7 @@ BULLETS = {"Disc": ("\uf0b7", "Symbol"), "Circle": ("o", "Courier New"), "Square
            "Dash": ("–", None)}                     # тире из текста пункта (ÜFK «– ha az …») — шрифтом абзаца
 NUMFMT = {"Decimal": "decimal", "LowerAlpha": "lowerLetter", "UpperAlpha": "upperLetter",
           "LowerRoman": "lowerRoman", "UpperRoman": "upperRoman"}
-LEAD = re.compile(r"^\s*[•▪◦·o\-–\uf020-\uf0ff](?:\s+|$)")    # и маркер Symbol/Wingdings (частная область)
+LEAD = re.compile(r"^\s*[•▪◦·o\-–−\uf020-\uf0ff](?:\s+|$)")    # и маркер Symbol/Wingdings (частная область); «−» (TU)
 CAPTION = re.compile(r"^\s*(\d+)\.\s*(ábra|táblázat)\s+(.*)$", re.S | re.I)
 CAP_RU = re.compile(r"^\s*(?:(?:Рисунок|Рис\.?|рис\.?|Таблица|Табл\.?|табл\.?)\s*\d+\s*[.:]?"
                     r"|\d+\s*\.?\s*(?:рис\.?|табл\.?|рисунок|таблица)\.?)\s*", re.I)

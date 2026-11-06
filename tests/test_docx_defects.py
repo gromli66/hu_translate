@@ -382,3 +382,18 @@ def test_nested_table_in_cell_is_a_table_not_a_sheet_snapshot(tmp_path):
     texts = [" ".join(B.text_of(x["runs"]) for x in c["blocks"]) for row in sub["rows"] for c in row]
     assert "20 perc" in texts and "L101 (mm)" in texts
     assert not any("20 perc" in B.text_of(x.get("runs") or []) for x in cell["blocks"] if x["k"] == "p")
+
+
+def test_list_items_with_minus_sign_in_text_have_one_marker(tmp_path):
+    """TU пп. 1.16–1.17 (печать 06.11 после a50fe87): дерево разметки дало маркированный список, а «−» (U+2212) стоит прямо
+    в тексте пунктов — в DOCX «• − 30YP15S101 …», двойной маркер. «Тире в тексте» (text_labels → список «Dash», тире
+    снимает сборка) знало «–», «—», «-», но не «−»."""
+    from test_struct_docx import p as para
+    items = [[para("− 30YP15S101 zárva (lámpajelzés)", 1, 100)], [para("− 30YP13S101 zárva", 1, 112)]]
+    blocks = [{"k": "list", "kind": "Disc", "items": items}]
+    D.text_labels(blocks)
+    assert blocks[0]["kind"] == "Dash"
+    out = tmp_path / "dash.docx"
+    B.Builder(B.Memory([]), lambda img: png(), PROFILE).build(blocks, str(out), dict(LAYOUT, first_is_body=True))
+    texts = [x.text for x in Document(str(out)).paragraphs if x.text.strip()]
+    assert texts == ["30YP15S101 zárva (lámpajelzés)", "30YP13S101 zárva"], texts
