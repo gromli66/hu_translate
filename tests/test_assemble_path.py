@@ -64,3 +64,26 @@ def test_scan_is_pdf2docx_quietly_and_failed_build_loudly(tmp_path, monkeypatch)
     assert len(info["attention"]) == 1 and "сломалось" in info["attention"][0]
     wb = load_workbook(tmp_path / "out" / "doc_вычитка.xlsx")
     assert any("сломалось" in str(c.value) for ws in wb for row in ws.iter_rows() for c in row)
+
+
+def test_failed_optional_steps_are_loud_and_the_job_is_still_assembled(tmp_path, monkeypatch, capsys):
+    """Подписи формы и единый перевод — необязательные шаги: сбой любого не роняет сборку задания (ревью 03.11, 🟡2), а
+    пишется громко — лог с документом и причиной, info["attention"], строка листа «нарушения»; документ собирается без шага."""
+    import figures as FIG
+    import termvar
+    calls = []
+    _stubs(monkeypatch, calls)
+
+    def boom(*a, **k):
+        raise RuntimeError("шаг сломался")
+    monkeypatch.setattr(FIG, "apply_form_labels", boom)
+    monkeypatch.setattr(termvar, "same_source", boom)
+    info = A.assemble_all(tmp_path / "doc.json", _job(tmp_path, struct={"mode": "text"}), tmp_path / "out")
+    assert calls == [("text", tmp_path / "out" / "doc_RU.pdf")]                  # сборка прошла
+    assert len(info["attention"]) == 2
+    assert "apply_form_labels" in info["attention"][0] and "same_source" in info["attention"][1]
+    assert all("RuntimeError: шаг сломался" in a for a in info["attention"])
+    log = capsys.readouterr().out
+    assert "СБОРКА doc: ВНИМАНИЕ" in log and "Traceback" in log                  # лог с причиной и местом
+    wb = load_workbook(tmp_path / "out" / "doc_вычитка.xlsx")
+    assert sum("шаг сломался" in str(c.value) for ws in wb for row in ws.iter_rows() for c in row) == 2

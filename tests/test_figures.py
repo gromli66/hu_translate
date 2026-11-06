@@ -451,3 +451,40 @@ def test_russian_words_with_digit_are_not_codes_to_verify(monkeypatch):
     page = fitz.open().new_page()
     monkeypatch.setattr(FIG, "ocr_words", lambda pg, **k: ["30RDGT", "140387", "2017.04.20", "10:30", "ТЭН-3"])
     assert FIG.verify_page(page, [text], 0) is None                                   # слов с цифрой в кодах нет — не искали
+
+
+def test_build_pdf_step_failure_is_loud_and_page_is_still_built(tmp_path, monkeypatch, capsys):
+    """Новые шаги листа скана (флажки-буквы, чужая краска, край краски слова) вне try роняли build_pdf, а с ним и сборку
+    всего задания (ревью 03.11, 🟡2). Сбой шага — громко (лог с листом и причиной, info["steps_failed"]), лист собирается
+    без шага; один и тот же сбой на листе не повторяется строкой на каждую строку."""
+    from PIL import Image
+    import assemble as A
+    from assemble import build_pdf
+    k = 150 / 72
+    buf = io.BytesIO()
+    Image.new("RGB", (round(595 * k), round(842 * k)), "white").save(buf, "PNG")
+    src, out = tmp_path / "scan.pdf", tmp_path / "ru.pdf"
+    d = fitz.open()
+    d.new_page(width=595, height=842).insert_image(fitz.Rect(0, 0, 595, 842), stream=buf.getvalue())
+    d.save(src)
+    mk = lambda i, y: {"id": i, "page": 0, "text": "AZONOSÍTÓ:", "loc": {
+        "bbox": [60, y, 100, y + 12], "avail": [60, y, 520, y + 12], "frags": [[60, y, 100, y + 12]], "size": 10,
+        "bold": False, "family": "monospace", "ocr": True}}
+    segs = [mk(0, 300), mk(1, 330)]                              # моноширинный, слово шире рамки: _ink_span вызывается
+    res = {"0": {"ru": "ИДЕНТИФИКАТОР:"}, "1": {"ru": "ИДЕНТИФИКАТОР:"}}
+    monkeypatch.setattr(FIG, "ocr_words", lambda pg, **kw: None)
+
+    def boom(*a, **kw):
+        raise ValueError("сбой шага")
+    monkeypatch.setattr(FIG, "split_checkboxes", boom)
+    monkeypatch.setattr(A, "_foreign_ink", boom)
+    monkeypatch.setattr(A, "_ink_span", boom)
+    info = build_pdf(str(src), str(out), segs, res)
+    assert fitz.open(out)[0].get_text().split() == ["ИДЕНТИФИКАТОР:", "ИДЕНТИФИКАТОР:"]      # перевод на листе есть
+    fails = info["steps_failed"]
+    assert len(fails) == 3                                                                 # _ink_span — раз на лист
+    assert all("ValueError: сбой шага" in f for f in fails)
+    assert any("split_checkboxes" in f for f in fails) and any("_foreign_ink" in f and "лист 1" in f for f in fails)
+    assert any("_ink_span" in f and "лист 1" in f for f in fails)
+    log = capsys.readouterr().out
+    assert "Traceback" in log and "_foreign_ink" in log and "scan.pdf, лист 1" in log          # в лог — причина и место
