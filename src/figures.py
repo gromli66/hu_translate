@@ -60,23 +60,31 @@ def graphic_page(page, segs, figs):
         and area >= GM.POSTER_PIECES_AREA and len(segs) <= GM.POSTER_TEXT
 
 
-def chart_table(t, draw):
+def chart_table(t, draw, inner=()):
     """Таблица-график: в её рамке — от трёх залитых фигур, не совпадающих с ячейками (полосы диаграммы Ганта, ромбы вех,
-    столбики). t — (xs, ys, горизонтали, вертикали) таблицы, draw — [{"rect", "solid"}] листа."""
+    столбики). t — (xs, ys, горизонтали, вертикали) таблицы, draw — [{"rect", "solid", "fill"}] листа, inner — рамки
+    вложенных таблиц (docx_layout: таблица в ячейке): заливка их ячеек — не столбики внешней. И заливка абзаца в залитой
+    ячейке тем же цветом (Word рисует её отдельно, внутри заливки ячейки) — не столбик: бланк «Время измерения» с серыми
+    клетками внутри рамки листа был «графиком», лист уходил снимком (30TH50-80ÁTVGT л. 6–9; E7 §5, просмотр 06.11 п. 12)."""
     import fitz
     xs, ys = t[0], t[1]
     R = fitz.Rect(xs[0], ys[0], xs[-1], ys[-1])
     near = lambda v, grid: any(abs(v - g) < GM.DOUBLE for g in grid)
     xs, ys = list(xs) + [v[0] for v in t[3]], list(ys) + [h[0] for h in t[2]]
+    cell = lambda q: near(q.x0, xs) and near(q.x1, xs) and near(q.y0, ys) and near(q.y1, ys)
+    same = lambda a, b: a is not None and b is not None and max(abs(x - y) for x, y in zip(a, b)) < 0.02
+    solid = [(fitz.Rect(d["rect"]), d.get("fill")) for d in draw if d.get("solid")]
+    cells = [(q, f) for q, f in solid if cell(q)]
     n = 0
-    for d in draw:
-        if not d.get("solid"):
-            continue
-        q = fitz.Rect(d["rect"])
+    for q, f in solid:
         if q.width < 2 or q.height < 2 or not R.contains(q) or q.get_area() > 0.5 * R.get_area():
             continue
-        if near(q.x0, xs) and near(q.x1, xs) and near(q.y0, ys) and near(q.y1, ys):
+        if cell(q):
             continue                                        # заливка ячейки
+        if any(r.contains(q) for r in inner):
+            continue                                        # заливка вложенной таблицы — её дело
+        if any(c != q and c.contains(q) and same(f, g) for c, g in cells):
+            continue                                        # заливка абзаца в залитой ячейке
         n += 1
     return n >= GM.CHART_SHAPES
 

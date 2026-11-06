@@ -304,3 +304,80 @@ def test_blank_line_between_paragraphs_of_whole_sheet_cell_is_kept():
     assert not sb["4.3 - Az SZBV hajtások."]                                     # строка за строкой — без зазора
     assert round(sb["A mérési program ütemezése:"].pt) >= 9
     assert not sb["Második sor a kis cellában."]                                 # обычная ячейка — как прежде
+
+
+def _nested_pdf(path, grey=True):
+    """Лист: рамка в 3 столбца (Sorsz. | Feltétel | Igazolás) во весь лист, в средней ячейке — бланк 4 × 4 с серыми
+    клетками (заливка ячейки и внутри неё — заливка абзаца тем же цветом, как рисует Word) — 30TH50-80ÁTVGT л. 6–9."""
+    from test_text_forms import _segs
+    doc = fitz.open()
+    pg = doc.new_page(width=595, height=842)
+    sh = pg.new_shape()
+    sh.draw_rect(fitz.Rect(65, 78, 570, 753))
+    for x in (113, 520):
+        sh.draw_line((x, 78), (x, 753))
+    sh.draw_line((65, 100), (570, 100))
+    xs, ys = [150, 230, 310, 390, 470], [360, 380, 400, 420, 440]
+    for x in xs:
+        sh.draw_line((x, ys[0]), (x, ys[-1]))
+    for y in ys:
+        sh.draw_line((xs[0], y), (xs[-1], y))
+    sh.finish(color=(0, 0, 0), width=0.6)
+    sh.commit()
+    if grey:
+        for (x0, y0) in ((230, 400), (310, 400), (390, 400), (230, 420)):
+            pg.draw_rect(fitz.Rect(x0 + 0.5, y0 + 0.5, x0 + 79.5, y0 + 19.5), color=None, fill=(0.85, 0.85, 0.85))
+            pg.draw_rect(fitz.Rect(x0 + 5, y0 + 6, x0 + 74, y0 + 14), color=None, fill=(0.85, 0.85, 0.85))
+    put = lambda x, y, t: pg.insert_text((x, y), t, fontsize=9, fontname="tiro")
+    put(70, 94, "Sorsz.")
+    put(250, 94, "Feltétel, művelet, ellenőrzés")
+    put(525, 94, "Igazolás")
+    put(70, 130, "4.4.")
+    put(120, 130, "A kimérés az adatok felvételéből áll, a program vezetője rögzíti.")
+    for i, row in enumerate((("Mérés", "óra/perc", "L101 (mm)", "L102 (mm)"), ("0 perc", "...", "", ""),
+                             ("20 perc", "...", "", ""), ("40 perc", "...", "", ""))):
+        for j, t in enumerate(row):
+            if t:
+                put(xs[j] + 4, ys[i] + 13, t)
+    put(120, 480, "Amennyiben a szint csökkenése eléri a 2,5 mm-t, a nyomást be kell állítani.")
+    doc.save(str(path))
+    return _segs(path)
+
+
+def test_paragraph_shading_inside_grey_cell_and_nested_table_fills_are_not_chart_bars():
+    """Таблица-график — от трёх залитых фигур не по сетке. Word рисует в серой ячейке ещё и заливку абзаца того же цвета
+    (не по сетке) — бланк «Время измерения» сам был «графиком»; а серые клетки вложенного бланка считались столбиками
+    внешней рамки листа — лист 30TH50-80ÁTVGT уходил снимком (E7 §5, просмотр 06.11 п. 12)."""
+    import figures as FIG
+    xs, ys = [150, 230, 310, 390, 470], [360, 380, 400, 420, 440]
+    inner = (xs, ys, [], [])
+    cells = [((x0 + 0.5, y0 + 0.5, x0 + 79.5, y0 + 19.5), (x0 + 5, y0 + 6, x0 + 74, y0 + 14))
+             for x0, y0 in ((230, 400), (310, 400), (390, 400), (230, 420))]
+    draw = [{"rect": r, "solid": True, "fill": (0.85, 0.85, 0.85)} for c in cells for r in c]
+    assert not FIG.chart_table(inner, draw)                         # заливка абзаца в ячейке — не столбик
+    other = [{"rect": c[0], "solid": True, "fill": (0.85, 0.85, 0.85)} for c in cells] + \
+        [{"rect": c[1], "solid": True, "fill": (0.2, 0.4, 0.8)} for c in cells]
+    assert FIG.chart_table(inner, other)                            # полоса другого цвета в ячейке — столбик (Гант)
+    outer = ([65, 113, 520, 570], [78, 100, 753], [], [])
+    assert FIG.chart_table(outer, draw)                             # для внешней клетки вложенной — «столбики»…
+    assert not FIG.chart_table(outer, draw, [fitz.Rect(150, 360, 470, 440)])   # …но не своей таблицы
+
+
+def test_nested_table_in_cell_is_a_table_not_a_sheet_snapshot(tmp_path):
+    """Бланк «Время измерения» в ячейке рамки листа (30TH50-80ÁTVGT л. 6–9): лист уходил снимком (картинка — не
+    текст), а откат E7 показал, что абзацами внешней ячейки бланк разваливался в строки. Теперь вложенная таблица —
+    своим блоком по своей сетке в ячейке внешней, на своём месте по высоте, её текст в ячейке внешней не повторяется."""
+    src = tmp_path / "nested.pdf"
+    segs = _nested_pdf(src)
+    blocks, _ = DL.load(str(src), segs, text=True)
+    assert not [b for b in blocks if b.get("figure")]
+    outer = [b for b in blocks if b["k"] == "table" and any(x["k"] == "table" for row in b["rows"] for c in row
+                                                              for x in c["blocks"])]
+    assert len(outer) == 1
+    cell = next(c for row in outer[0]["rows"] for c in row if any(x["k"] == "table" for x in c["blocks"]))
+    kinds = [(x["k"], B.text_of(x.get("runs") or [])[:12]) for x in cell["blocks"]]
+    assert [k for k, _ in kinds] == ["p", "table", "p"], kinds      # текст над бланком, бланк, текст под ним
+    sub = next(x for x in cell["blocks"] if x["k"] == "table")
+    texts = [" ".join(B.text_of(x["runs"]) for x in c["blocks"]) for row in sub["rows"] for c in row]
+    assert "20 perc" in texts and "L101 (mm)" in texts
+    assert not any("20 perc" in B.text_of(x.get("runs") or []) for x in cell["blocks"] if x["k"] == "p")
