@@ -88,7 +88,6 @@ def test_struct_fill_survives_portal_failure_and_retries_next_time(tmp_path, mon
 
 def test_assemble_with_project_tops_up_first(tmp_path, monkeypatch):
     """Пересборка (правки редактора, CLI assemble) — с проектом: перед сборкой добирается недостающее."""
-    monkeypatch.setenv("HU_U_SIDS", "1")
     work, asked = _job(tmp_path, {"coverage": 1.0, "filled": 0}), []
     _fake_portal(monkeypatch, asked)
     P.assemble(work, prj=_project(tmp_path))

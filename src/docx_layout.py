@@ -1744,12 +1744,11 @@ def load(src, segs, text=False):
             boxes.setdefault(s["page"] + 1, []).append(tuple(f))
     info = {"width": W, "height": H, "pages": len(doc), "artifacts": {"chars": [], "imgs": []},
             "font": font, "size": size, "style": bold, "content_boxes": boxes}
-    if SIDS.enabled():
-        # сегменты тела, снятые с причиной: колонтитул и повтор названия раздела (не в content), рисунок (текст в картинке)
-        kept = {s["id"] for s in content_all}
-        exempt |= {s["id"]: "колонтитул" for s in body if s["id"] not in kept}
-        exempt |= {i: "рисунок" for regs in regions.values() for g in regs if g["block"].get("figure") for i in g["ids"]}
-        info["exempt"] = exempt
+    # сегменты тела, снятые с причиной: колонтитул и повтор названия раздела (не в content), рисунок (текст в картинке)
+    kept = {s["id"] for s in content_all}
+    exempt |= {s["id"]: "колонтитул" for s in body if s["id"] not in kept}
+    exempt |= {i: "рисунок" for regs in regions.values() for g in regs if g["block"].get("figure") for i in g["ids"]}
+    info["exempt"] = exempt
     return blocks, info
 
 

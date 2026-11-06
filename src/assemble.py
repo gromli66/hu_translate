@@ -293,12 +293,11 @@ def prepare_translation(d, ctx, sink):
         res, n_lab, form = _guard("figures.apply_form_labels", lambda: FIG.apply_form_labels(d["segs"], d["res"]),
                                   (d["res"], 0, None), sink, ctx)
         d = dict(d, res=res) if n_lab else d
-    if SIDS.enabled():
-        # блок берёт перевод своего сегмента: один исходный текст — один перевод на документ (termvar.same_source)
-        import termvar
-        res, was = _guard("termvar.same_source", lambda: termvar.same_source(d["segs"], d["res"]), (d["res"], {}), sink, ctx)
-        if was:
-            d, n_uni = dict(d, res=res), len(was)
+    # блок берёт перевод своего сегмента: один исходный текст — один перевод на документ (termvar.same_source)
+    import termvar
+    res, was = _guard("termvar.same_source", lambda: termvar.same_source(d["segs"], d["res"]), (d["res"], {}), sink, ctx)
+    if was:
+        d, n_uni = dict(d, res=res), len(was)
     return d, form, n_lab, n_uni
 
 
@@ -915,7 +914,8 @@ def lost_id_rows(lost, seen=()):
 def missed_rows(missing):
     """Тексты блоков, что сборка спросила у памяти и не нашла (Memory.lacking): в DOCX они остались на языке оригинала
     (30RVRXTSBIGT TU пп. 1.16–1.17: пункты «− 30YP15S101 zárva …» — портал перевёл их одним сегментом страницы, а дерево
-    разметки — отдельными пунктами). Прежде число писалось в info["missed"] и нигде не читалось (П5: запасной путь — громкий)."""
+    разметки — отдельными пунктами). Прежде число писалось в info["missed"] и нигде не читалось (П5: запасной путь — громкий;
+    ключ снят в E9.3)."""
     texts = list(dict.fromkeys(t for t in missing if t.strip()))
     if texts:
         print(f"DOCX: нет перевода у {len(texts)} текстов (остались как в оригинале): "
@@ -1046,22 +1046,17 @@ def build_struct_docx(src, out, segs, res, rules=None, progress=None, mode="stru
     lost = lost_segments(out, segs, mem.expected, skip, doc[0].rect.height) \
         if mode in ("text", "layout") else []
     rows += lost_rows(lost)
-    lost_i = []
-    if SIDS.enabled():
-        # что сборка не спрашивала у памяти (sids.py): громко — лог, лист «нарушения», «ВНИМАНИЕ» в info["attention"].
-        # Листы с рисунком целиком не пропускаются: сегменты рисунка снял docx_layout.load (exempt), прочие на них — тело
-        exempt = L.get("exempt_ids")
-        lost_i = lost_ids(segs, res, used, exempt, SIDS.dropped(blocks), skip if exempt is None else (),
-                          doc[0].rect.height, tree=mode == "struct")
-        rows += lost_id_rows(lost_i, {_key24(ru) for _, ru, _ in lost})
-        rows += missed_rows(mem.lacking)
+    # что сборка не спрашивала у памяти (sids.py): громко — лог, лист «нарушения», «ВНИМАНИЕ» в info["attention"].
+    # Листы с рисунком целиком не пропускаются: сегменты рисунка снял docx_layout.load (exempt), прочие на них — тело
+    exempt = L.get("exempt_ids")
+    lost_i = lost_ids(segs, res, used, exempt, SIDS.dropped(blocks), skip if exempt is None else (),
+                      doc[0].rect.height, tree=mode == "struct")
+    rows += lost_id_rows(lost_i, {_key24(ru) for _, ru, _ in lost})
+    rows += missed_rows(mem.lacking)
     tick(1.0)
     info = {"converter": {"layout": "сегменты листа", "text": "текстовый слой"}.get(mode, "разметка PDF"),
-            "missed": len(set(mem.missing)), "format": len(viol), "lang": len(lang), "lost": len(lost)}
-    if SIDS.enabled():
-        info["used_ids"] = len(used)
-        info["lost_ids"] = len(lost_i)
-        info["lacking"] = len(set(mem.lacking))
+            "format": len(viol), "lang": len(lang), "lost": len(lost),
+            "used_ids": len(used), "lost_ids": len(lost_i), "lacking": len(set(mem.lacking))}
     if fit is not None:
         info["fit"] = fit
     return info, rows
@@ -1071,7 +1066,7 @@ def _h_note(r):
     """Колонка H: подозрение смысловой проверки, автоисправление или перевод по образцу правки редактора;
     правка шлифовки (pipeline.polish), пока перевод тот же; сокращённая для PDF формулировка (pipeline.fit)."""
     note = _h_note_main(r)
-    if SIDS.enabled() and r.get("unified"):             # termvar.same_source: тот же исходный текст — единый перевод
+    if r.get("unified"):                                # termvar.same_source: тот же исходный текст — единый перевод
         note = (note + " | " if note else "") + "Единый перевод для того же текста в документе, было: " \
             + TAG.sub("", r["unified"])[:300]
     p = r.get("polish")
