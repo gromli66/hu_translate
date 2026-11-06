@@ -7,6 +7,7 @@ from docx.oxml.ns import qn
 import docx_build as B
 import docx_layout as DL
 import docx_struct as D
+import figures as FIG
 
 from test_struct_docx import LAYOUT, PROFILE, W, p, png
 
@@ -422,7 +423,7 @@ def test_text_page_with_big_figure_is_not_scan_snapshot(tmp_path):
             for k in range(30):
                 pg.insert_text((57, 80 + 16 * k), f"{pno + 1}. lap, {k + 1}. sor: szöveg.", fontsize=10, fontname="tiro")
     doc.save(str(src))
-    assert DL.is_scan(fitz.open(str(src))[1])
+    assert FIG.is_scan(fitz.open(str(src))[1])
     blocks, _ = DL.load(str(src), _segs(src), text=True)
     snaps = [x for x in blocks if x["k"] == "p" and x.get("runs") and x["runs"][0].get("img", {}).get("clip")]
     text = " ".join("".join(q.get("t", "") for q in x.get("runs") or []) for x in blocks)
@@ -791,7 +792,6 @@ def test_flowchart_of_many_shape_bitmaps_is_a_whole_page_figure():
     картинками, на которых лежит половина надписей, — снимок листа с переведённого PDF; лист с мелкими значками,
     рядом с которыми стоит текст, — нет."""
     import layout as LY
-    import docx_layout as DLY
     png_bytes = png()
     doc = fitz.open()
     page = doc.new_page(width=842, height=595)
@@ -802,7 +802,7 @@ def test_flowchart_of_many_shape_bitmaps_is_a_whole_page_figure():
         page.insert_text((x + 4, y + 18), "szöveg", fontsize=8)
         bb = [x + 4, y + 10, x + 40, y + 22]
         segs.append({"id": k, "page": 0, "text": "szöveg", "loc": {"bbox": bb, "frags": [bb]}})
-    assert DLY._graphic_page(page, segs, []) is True
+    assert FIG.graphic_page(page, segs, []) is True
     icons = doc.new_page(width=842, height=595)
     segs2 = []
     for k in range(70):
@@ -811,7 +811,7 @@ def test_flowchart_of_many_shape_bitmaps_is_a_whole_page_figure():
         icons.insert_text((x + 12, y + 5), "pont", fontsize=5)
         bb = [x + 12, y, x + 30, y + 6]
         segs2.append({"id": k, "page": 1, "text": "pont", "loc": {"bbox": bb, "frags": [bb]}})
-    assert DLY._graphic_page(icons, segs2, []) is False
+    assert FIG.graphic_page(icons, segs2, []) is False
 
 
 def test_overlapping_header_texts_are_not_interleaved_by_position():

@@ -89,12 +89,14 @@ def test_figure_kind_scan_scheme_chart_none():
     assert FIG.figure_kind(page, ocr, [], True, 0, False) is None              # распознанный PDF: снимков листа нет
 
 
-def test_old_names_in_docx_layout_delegate_to_figures():
+def test_figure_decisions_live_in_figures_only():
+    """E9.1: прежние делегаты docx_layout (is_scan, _graphic_page, _ocr_layer, _chart_table) сняты — решение одно, в figures."""
     page = fitz.open().new_page(width=842, height=595)
     labels = [seg(i, "címke", 100 + 40 * i, 200, 130 + 40 * i) for i in range(10)]
     big = [(fitz.Rect(20, 20, 800, 560), {})]
-    assert DL._graphic_page(page, labels, big) == FIG.graphic_page(page, labels, big) is True
-    assert DL.is_scan(page) == FIG.is_scan(page) is False
+    assert FIG.graphic_page(page, labels, big) is True
+    assert FIG.is_scan(page) is False
+    assert not any(hasattr(DL, n) for n in ("is_scan", "_graphic_page", "_ocr_layer", "_chart_table"))
 
 
 # ---------------------------------------------------------------- снимок листа: без колонтитула оригинала

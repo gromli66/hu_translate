@@ -31,11 +31,6 @@ SIGN = re.compile(rf"\s*([{PT.MARKERS}\uf020-\uf0ff])\s")        # знак ма
 PLABEL = re.compile(r"^\s*(\d{1,2}|[a-z]|[A-Z])(\.\)|\))\s+\S")  # «a)», «1)», «a.)» — как docx_struct.PLABEL
 
 
-def is_scan(page):
-    """Лист — картинка (скан): растровые изображения закрывают хотя бы половину листа (figures.is_scan)."""
-    return FIG.is_scan(page)
-
-
 def suits(path, ocr_pages):
     """Распознанный PDF собирается по сегментам листа, если распознано больше половины листов и это не сканы, а
     листы с текстом контурами («Печать в PDF»: 3SZ19, 3PR42). Скан формы (титул и лист регистрации 30RDGT, 30RDIT)
@@ -46,7 +41,7 @@ def suits(path, ocr_pages):
     with fitz.open(str(path)) as doc:
         if not ocr or 2 * len(ocr) < doc.page_count:
             return False
-        return sum(1 for p in ocr if p < doc.page_count and is_scan(doc[p])) * 2 < len(ocr)
+        return sum(1 for p in ocr if p < doc.page_count and FIG.is_scan(doc[p])) * 2 < len(ocr)
 
 
 def _zone(s, H):
@@ -1213,13 +1208,13 @@ def _page_rules(doc, text=False):
     draw, per, scans, marks = [], [], [], []
     for page in doc:
         d = page.get_cdrawings()
-        # «solid» — залитая фигура не белым (полоса графика, ромб вехи, плашка) — для таблиц-графиков (_chart_table)
+        # «solid» — залитая фигура не белым (полоса графика, ромб вехи, плашка) — для таблиц-графиков (figures.chart_table)
         draw.append([{"rect": x["rect"], "solid": "f" in (x.get("type") or "") and x.get("fill") is not None
                       and min(x["fill"]) < 0.95, "fill": x.get("fill")} for x in d])
         hs, vs = _rules(d)
         marks.append((_form_marks(d), _form_fields(d)))
         del d
-        scan = is_scan(page)                                # отдельный скан в документе: линий-векторов нет
+        scan = FIG.is_scan(page)                            # отдельный скан в документе: линий-векторов нет
         if scan:
             pix = page.get_pixmap(dpi=200, colorspace=fitz.csGRAY)
             ih, iv = rules_from_image(np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.stride)[:, :pix.width]
@@ -1309,11 +1304,6 @@ def _head_rows(rules, body, keys, H):
                                                          or not any(seen[place(s)] > 1 for s in ids)) for s in ids}
 
 
-def _graphic_page(page, segs, figs):
-    """Лист-плакат (figures.graphic_page): картинка или схема во весь лист с подписями, обложка, разворот брошюры."""
-    return FIG.graphic_page(page, segs, figs)
-
-
 def _textless(doc, pno, boxes):
     """Копия листа pno, где снят текст в рамках boxes (сегменты), — картинки и графика целы: рисунок текстового слоя
     вырезается без текста, перевод которого идёт абзацами (22.10)."""
@@ -1325,16 +1315,6 @@ def _textless(doc, pno, boxes):
     c[0].apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE, graphics=fitz.PDF_REDACT_LINE_ART_NONE,
                           text=fitz.PDF_REDACT_TEXT_REMOVE)
     return c
-
-
-def _ocr_layer(page):
-    """Текст листа — невидимый слой распознавания поверх скана (figures.ocr_layer)."""
-    return FIG.ocr_layer(page)
-
-
-def _chart_table(t, draw, inner=()):
-    """Таблица-график: от трёх залитых фигур, не совпадающих с ячейками (figures.chart_table); inner — рамки вложенных."""
-    return FIG.chart_table(t, draw, inner)
 
 
 def _cell_marks(page, pno, marks, t, r, inside, out=()):
@@ -1417,10 +1397,10 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
         rect_of = lambda t: fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1])
         inner_of = lambda k: [rect_of(tbls[j]) for j in nest.get(k, ())]
         charts = sum(rect_of(t).get_area() for k, t in enumerate(tbls)
-                     if _chart_table(t, draw[pno], inner_of(k))) if mask is not None else 0
+                     if FIG.chart_table(t, draw[pno], inner_of(k))) if mask is not None else 0
         if mask is not None and segs and (FIG.figure_kind(page, segs, figs, scans[pno], charts, True) if scheme else
                                           scans[pno] and any(s["loc"].get("ocr") for s in segs)
-                                          or not (scans[pno] and _ocr_layer(page)) and _graphic_page(page, segs, figs)
+                                          or not (scans[pno] and FIG.ocr_layer(page)) and FIG.graphic_page(page, segs, figs)
                                           or charts >= 0.3 * page.rect.get_area()):
             # скан посреди текстового слоя (лист регистрации, титул с подписями 32RDGT) — листом с переведённого PDF,
             # как отдельный скан формы (16.10): по сегментам сетка, подписи и штампы бланка рассыпались, 8 листов → 11
@@ -1499,7 +1479,7 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
             r = fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1])
             if any((f & r).get_area() > 0.8 * r.get_area() for f, _ in figs):
                 continue                                    # сетка внутри рисунка (график) — часть рисунка
-            if _chart_table(t, draw[pno], inner_of(k)):
+            if FIG.chart_table(t, draw[pno], inner_of(k)):
                 # таблица-график (диаграмма Ганта) — рисунком с переведённого PDF, подписи — переводом
                 R = (r + (-2, -2, 2, 2)) & page.rect
                 figs.append((R, {"clip": [R.x0, R.y0, R.x1, R.y1], "page_number": pno + 1, "x0": R.x0, "x1": R.x1,
