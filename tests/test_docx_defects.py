@@ -125,10 +125,11 @@ def test_top_line_repeated_lower_is_dropped_only_before_its_heading(tmp_path):
     """L33 (E9_DESIGN §5, F-2): строка вверху листа, чей текст ниже на том же листе повторён, снималась при любом
     повторе — «Sziasztok!» письма 31/32SDTÖMGT, «Schnepp Péter» (30RYBSZGT), «BLOKKINDÍTÁSKOR» (титул 30TKBSZ36BIGT)
     молча пропадали и писались «колонтитулом». Правило писалось под 3PR42: название раздела в рамке сверху и тот же
-    текст ниже заголовком. Теперь снимается только перед заголовком (полужирный, по центру или метка «заголовок»)."""
+    текст ниже заголовком. Теперь снимается только перед заголовком — как у _role: метка «заголовок» или полужирный по
+    центру / с номером (у «Sziasztok!» и «BLOKKINDÍTÁSKOR» нижний повтор полужирный, но слева и без номера)."""
     pages = [[("Sziasztok!", 72, 60, 140, "left", None, False),
               ("A mellékelt utasítást átnéztük, észrevételünk nincs.", 72, 90, 420, "left", None, False),
-              ("Sziasztok!", 72, 300, 140, "left", None, False),
+              ("Sziasztok!", 72, 300, 140, "left", None, True),            # полужирный слева — не заголовок
               ("Schnepp Péter", 72, 330, 170, "left", None, False)],
              [("1.3/1. SZBV kazetta leesése", 160, 75, 400, "center", None, False),   # не на высоте «Sziasztok!»
               ("1.3/1. SZBV kazetta leesése", 72, 200, 300, "left", "heading", True),
