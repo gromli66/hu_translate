@@ -1674,9 +1674,12 @@ class Builder:
         # столбце («30TE61S201 tömören zár» под п. 9.4.4 30HU675GT, «30TE32S001 visszacsapó szelep nyitva» под 4.1.4
         # 30HU375GT, +20…35 pt; просмотр 06.11, п. 8) — с отступом от неё
         nest, intro, above = {}, {}, {}
-        marks = lambda c: bool(c["blocks"]) and all(
-            x["k"] == "p" and FORM_MARK.match(unpua(text_of(x["runs"])).strip()) for x in c["blocks"])   # △ Wingdings — U+F072
-        code_first = re.compile(rf"\s*{PT.EQUIP_CODE}\b")
+        # своя отметка — знак отметки в другой ячейке ряда на высоте строки (±4 pt; △ Wingdings — U+F072): коды списка
+        # бывают и отдельными рядами, и абзацами одной ячейки (GF(135) 2.2.20.1)
+        mark_tops = lambda row, i: [(x.get("geom") or {}).get("top") for j, q in enumerate(row) if j != i
+                                    for x in q["blocks"] if x["k"] == "p"
+                                    and FORM_MARK.match(unpua(text_of(x["runs"])).strip())]
+        code_first = re.compile(r"\s*\d{2}[A-Z]{2}\d{2}")      # начало кода: «30TE61S201», «30RZ31,51,71S202»
         for row in rows:
             if all("span" in c for c in row):
                 for i, c in enumerate(row):
@@ -1689,8 +1692,8 @@ class Builder:
                             nest[id(x)] = x0 - intro[a]
                             continue
                         if above.get(a) is not None and x.get("align") == "left" and 6 <= x0 - above[a] <= 72 \
-                                and code_first.match(text_of(x["runs"])) and len(c["blocks"]) == 1 \
-                                and any(marks(q) for j, q in enumerate(row) if j != i):
+                                and code_first.match(text_of(x["runs"])) and any(
+                                    t is not None and abs(t - x["geom"]["top"]) <= 4 for t in mark_tops(row, i)):
                             nest[id(x)] = x0 - above[a]
                             continue
                         intro[a] = x0 if text_of(x["runs"]).rstrip().endswith(":") else None

@@ -397,3 +397,29 @@ def test_list_items_with_minus_sign_in_text_have_one_marker(tmp_path):
     B.Builder(B.Memory([]), lambda img: png(), PROFILE).build(blocks, str(out), dict(LAYOUT, first_is_body=True))
     texts = [x.text for x in Document(str(out)).paragraphs if x.text.strip()]
     assert texts == ["30YP15S101 zárva (lámpajelzés)", "30YP13S101 zárva"], texts
+
+
+def test_code_lines_of_one_cell_with_marks_keep_indent():
+    """GF(135)51GT 2.2.20.1 (печать после f0b74ed): коды списка — абзацами одной ячейки, отметки □ — абзацами соседней,
+    каждая на высоте своего кода; правило п. 8 брало только «одна строка в ячейке», и список 2.2.20.1 шёл с края, а
+    2.2.20.2 (коды своими рядами) — с отступом. Своя отметка — знак отметки в другой ячейке ряда на высоте строки."""
+    import tempfile, os
+    g = lambda x0, top: {"page": 1, "top": top, "bottom": top + 10, "x0": x0, "x1": x0 + 200, "first_x0": x0, "size": 10,
+                         "lines": 1}
+    run = lambda t: {"t": t, "font": "Times New Roman", "size": 10, "b": False, "i": False, "color": "000000"}
+    para = lambda t, x0, top: {"k": "p", "runs": [run(t)], "geom": g(x0, top), "seg": True, "align": "left"}
+    edges = {"top": True, "bottom": True, "left": True, "right": True}
+    cell = lambda ps: {"blocks": ps, "th": False, "geom": ps[0]["geom"] if ps else None, "span": 1, "edges": edges}
+    rows = [[cell([para("2.2.20.1.", 60, 300)]),
+             cell([para("Tömörségpróba határarmatúrái zárva a primerkörben", 77, 300),
+                   para("30RZ31,51,71S202 zárva", 104, 312), para("30RZ31,51,71S203 zárva", 104, 324),
+                   para("A mérés után a szelepeket nyitni kell.", 104, 336)]),       # без отметки — как прежде
+             cell([para("□", 480, 312), para("□", 480, 324)])]]
+    tab = {"k": "table", "rows": rows, "borders": True, "frame": {"xs": [55, 75, 453, 520], "ys": [298, 350]},
+           "geom": {"page": 1, "top": 298, "bottom": 350, "x0": 55, "x1": 520, "first_x0": 55, "size": 10}}
+    out = os.path.join(tempfile.mkdtemp(), "codes.docx")
+    B.Builder(B.Memory([]), lambda img: png(), PROFILE).build([tab], out, dict(LAYOUT, first_is_body=True))
+    t = Document(out).tables[0]
+    ind = {p.text: p.paragraph_format.left_indent for c in t._cells for p in c.paragraphs if p.text}
+    assert round(ind["30RZ31,51,71S202 zárva"].pt) == 27 and round(ind["30RZ31,51,71S203 zárva"].pt) == 27
+    assert ind["A mérés után a szelepeket nyitni kell."] is None
