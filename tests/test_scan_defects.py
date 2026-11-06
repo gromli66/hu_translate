@@ -116,24 +116,6 @@ def _ocr_seg(i, text, frags, size=11.0):
                                                        "bold": False, "family": "serif", "ocr": True}}
 
 
-def test_overlapping_scan_segments_are_a_stamp_and_stay_pixels(tmp_path):
-    """Штамп/наклонная надпись: Tesseract читает его мусором («ömű Zrt. Minőségfelügyeleti 97», «pakol Atomer tégy»), рамки двух
-    сегментов лежат друг в друге — плашки стирали штамп, а два перевода рисовались друг на друге («АЭС ЗАО. Контроль качества 97» поверх
-    «АЭС «Пакш»», 30RYBSZGT PG-144760 стр. 1, п. 4 EYES). Рамки строк, перекрывающие рамки чужих, — не текст листа: остаются пикселями."""
-    src = tmp_path / "scan.pdf"
-    _scan_pdf(src, stamp=(391, 745, 500, 778))
-    segs = [_ocr_seg(0, "ömű Zrt. Minőségfelügyeleti 97", [[391, 745, 500, 778]], 11.1),
-            _ocr_seg(1, "pakol Atomer tégy", [[408, 752, 497, 765]], 11.1),
-            _ocr_seg(2, "Budapest, 2020.", [[60, 300, 160, 312]])]
-    res = {"0": {"ru": "АЭС ЗАО. Контроль качества 97"}, "1": {"ru": "АЭС «Пакш»"}, "2": {"ru": "Будапешт, 2020."}}
-    out = tmp_path / "ru.pdf"
-    build_pdf(str(src), str(out), segs, res, check=False)
-    page = fitz.open(out)[0]
-    assert "Будапешт" in page.get_text() and "Пакш" not in page.get_text() and "Контроль" not in page.get_text()
-    pm = page.get_pixmap(dpi=72, clip=fitz.Rect(391, 745, 500, 778), colorspace=fitz.csGRAY)
-    assert int((np.frombuffer(pm.samples, np.uint8) < 100).mean() * 100) > 90                       # штамп цел, не закрыт плашкой
-
-
 def test_plate_does_not_erase_table_rules_at_its_edges(tmp_path):
     """Белая плашка строки скана стирала линейки таблицы, лежащие у её верхнего и нижнего края: рамка красной плашки «AZ UT_ÜVIG_25 …»
     (верхняя и нижняя линии в 1,5 pt от букв) оставалась без линий на всю ширину надписи. Линейка у края плашки (длинная, тонкая,

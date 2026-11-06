@@ -332,27 +332,6 @@ def _trim_rules(rect, hmask, k=150 / 72, zone=3.5):
     return fitz.Rect(rect.x0, y0, rect.x1, y1) if y1 - y0 >= 2 else rect
 
 
-STAMP_OVERLAP = 0.4     # рамки строк двух сегментов перекрываются на такую долю меньшей — это штамп, а не строки текста
-
-
-def _stamps(segs):
-    """Сегменты скана, чьи рамки строк лежат на рамках строк других сегментов, — штамп, наклонная надпись, рукопись поверх печати.
-    Tesseract читает их мусором («ömű Zrt. Minőségfelügyeleti 97», «pakol Atomer tégy»), строки обычного текста друг на друге не
-    стоят — а перерисовка клала два перевода друг на друга поверх стёртого штампа (30RYBSZGT PG-144760 стр. 1). Такие сегменты не
-    закрываются плашкой и не рисуются: штамп остаётся пикселями оригинала. → множество id."""
-    boxes = [(s["id"], f) for s in segs for f in s["loc"]["frags"]]
-    out = set()
-    for i, (a, fa) in enumerate(boxes):
-        for b, fb in boxes[i + 1:]:
-            if a == b:
-                continue
-            w = min(fa[2], fb[2]) - max(fa[0], fb[0])
-            h = min(fa[3], fb[3]) - max(fa[1], fb[1])
-            if w > 0 and h > 0 and w * h > STAMP_OVERLAP * min((fa[2] - fa[0]) * (fa[3] - fa[1]), (fb[2] - fb[0]) * (fb[3] - fb[1])):
-                out |= {a, b}
-    return out
-
-
 def _foreign_ink(page, plates, dpi=150):
     """Краска скана, которую перевод не должен задеть: подписи, штампы, чужие надписи. Возвращает (поверх, место):
     поверх — [(рамка, PNG с прозрачностью)]: цветные штрихи (не серые), что выходят за белые плашки строк, своими
@@ -474,9 +453,8 @@ def build_pdf(src, out, segs, res, progress=None, check=True):
         # координаты сегментов — как страница видна; заливка и вставка — в системе неповёрнутой страницы,
         # текст — с поворотом страницы (32RDGT: листы с /Rotate 270 получали перевод поперёк листа, 07.10)
         der = page.derotation_matrix
-        # pix — абзац скана формы из фамилий, чисел и дат: остаётся пикселями оригинала (pagefit.pixels_only); штамп (_stamps) — тоже
-        stamps = _stamps([s for s in segs if s["page"] == pno and s["loc"].get("ocr")])
-        todo = [(s, res[str(s["id"])]) for s in segs if s["page"] == pno and s["id"] not in stamps
+        # pix — абзац скана формы из фамилий, чисел и дат: остаётся пикселями оригинала (pagefit.pixels_only)
+        todo = [(s, res[str(s["id"])]) for s in segs if s["page"] == pno
                 and not res[str(s["id"])].get("copied") and res[str(s["id"])]["ru"] and not s["loc"].get("pix")]
         ocr = any(s["loc"].get("ocr") for s, _ in todo)
         if not ocr:
