@@ -2598,7 +2598,9 @@ class Builder:
                 sec = made = self.doc.add_section(WD_SECTION.NEW_PAGE)
                 self.fresh = True
                 self._page(sec, L, L["left"], L["right"], L["top"], L["bottom"], sizes[page - 1])
-                starts.append((len(self.doc.sections) - 1, page, cur_land))
+                # книжный лист после альбомного со своим номером — тоже раздел-лист (путь А): docx_fit и «(прод.)»
+                starts.append((len(self.doc.sections) - 1, page,
+                               cur_land or ("sheet" if not in_front and sheet_no.get(page) else False)))
             if page:
                 last = max(last, page)
             if in_title and page is not None and page >= 2:
@@ -2757,8 +2759,9 @@ class Builder:
             next((k for k, z in enumerate(zones) if z["from"] <= pg <= z["to"]), None))
         done = set()
         for (i, p, ld), n in zip(starts, nxt):
-            # и раздел-серия в один лист (своя шапка у листа: 30TKBSZ36BIGT «6, 6», «14, 14»)
-            if ld in ("sheet", "zone") and n - p == 1 and sheet_no.get(p) and i < len(self.doc.sections):
+            # и раздел-серия в один лист (своя шапка у листа: 30TKBSZ36BIGT «6, 6», «14, 14»), и альбомный лист со своим
+            # номером: его перелив шёл с N+1, а следующий лист повторял N+1 (30HU*75GT, 01-02FMP0BIGT)
+            if ld and n - p == 1 and sheet_no.get(p) and i < len(self.doc.sections):
                 sec = self.doc.sections[i]
                 sec.different_first_page_header_footer = True
                 fp = _first_page(sec)
