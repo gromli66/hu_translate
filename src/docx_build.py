@@ -2622,6 +2622,7 @@ class Builder:
         # начала разделов тела: (номер раздела, лист оригинала, альбомный) — сколько листов оригинала у альбомного
         # раздела (fit_want, для docx_fit)
         starts, last = [], 1                # первый лист — уже первый раздел
+        whole = None                        # лист последней картинки во весь лист (лист после неё — с новой страницы)
         # листы тела со своими колонтитулами (версия «1» вместо «0», «3PR10/INFO» вместо «3PR10» — docx_struct.layout,
         # variants): серия листов — свой раздел со своей шапкой и подвалом; None — колонтитулы тела
         zones, zcur, placed = L.get("variants") or [], None, False
@@ -2733,6 +2734,18 @@ class Builder:
                 sp.space_before = sp.space_after = Pt(0)
                 sp.line_spacing, sp.line_spacing_rule = Pt(1), WD_LINE_SPACING.EXACTLY
             restart = False
+            # лист после картинки во весь лист (скан, снимок листа) — с новой страницы: картинка и есть лист оригинала.
+            # Лист без своего раздела (не закрыт подписью: оглавление 3PR10 после скана титула) тёк под картинку, и его
+            # первые строки («Azonosító: 3PR10», «Megnevezés: …») печатались на листе скана (NIGHT2_EYES п. 6)
+            bp = page or ((b["items"][0][0].get("geom") or {}).get("page")
+                          if b["k"] == "list" and b.get("items") and b["items"][0] else None)
+            if whole is not None and bp and bp > whole and not in_title and made is None and not b.get("break"):
+                b = dict(b, **{"break": True})
+            if b["k"] == "p" and b.get("runs") and all("img" in r for r in b["runs"]) and g.get("x1") and \
+                    (g["x1"] - g["x0"]) * ((g.get("bottom") or g["top"]) - g["top"]) >= 0.5 * L["W"] * L["H"]:
+                whole = bp
+            elif bp and bp != whole:
+                whole = None
             self.block(b)
             placed = placed or not in_title
             pg = g.get("page")

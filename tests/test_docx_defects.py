@@ -214,3 +214,22 @@ def test_number_slash_number_is_a_field_only_for_the_marked_counter():
     p2 = Doc().add_paragraph()
     bld._zone_text(p2, "12/40", False, None, page_marked=False)                 # счётчика в документе нет — штамп UTS
     assert "NUMPAGES" in p2._p.xml and " PAGE" in p2._p.xml
+
+
+def test_sheet_after_whole_page_picture_starts_on_new_page(tmp_path):
+    """3PR10 стр. 3 (NIGHT2_EYES п. 6): лист 2 (оглавление) не открывает раздела — он не закрыт подписью, — и его
+    первые строки («Azonosító: 3PR10», «Megnevezés: …») текли прямо под картинку скана титула и печатались на листе
+    скана. Картинка во весь лист и есть лист оригинала: следующий лист — с новой страницы."""
+    from test_struct_docx import p as para
+    fig = {"k": "p", "figure": True, "runs": [{"img": {"png": png(), "x0": 40, "x1": 555, "top": 30, "bottom": 800}}],
+           "geom": {"page": 2, "top": 30, "bottom": 800, "x0": 40, "x1": 555, "first_x0": 40}}
+    small = {"k": "p", "figure": True, "runs": [{"img": {"png": png(), "x0": 62, "x1": 200, "top": 500, "bottom": 560}}],
+             "geom": {"page": 3, "top": 500, "bottom": 560, "x0": 62, "x1": 200, "first_x0": 62}}
+    blocks = [para("Lapszám: 1", 1, 100), fig, para("Azonosító: 3PR10", 3, 44), para("TARTALOMJEGYZÉK", 3, 125), small,
+              para("A rajz alatt a szöveg folytatódik.", 4, 90)]
+    out = tmp_path / "t.docx"
+    B.Builder(B.Memory([]), lambda img: png(), PROFILE).build(blocks, str(out), LAYOUT)
+    doc = Document(str(out))
+    pb = {x.text: bool(x.paragraph_format.page_break_before) for x in doc.paragraphs if x.text}
+    assert pb["Azonosító: 3PR10"]                                   # лист после скана — с новой страницы
+    assert not pb["TARTALOMJEGYZÉK"] and not pb["A rajz alatt a szöveg folytatódik."]   # после мелкой картинки — поток
