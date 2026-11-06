@@ -225,6 +225,7 @@ def _fit(orig, ru, printer, tmp, want=None, any_span=False):
         want = {i: s for i, (_, s, _) in _layout(tmp / "orig_m.pdf").items()}
     ks, info = {}, {"sections": n, "over": 0, "fixed": 0, "left": 0}
     cur = Path(ru)
+    hi, left_over = {}, {}                  # раздел → последняя доля кегля, при которой он не влез
     for step in range(3):
         m = _marked(cur, tmp / f"ru_m{step}.docx")
         info["sections"] = info["sections"] or m
@@ -238,6 +239,7 @@ def _fit(orig, ru, printer, tmp, want=None, any_span=False):
             span0 = {i: v[1] for i, v in over.items()}
         if not over or step == 2:
             info["left"] = len(over)
+            left_over = over
             # раздел, которому кегль не сократил ни листа, — прежним кеглем: мельче и на тех же листах — хуже, чем было
             # (документ в один лист, где перевод длиннее на полстраницы, ред-тим 02.11)
             idle = [i for i, v in over.items() if i in ks and v[1] >= span0.get(i, 0)]
@@ -260,11 +262,35 @@ def _fit(orig, ru, printer, tmp, want=None, any_span=False):
         for i, (_, span, fill) in over.items():
             need = (span - 1) + fill                # листов текста раздела
             k0 = ks.get(i, 1.0)
+            hi[i] = k0
             # высота текста ~ кегль² (строка ниже, и в строку входит больше); запас 2 %; вторая попытка — ещё −6 %
             k = k0 * min(0.98, (want[i] / need) ** 0.5 * 0.98) if step == 0 else k0 * 0.94
             ks[i] = max(FLOOR, k)
         _shrink(ru, tmp / f"ru_fit{step}.docx", ks)
         cur = tmp / f"ru_fit{step}.docx"
+    # ступень грубая: по заполнению почти полного второго листа первая оценка — 80 % кегля, а лист влезал и при 90 %
+    # (30HU175GT л. 5 и 20: 8 pt, внизу четверть листа пусто; тот же лист при другом тексте влезал при 9,5 pt — просмотр
+    # 06.11, N3). Влезшему разделу — ещё одна печать кеглем посередине между последним «не влез» и «влез»; влез — он
+    mid = {i: round((hi[i] + k) / 2, 3) for i, k in ks.items()
+           if i in hi and i not in left_over and hi[i] - k >= 0.04}
+    if mid:
+        alt = tmp / "ru_fitM.docx"
+        _shrink(ru, alt, {**ks, **mid})
+        try:
+            _marked(alt, tmp / "ru_mM.docx")
+            printer(tmp / "ru_mM.docx", tmp / "ru_mM.pdf")
+            got = _layout(tmp / "ru_mM.pdf")
+        except (OSError, RuntimeError, subprocess.SubprocessError):     # не напечатался — остаётся влезшее
+            got = {}
+        took = {i: k for i, k in mid.items() if i in got and got[i][1] <= want.get(i, 0)}
+        # и никто из влезших не вылез (раздел без нового листа у DOCX-исходника двигает соседа)
+        if any(j in got and got[j][1] > want[j] for j in want if j not in left_over and j not in mid
+               and (want.get(j) == 1 or any_span and want.get(j))):
+            took = {}
+        if took:
+            ks = {**ks, **took}
+            _shrink(ru, tmp / "ru_fitF2.docx", ks)
+            cur = tmp / "ru_fitF2.docx"
     if ks:
         shutil.copyfile(cur, ru)
     info["fixed"] = info["over"] - info["left"]

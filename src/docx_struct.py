@@ -1083,7 +1083,7 @@ def attach_icons(blocks, imgs, height):
 
 NUMBERED = {"Decimal", "LowerAlpha", "UpperAlpha", "LowerRoman", "UpperRoman"}
 LABEL = re.compile(r"^\s*(\d{1,3}|[A-Za-z]|[ivxIVX]{2,5})(\.\)|[.)])(?=\s|$)\s*")
-DASH = re.compile(r"^\s*[–—\-](?=\s)")
+DASH = re.compile(r"^\s*[–—−\-](?=\s)")                          # «−» — U+2212, минус шрифта Word (TU)
 OWN_LABEL = re.compile(r"^\s*(?:\(\w{1,3}\)|[a-z]{2}\)|\d{1,3}[a-z]\))\s")      # «(a)», «(5a)», «ba)», «12a)»
 
 
@@ -2590,12 +2590,36 @@ def layout(path, blocks, content=None):
         hc, fc, _ = edges(pg)
         return sorted((c for c in hc + fc if c["text"].strip()), key=lambda c: (round(float(c["top"]) / 3), float(c["x0"])))
     zone_text = lambda pg: "".join(c["text"] for c in zone_chars(pg))
-    zkeys, counter = {}, set()
+
+    def word_text(zc):
+        """Знаки колонтитула кусками с пробелом между словами (зазор больше 2,5 pt — x_tolerance у _words — или другая
+        строка): [(кусок, знак или None — пробел)]."""
+        out, prev = [], None
+        for c in zc:
+            if prev is not None and (round(float(c["top"]) / 3) != round(float(prev["top"]) / 3)
+                                     or float(c["x0"]) - float(prev["x1"]) > 2.5):
+                out.append((" ", None))
+            out.append((c["text"], c))
+            prev = c
+        return out
+
+    def num_keys(txt):
+        """Числа текста колонтитула и их ключи — до 10 знаков перед числом, числа раньше — «#»: минуты «08:28» и номер
+        листа «2» через пробел — разные ключи (одного пробела между числами мало)."""
+        return [(re.sub(r"\d+", "#", txt[:m.start()])[-10:], m) for m in re.finditer(r"\d+", txt)]
+    zkeys, wcounter = {}, set()
     base_key = None
     sheet_no = {}
     if content and len(pdf.pages) > 2:
         texts = {pg.page_number: zone_text(pg) for pg in pdf.pages}
-        zkeys, counter = _zone_keys(texts)
+        zkeys, _ = _zone_keys(texts)
+        # счётчик листа серии (zones own=True) — по словам: по знакам подряд «08:28» и номер «2/46» правее на той же
+        # строке давали число «282», и поле PAGE съедало минуты (30RL2126GT, 30RR0102ÁTJGT; E9_DESIGN §5, F-3)
+        wvals = {}
+        for pg in pdf.pages:
+            for k, m in num_keys("".join(t for t, _ in word_text(zone_chars(pg)))):
+                wvals.setdefault(k, []).append(m.group())
+        wcounter = {k for k, v in wvals.items() if len(set(v)) >= max(3, 0.5 * len(v))}
         # номер листа оригинала — число счётчика в его колонтитуле («Oldalszám: 13»): раздел перевода, начатый на этом
         # листе, нумерует с него (docx_build), а не подряд по листам перевода (номера уезжали на +2…+5, аудит 30.10).
         # По словам, не по знакам подряд: «08:28» и номер «2» рядом давали «282» (30RL2126GT); номера должны расти
@@ -2645,20 +2669,17 @@ def layout(path, blocks, content=None):
         head_chars, foot_chars, ftop = edges(pg)
         mk, tok = mark, page_tok
         if own:
-            zc = zone_chars(pg)
-            txt, prev, hit = "".join(c["text"] for c in zc), 0, []
-            for m in re.finditer(r"\d+", txt):
-                if txt[prev:m.start()][-10:] in counter:
-                    hit.append(m)
-                prev = m.end()
+            pieces = word_text(zone_chars(pg))
+            txt = "".join(t for t, _ in pieces)
+            hit = [m for k, m in num_keys(txt) if k in wcounter]
             if not hit and not body:
                 mk, tok = (lambda chars: chars), None
             if hit:
                 at, ids = 0, set()
-                for c in zc:                                # знак может быть из нескольких букв (лигатура)
-                    if hit[0].start() <= at < hit[0].end():
+                for t, c in pieces:                         # знак может быть из нескольких букв (лигатура)
+                    if c is not None and hit[0].start() <= at < hit[0].end():
                         ids.add(id(c))
-                    at += len(c["text"])
+                    at += len(t)
                 mk = lambda chars: [dict(c, text=PAGE_MARK) if id(c) in ids else c for c in chars]
                 tok = hit[0].group()
         head_imgs = [img_of(i) for i in pg.images if i.get("mcid") is None and float(i["top"]) < body_top and logo(i)]

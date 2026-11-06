@@ -12,6 +12,7 @@ import geom as GM
 import patterns as PT
 import sids as SIDS
 from docx_struct import text_of, insert_imgs, PAGE_MARK
+from rows import FORM_MARK
 from segments import unpua
 
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -19,7 +20,7 @@ BULLETS = {"Disc": ("\uf0b7", "Symbol"), "Circle": ("o", "Courier New"), "Square
            "Dash": ("–", None)}                     # тире из текста пункта (ÜFK «– ha az …») — шрифтом абзаца
 NUMFMT = {"Decimal": "decimal", "LowerAlpha": "lowerLetter", "UpperAlpha": "upperLetter",
           "LowerRoman": "lowerRoman", "UpperRoman": "upperRoman"}
-LEAD = re.compile(r"^\s*[•▪◦·o\-–\uf020-\uf0ff](?:\s+|$)")    # и маркер Symbol/Wingdings (частная область)
+LEAD = re.compile(r"^\s*[•▪◦·o\-–−\uf020-\uf0ff](?:\s+|$)")    # и маркер Symbol/Wingdings (частная область); «−» (TU)
 CAPTION = re.compile(r"^\s*(\d+)\.\s*(ábra|táblázat)\s+(.*)$", re.S | re.I)
 CAP_RU = re.compile(r"^\s*(?:(?:Рисунок|Рис\.?|рис\.?|Таблица|Табл\.?|табл\.?)\s*\d+\s*[.:]?"
                     r"|\d+\s*\.?\s*(?:рис\.?|табл\.?|рисунок|таблица)\.?)\s*", re.I)
@@ -456,7 +457,7 @@ def code_part(src, ru):
     return ru
 # метка пункта в начале сегмента страницы: «a.», «1)», составная «E.1.», «4.1.2.», «a.)», маркер-тире «–»; дерево Word
 # отдаёт её отдельно (Lbl), и сборка ищет перевод текста без неё (ÜFK I: 680 абзацев не находились, 16.10)
-_LBL = r"(?:(?:\d{1,3}|LL|[ivxIVX]{2,5})(?:\.(?:\d{1,3}|LL))*(?:\.\)|[.)])|[–\-•▪◦·])"
+_LBL = r"(?:(?:\d{1,3}|LL|[ivxIVX]{2,5})(?:\.(?:\d{1,3}|LL))*(?:\.\)|[.)])|[–−\-•▪◦·])"     # «−» — U+2212 (TU)
 LABEL_T = re.compile(r"^(\s*(?:<f\d+>)?)\s*" + _LBL.replace("LL", "[A-Za-z]") + r"\s+(?=\S)")
 LABEL_RU_T = re.compile(r"^(\s*(?:<f\d+>)?)\s*" + _LBL.replace("LL", "[A-Za-zА-Яа-яЁё]") + r"\s+(?=\S)")
 
@@ -524,10 +525,17 @@ class Memory:
         # пункт списка: номер «a.» в памяти — частью текста, в сборке номер даёт автонумерация (docx_struct.relist);
         # в тексте с метками начертания номер — внутри первой метки: «<f1>a. az UTS …</f1><f2>ping x_pb</f2>»
         mh, mr = LABEL_T.match(hu), LABEL_RU_T.match(ru)
+        # метка своим куском начертания («<f1>− </f1><f2>30EV felől …</f2>», TU): после неё пустой кусок — прочь,
+        # единственный оставшийся — без меток; иначе пункт «тире» без знака («30EV felől …») не находился в памяти
+        # (харнесс после 3c12c25: TU __new «нет перевода» 0 → 5)
+        def bare(t):
+            t = re.sub(r"<f(\d+)>\s*</f\1>", "", t)
+            m1 = re.fullmatch(r"\s*<f(\d+)>(.*)</f\1>\s*", t, re.S)
+            return m1.group(2) if m1 and not TAGS.search(m1.group(2)) else t
         if mh and mr:
-            self.add(mh.group(1) + hu[mh.end():], mr.group(1) + ru[mr.end():])
+            self.add(bare(mh.group(1) + hu[mh.end():]), bare(mr.group(1) + ru[mr.end():]))
         elif mh:                                    # перевод без метки (тире перевод опустил) — как есть
-            self.add(mh.group(1) + hu[mh.end():], ru)
+            self.add(bare(mh.group(1) + hu[mh.end():]), ru)
 
     def expected(self, seg):
         """Перевод, который сборка должна положить на место сегмента: его собственный (res[id].ru), без id — по тексту, как
@@ -1130,7 +1138,8 @@ class Builder:
         (01-02FMP0BIGT л. 2, NIGHT2_EYES п. 15), и заголовок по центру уходил влево, пункт «1. …» шёл без висячего
         отступа. edges — края ячейки на листе (линии столбцов), al — выключка столбца, right — строка столбца,
         выключенного в оригинале вправо (table: общий правый край). Пустые строки между абзацами ячейки — нет: зазоры
-        оригинала (до строки) у 30RL2126GT на 449 границах из 738 дали 49 листов при 46."""
+        оригинала (до строки) у 30RL2126GT на 449 границах из 738 дали 49 листов при 46; только в ячейке во весь лист
+        (table, 06.11)."""
         from docx.shared import Pt
         g = x.get("geom") or {}
         pf = par.paragraph_format
@@ -1668,7 +1677,16 @@ class Builder:
         # под ней 30HU175GT, +19 pt; строка, разрезанная на подстроки, — тоже) — с отступом от её края, пока идут
         # правее. Прочие сдвиги в ячейке (код по центру подстолбца, строка через линию столбца) — нет: от самого левого
         # края столбца отступ получали сотни абзацев (30THHAGT, 30RVRWVTBIGT, ред-тим 02.11)
-        nest, intro = {}, {}
+        # и подпункт пункта с отметками: строка с кода оборудования со своей отметкой в ряду, правее строки над ней в
+        # столбце («30TE61S201 tömören zár» под п. 9.4.4 30HU675GT, «30TE32S001 visszacsapó szelep nyitva» под 4.1.4
+        # 30HU375GT, +20…35 pt; просмотр 06.11, п. 8) — с отступом от неё
+        nest, intro, above = {}, {}, {}
+        # своя отметка — знак отметки в другой ячейке ряда на высоте строки (±4 pt; △ Wingdings — U+F072): коды списка
+        # бывают и отдельными рядами, и абзацами одной ячейки (GF(135) 2.2.20.1)
+        mark_tops = lambda row, i: [(x.get("geom") or {}).get("top") for j, q in enumerate(row) if j != i
+                                    for x in q["blocks"] if x["k"] == "p"
+                                    and FORM_MARK.match(unpua(text_of(x["runs"])).strip())]
+        code_first = re.compile(r"\s*\d{2}[A-Z]{2}\d{2}")      # начало кода: «30TE61S201», «30RZ31,51,71S202»
         for row in rows:
             if all("span" in c for c in row):
                 for i, c in enumerate(row):
@@ -1680,7 +1698,13 @@ class Builder:
                         if intro.get(a) is not None and x.get("align") == "left" and 6 <= x0 - intro[a] <= 72:
                             nest[id(x)] = x0 - intro[a]
                             continue
+                        if above.get(a) is not None and x.get("align") == "left" and 6 <= x0 - above[a] <= 72 \
+                                and code_first.match(text_of(x["runs"])) and any(
+                                    t is not None and abs(t - x["geom"]["top"]) <= 4 for t in mark_tops(row, i)):
+                            nest[id(x)] = x0 - above[a]
+                            continue
                         intro[a] = x0 if text_of(x["runs"]).rstrip().endswith(":") else None
+                        above[a] = x0
         # строки столбца, выключенные в оригинале вправо: у трёх и больше абзацев столбца на листе (не шапки) общий
         # правый край (±1,5 pt, и у последней строки), а середины расходятся на 10 pt и больше (не столбец по центру:
         # коды одной ширины, «Наименование», значения «20 бар» по центру — 3SZ17, 3SZ23, 30PR25GT, ред-тим 02.11), и
@@ -1786,6 +1810,14 @@ class Builder:
                 if al:
                     style = self._aligned(style, al)
                 cell_x = (bounds[spans[ci][0]], bounds[spans[ci][1] + 1]) if len(bounds) == ncol + 1 else None
+                # ячейка во весь лист (лист бланка — одна большая ячейка, 01-02FMP0BIGT л. 2): пустая строка оригинала между
+                # абзацами (зазор от половины строки) — зазором перед абзацем; в обычных ячейках — нет (30RL2126GT: 449
+                # границ из 738 — 49 листов при 46), там абзацы и так строка за строкой (просмотр 06.11, п. 11)
+                gs = [x["geom"] for x in cell["blocks"] if x["k"] == "p" and x.get("seg") and (x.get("geom") or {}).get(
+                    "top") is not None]
+                sheet_cell = bool(gs and self.L) and max(q["bottom"] for q in gs) - min(q["top"] for q in gs) \
+                    >= 0.5 * self.L["H"]
+                prev_g = None
                 for x in cell["blocks"]:
                     if x["k"] == "list":
                         self.list_(x, 0, dc); continue
@@ -1815,6 +1847,13 @@ class Builder:
                         par.paragraph_format.left_indent = Pt(round(nest[id(x)], 1))
                     elif par is not None and x.get("seg"):
                         self._cell_par(par, x, cell_x, al, id(x.get("geom")) in flush)
+                    xg = x.get("geom") or {}
+                    if sheet_cell and par is not None and x.get("seg") and xg.get("top") is not None:
+                        if prev_g is not None and prev_g.get("page") == xg.get("page"):
+                            gap = xg["top"] - prev_g["bottom"]
+                            if gap >= 0.5 * (xg["bottom"] - xg["top"]) / max(1, xg.get("lines") or 1):
+                                par.paragraph_format.space_before = Pt(round(gap, 1))
+                        prev_g = xg
                 room = self._room.get(starts[ci]) if spans[ci][1] == spans[ci][0] else None
 
                 def widest(par, eff, whole=False):
@@ -2087,13 +2126,39 @@ class Builder:
         body = self.doc.element.body
         last = next((e for e in reversed(body) if e.tag != W + "sectPr"), None)
         prev = last.getprevious() if last is not None else None
-        if last is not None and last.tag == W + "p" and not "".join(last.itertext()).strip()                 and prev is not None and prev.tag == W + "tbl":
+        # абзац, что уже несёт разрыв раздела (_add_section), — не хвост: его не убирать и разрыв на него не ставить
+        if last is not None and last.tag == W + "p" and not "".join(last.itertext()).strip() \
+                and last.find(W + "pPr/" + W + "sectPr") is None and prev is not None and prev.tag == W + "tbl":
             par = self.doc.paragraphs[-1]
             if par._p is last:
                 par.paragraph_format.space_before = par.paragraph_format.space_after = Pt(0)
                 par.paragraph_format.line_spacing = Pt(1)
                 return par
         return None
+
+    def _add_section(self):
+        """Новый раздел с нового листа. python-docx ставит разрыв раздела в новый пустой абзац кеглем тела в конце
+        прошлого раздела, а после таблицы там уже стоит пустой абзац Word: два пустых абзаца не влезали под таблицу,
+        кончавшуюся у низа листа, и уходили на свой лист — пустая страница (30THHAGT стр. 2 после листа изменений:
+        низ таблицы 722 pt при нижнем поле 733, просмотр 06.11). Теперь разрыв несёт сам абзац после таблицы (он в 1 pt,
+        _shrink_tail), а где таблицы нет — абзац разрыва в 1 pt."""
+        from docx.enum.section import WD_SECTION
+        from docx.shared import Pt
+        from docx.text.paragraph import Paragraph
+        tail = self._shrink_tail()
+        sec = self.doc.add_section(WD_SECTION.NEW_PAGE)
+        body = self.doc.element.body
+        brk = body[-1].getprevious() if body[-1].tag == W + "sectPr" else None    # абзац с копией sectPr
+        if brk is None or brk.find(W + "pPr/" + W + "sectPr") is None:
+            return sec
+        if tail is not None and brk.getprevious() is tail._p:
+            tail._p.get_or_add_pPr().append(brk.find(W + "pPr/" + W + "sectPr"))
+            body.remove(brk)
+        else:
+            pf = Paragraph(brk, self.doc._body).paragraph_format
+            pf.space_before = pf.space_after = Pt(0)
+            pf.line_spacing = Pt(1)
+        return sec
 
     def block(self, b):
         k = b["k"]
@@ -2312,7 +2377,10 @@ class Builder:
         """Текст ячейки колонтитула: «N/NN» → PAGE/NUMPAGES (штамп UTS), число листа из колонтитула оригинала
         («85. oldal», docx_struct._typical_page) → PAGE в переводе на том же месте; прочее — перевод."""
         m = re.match(r"^(.*?)(\d+)\s*/\s*(\d+)\s*$", txt)
-        if m:
+        # «число/число» — поле, только если счётчик листа в документе не нашёлся вовсе (штамп UTS); найден — номер
+        # приходит меткой (ниже), а «1/1» титулов 30RL2126GT, 30RR0102ÁTJGT — текст: полем печаталось «1/<листов
+        # перевода>» (E9_DESIGN §5, F-4)
+        if m and not page_tok and not page_marked:
             head = (m.group(1).strip() + "    ") if m.group(1).strip() else ""
             r = p.add_run(head); r.bold = bold
             f = _field(p, "PAGE", m.group(2)); f.bold = bold
@@ -2593,6 +2661,7 @@ class Builder:
         # начала разделов тела: (номер раздела, лист оригинала, альбомный) — сколько листов оригинала у альбомного
         # раздела (fit_want, для docx_fit)
         starts, last = [], 1                # первый лист — уже первый раздел
+        whole = None                        # лист последней картинки во весь лист (лист после неё — с новой страницы)
         # листы тела со своими колонтитулами (версия «1» вместо «0», «3PR10/INFO» вместо «3PR10» — docx_struct.layout,
         # variants): серия листов — свой раздел со своей шапкой и подвалом; None — колонтитулы тела
         zones, zcur, placed = L.get("variants") or [], None, False
@@ -2612,7 +2681,7 @@ class Builder:
             # следующий (HAKSER: 74 листа → 94), а раздел в один лист оригинала docx_fit ужимает кеглем (22.10)
             if not in_title and page and sizes and (land(page) != cur_land or cur_land and page > last):
                 cur_land = land(page)
-                sec = made = self.doc.add_section(WD_SECTION.NEW_PAGE)
+                sec = made = self._add_section()
                 self.fresh = True
                 self._page(sec, L, L["left"], L["right"], L["top"], L["bottom"], sizes[page - 1])
                 # книжный лист после альбомного со своим номером — тоже раздел-лист (путь А): docx_fit и «(прод.)»
@@ -2622,7 +2691,7 @@ class Builder:
                 last = max(last, page)
             if in_title and page is not None and page >= 2:
                 in_title = False
-                sec = made = self.doc.add_section(WD_SECTION.NEW_PAGE)
+                sec = made = self._add_section()
                 self.fresh = True
                 self._page(sec, L, L["left"], L["right"], L["top"], L["bottom"])
                 self.left = L["left"]
@@ -2634,7 +2703,7 @@ class Builder:
                     restart = own_num = True
             if in_front and page is not None and page > front["to"]:
                 in_front = False
-                sec = made = self.doc.add_section(WD_SECTION.NEW_PAGE)
+                sec = made = self._add_section()
                 self.fresh = True
                 self._page(sec, L, L["left"], L["right"], L["top"], L["bottom"])
                 self._header(sec, L)
@@ -2650,7 +2719,7 @@ class Builder:
                 page = b["sheet"]
             if (b.get("sheet") or made is not None) and page and not in_title and not in_front and sheet_no.get(page):
                 if made is None:
-                    sec = made = self.doc.add_section(WD_SECTION.NEW_PAGE)
+                    sec = made = self._add_section()
                     self.fresh = True
                 # раздел — листы оригинала до следующего раздела: перелившийся на лишний лист — мельче кеглем
                 # (docx_fit, как альбомный: 30KBFPRBIGT, строки «ПЛОМБИРОВАНИЕ, ВЫВЕШИВАНИЕ ПЛАКАТА» в две строки);
@@ -2664,7 +2733,7 @@ class Builder:
                     zcur = zk
                     Lz = dict(L, **zones[zk]) if zk is not None else L
                     if made is None and placed:
-                        made = self.doc.add_section(WD_SECTION.NEW_PAGE)
+                        made = self._add_section()
                         self.fresh = True
                         starts.append((len(self.doc.sections) - 1, page, "zone"))   # для «(прод.)» ниже
                     sec = made if made is not None else self.doc.sections[-1]
@@ -2704,6 +2773,18 @@ class Builder:
                 sp.space_before = sp.space_after = Pt(0)
                 sp.line_spacing, sp.line_spacing_rule = Pt(1), WD_LINE_SPACING.EXACTLY
             restart = False
+            # лист после картинки во весь лист (скан, снимок листа) — с новой страницы: картинка и есть лист оригинала.
+            # Лист без своего раздела (не закрыт подписью: оглавление 3PR10 после скана титула) тёк под картинку, и его
+            # первые строки («Azonosító: 3PR10», «Megnevezés: …») печатались на листе скана (NIGHT2_EYES п. 6)
+            bp = page or ((b["items"][0][0].get("geom") or {}).get("page")
+                          if b["k"] == "list" and b.get("items") and b["items"][0] else None)
+            if whole is not None and bp and bp > whole and not in_title and made is None and not b.get("break"):
+                b = dict(b, **{"break": True})
+            if b["k"] == "p" and b.get("runs") and all("img" in r for r in b["runs"]) and g.get("x1") and \
+                    (g["x1"] - g["x0"]) * ((g.get("bottom") or g["top"]) - g["top"]) >= 0.5 * L["W"] * L["H"]:
+                whole = bp
+            elif bp and bp != whole:
+                whole = None
             self.block(b)
             placed = placed or not in_title
             pg = g.get("page")
@@ -2764,7 +2845,11 @@ class Builder:
         self._tab_groups()
         self.doc.settings.element.append(_el("w:updateFields", w__val="true"))
         # листов оригинала у альбомных разделов: {номер раздела: листов} (docx_fit ужимает разделы в один лист)
-        nxt = [p for _, p, _ in starts[1:]] + [len(sizes) + 1]
+        # конец последнего раздела — последний лист, с которого в DOCX что-то пришло: пустой хвост оригинала (30THHAGT:
+        # стр. 19 пустая, без номера) — не лист раздела, иначе последний лист выходил «в два листа» — без «(прод.)» и
+        # ужатия, его перелив печатался с номером следующего листа (просмотр 06.11)
+        end = max([last] + [p for _, p, _ in starts])       # перечень без geom открывает раздел листом b["sheet"]
+        nxt = [p for _, p, _ in starts[1:]] + [(min(len(sizes), end) if sizes else 0) + 1]
         # и раздел-серия: перелившись за свои листы, он сдвигал номер следующего раздела, что начинает с номера своего
         # листа оригинала, — номер повторялся («14, 14», «17, 17» 30TKBSZ36BIGT, «13, 13» GF(246), аудит 30.10)
         self.fit_want = {i: n - p for (i, p, ld), n in zip(starts, nxt) if ld}

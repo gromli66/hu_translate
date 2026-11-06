@@ -171,3 +171,27 @@ def test_fit_keeps_shrink_when_restoring_pushes_next_section(tmp_path):
     assert "kept" not in info
     p0 = [p for p in _body(ru).iter(W + "p") if "".join(p.itertext()).strip()][0]
     assert p0.find(f".//{W}sz") is not None                                  # раздел 0 остался ужатым
+
+
+def test_fit_refines_coarse_shrink_back_up_while_section_still_fits(tmp_path):
+    """Ступень ужатия грубая: по заполнению второго листа (почти полный) первая оценка — 80 % кегля, а лист влезал и
+    при 90 % (30HU175GT л. 5 и 20: 8 pt, внизу четверть листа пусто; тот же лист 20 при другом тексте влезал при
+    9,5 pt — просмотр 06.11, N3). Влезший раздел печатается ещё раз кеглем посередине между последним «не влез» и
+    «влез»: влез и так — остаётся он."""
+    ru = tmp_path / "r.docx"
+    _doc(ru, ["А", "Б длинный"], size=11)
+
+    def printer(docx, pdf):
+        pdfd = fitz.open()
+        for i, sec in enumerate(F._sections(_body(docx))):
+            szs = [int(e.get(W + "val")) for e in sec[0].iter(W + "sz") if e.get(W + "val") != "2"]
+            over = i == 1 and docx.name.startswith("ru_m") and not (szs and min(szs) <= 20)   # влезает с 10 pt
+            for k in range(2 if over else 1):
+                pg = pdfd.new_page()
+                pg.insert_text((72, 120), (F.MARK.format(i) + " ") if k == 0 else "folytatás", fontsize=10)
+                pg.insert_text((72, 700 if k == 0 else 660), "szöveg", fontsize=10)      # второй лист почти полный
+        pdfd.save(str(pdf))
+    info = F.fit(None, ru, printer, tmp_path / "w", want={0: 1, 1: 1})
+    assert info["left"] == 0
+    sz = {int(e.get(W + "val")) for e in _body(ru).iter(W + "sz")}
+    assert sz == {20}                                                        # не 18 (80 %) — 20 (≈ 90 %)

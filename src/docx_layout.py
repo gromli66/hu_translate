@@ -884,19 +884,23 @@ def _runs_of(group, bold, font, size, mono, right=None):
     return runs
 
 
-def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields=()):
+def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields=(), subs=()):
     """Блок таблицы (как у docx_struct): ячейки — по сетке, текст ячейки — сегменты с центром в ней, картинки
-    (подпись от руки в форме) — в ячейку своего центра, после текста."""
+    (подпись от руки в форме) — в ячейку своего центра, после текста; subs — [(рамка, блок)] вложенных таблиц (_nested):
+    в ячейку своего центра, на своё место среди абзацев по высоте."""
     xs, ys, gh, gv = t
     grid = _grid_cells(xs, ys, gh, gv)
-    pics = {}
-    for rect, img in imgs:
+    pics, inner = {}, {}
+    for rect, img in list(imgs) + [(rect, {"sub": blk}) for rect, blk in subs]:
         cx, cy = (rect.x0 + rect.x1) / 2, (rect.y0 + rect.y1) / 2
         r = next((i for i in range(len(ys) - 1) if ys[i] <= cy <= ys[i + 1]), None)
         c = next((i for i in range(len(xs) - 1) if xs[i] <= cx <= xs[i + 1]), None)
         if r is not None and c is not None:
             ci = next(k for k, (a, z, _) in enumerate(grid[r]) if a <= c < z)
-            pics.setdefault((r, ci), []).append(img)
+            if "sub" in img:
+                inner.setdefault((r, ci), []).append((rect, img["sub"]))
+            else:
+                pics.setdefault((r, ci), []).append(img)
     # поля ввода бланка: текст в поле — в рамке (граница знаков), пустое поле — неразрывные пробелы его ширины в рамке
     inbox = lambda s, f: (f[0] - 1 <= (s["loc"]["bbox"][0] + s["loc"]["bbox"][2]) / 2 <= f[2] + 1
                           and f[1] - 1 <= (s["loc"]["bbox"][1] + s["loc"]["bbox"][3]) / 2 <= f[3] + 1)
@@ -988,6 +992,15 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields
                                                      bottom=gg["bottom"], lines=geom["lines"] + gg["lines"])
             for img in (pics.get((r, ci), []) if first else []):
                 paras.append({"k": "p", "runs": [{"img": img}], "seg": True})
+            for rect, sub in inner.get((r, ci), []):        # вложенная таблица — в полосе своего верха, по высоте
+                if lo <= rect.y0 < hi or first and rect.y0 < lo or last and rect.y0 >= hi:
+                    at = next((n for n, q in enumerate(paras) if (q.get("geom") or {}).get("top", -1) > rect.y0),
+                              len(paras))
+                    paras.insert(at, sub)
+                    gs = {"page": pno + 1, "top": rect.y0, "bottom": rect.y1, "x0": rect.x0, "x1": rect.x1,
+                          "first_x0": rect.x0, "size": size, "lines": 1}
+                    geom = gs if geom is None else dict(geom, top=min(geom["top"], rect.y0), bottom=max(
+                        geom["bottom"], rect.y1), x0=min(geom["x0"], rect.x0), x1=max(geom["x1"], rect.x1))
             row.append({"blocks": paras, "th": False, "geom": geom, "edges": e, "span": z - a})
         # отметка («O», «□») против нижней строки многострочного абзаца соседней ячейки (перечень кодов 4.1.1
         # 30TKBSZ36BIGT): полоса абзац не рвёт — ячейка отметки по низу, как в оригинале, а не вверху (аудит 30.10)
@@ -1202,7 +1215,7 @@ def _page_rules(doc, text=False):
         d = page.get_cdrawings()
         # «solid» — залитая фигура не белым (полоса графика, ромб вехи, плашка) — для таблиц-графиков (_chart_table)
         draw.append([{"rect": x["rect"], "solid": "f" in (x.get("type") or "") and x.get("fill") is not None
-                      and min(x["fill"]) < 0.95} for x in d])
+                      and min(x["fill"]) < 0.95, "fill": x.get("fill")} for x in d])
         hs, vs = _rules(d)
         marks.append((_form_marks(d), _form_fields(d)))
         del d
@@ -1319,9 +1332,51 @@ def _ocr_layer(page):
     return FIG.ocr_layer(page)
 
 
-def _chart_table(t, draw):
-    """Таблица-график: от трёх залитых фигур, не совпадающих с ячейками (figures.chart_table)."""
-    return FIG.chart_table(t, draw)
+def _chart_table(t, draw, inner=()):
+    """Таблица-график: от трёх залитых фигур, не совпадающих с ячейками (figures.chart_table); inner — рамки вложенных."""
+    return FIG.chart_table(t, draw, inner)
+
+
+def _cell_marks(page, pno, marks, t, r, inside, out=()):
+    """Для таблицы t (рамка r, сегменты inside): отметки бланка кривыми (кружок, квадратик) — знаком в своей ячейке, если
+    там нет такого же текста; одинокие значки частной области — по виду на листе; поля ввода — внутри одной ячейки
+    сетки, не на её линиях и не во всю ячейку. out — рамки вложенных таблиц: их отметки и поля — у них.
+    → (знаки-сегменты, {значок: знак}, поля)."""
+    import fitz
+    xs_, ys_ = t[0], t[1]
+    mid = lambda b: fitz.Point((b[0] + b[2]) / 2, (b[1] + b[3]) / 2)
+    glyphs = [{"id": -1 - 1000 * pno - k, "page": pno, "text": ch, "loc": {"bbox": list(b), "frags": [list(b)]}}
+              for k, (b, ch) in enumerate(marks[pno][0]) if r.contains(mid(b)) and _in_cell(b, xs_, ys_)
+              and not any(q.contains(mid(b)) for q in out)
+              and not any(fitz.Rect(s["loc"]["bbox"]).contains(mid(b)) for s in inside)]
+    pua = {}
+    for s in inside:                                # одинокий значок частной области — по виду на листе
+        ch = s["text"].strip()
+        if len(ch) == 1 and "" <= ch <= "" and ch not in pua:
+            pua[ch] = _pua_glyph(page, s["loc"]["bbox"]) or ch
+    fields = [f for f in marks[pno][1] if _in_cell(f, xs_, ys_, whole=True) and not any(q.contains(mid(f)) for q in out)]
+    return glyphs, pua, fields
+
+
+def _nested(tables):
+    """Вложенные таблицы листа: {номер внешней: [номера вложенных]} — рамка таблицы внутри одной ячейки сетки другой
+    (бланк «Время измерения» в ячейке «Условие, операция» рамки листа, 30TH50-80ÁTVGT л. 6–9)."""
+    import fitz
+    R = lambda t: fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1])
+    out = {}
+    for k, t in enumerate(tables):
+        for j, u in enumerate(tables):
+            if j == k or R(u).get_area() >= R(t).get_area():
+                continue
+            a = R(u)
+            col = any(t[0][i] - 2 <= a.x0 and a.x1 <= t[0][i + 1] + 2 for i in range(len(t[0]) - 1))
+            row = any(t[1][i] - 2 <= a.y0 and a.y1 <= t[1][i + 1] + 2 for i in range(len(t[1]) - 1))
+            if col and row:
+                out.setdefault(k, []).append(j)
+    # вложенная во вложенную — у ближайшей внешней
+    for k in list(out):
+        out[k] = [j for j in out[k] if not any(j in out.get(m, ()) for m in out[k])]
+    return out
 
 
 def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
@@ -1357,8 +1412,12 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
         # не скан: текст — абзацами (ред-тим 20.10)
         # таблица-график на треть листа и больше (диаграмма Ганта во весь лист) — лист целиком, как плакат: частями
         # (график рисунком, названия задач абзацами) строки задач расходились с полосами на три листа (22.10)
-        charts = sum(fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1]).get_area() for t in _tables(hs, vs)
-                     if _chart_table(t, draw[pno])) if mask is not None else 0
+        tbls = _tables(hs, vs)
+        nest = _nested(tbls)                                # вложенные таблицы: {внешняя: [вложенные]}
+        rect_of = lambda t: fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1])
+        inner_of = lambda k: [rect_of(tbls[j]) for j in nest.get(k, ())]
+        charts = sum(rect_of(t).get_area() for k, t in enumerate(tbls)
+                     if _chart_table(t, draw[pno], inner_of(k))) if mask is not None else 0
         if mask is not None and segs and (FIG.figure_kind(page, segs, figs, scans[pno], charts, True) if scheme else
                                           scans[pno] and any(s["loc"].get("ocr") for s in segs)
                                           or not (scans[pno] and _ocr_layer(page)) and _graphic_page(page, segs, figs)
@@ -1433,40 +1492,44 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
             figs += scheme(page, pno, draw[pno], segs, [], tabs, [f for f, _ in figs]) if scheme else \
                 _scheme_figures(page, pno, draw[pno], segs, tabs, [f for f, _ in figs])
         regs, used, fills = [], set(), None                 # fills — заливки листа (по первой таблице)
-        for t in _tables(hs, vs):
+        inner_set = {j for js in nest.values() for j in js}
+        for k, t in enumerate(tbls):
+            if k in inner_set:
+                continue                                    # вложенная — в ячейке своей внешней (ниже)
             r = fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1])
             if any((f & r).get_area() > 0.8 * r.get_area() for f, _ in figs):
                 continue                                    # сетка внутри рисунка (график) — часть рисунка
-            if _chart_table(t, draw[pno]):
+            if _chart_table(t, draw[pno], inner_of(k)):
                 # таблица-график (диаграмма Ганта) — рисунком с переведённого PDF, подписи — переводом
                 R = (r + (-2, -2, 2, 2)) & page.rect
                 figs.append((R, {"clip": [R.x0, R.y0, R.x1, R.y1], "page_number": pno + 1, "x0": R.x0, "x1": R.x1,
                                  "top": R.y0, "bottom": R.y1}))
                 continue
-            inside = [s for s in segs if r.contains(fitz.Point(*_center(s)))]
+            # вложенная таблица (бланк «Время измерения» в ячейке рамки листа, 30TH50-80ÁTVGT л. 6–9) — своим блоком по
+            # своей сетке, в ячейке внешней: её текст абзацами внешней ячейки разваливался в строки (E7 §5, откат
+            # d19cf42; просмотр 06.11 п. 12)
+            subs, taken = [], set()
+            for j in nest.get(k, ()):
+                ru = rect_of(tbls[j])
+                ins = [s for s in segs if ru.contains(fitz.Point(*_center(s)))]
+                if ins:
+                    gl, pu, fl = _cell_marks(page, pno, marks, tbls[j], ru, ins)
+                    subs.append((ru, _table_block(tbls[j], ins + gl, pno, bold, font, size, mono, (), pu, fl)))
+                    taken |= {s["id"] for s in ins}
+            inside = [s for s in segs if r.contains(fitz.Point(*_center(s))) and s["id"] not in taken]
             mine = [i for i, (f, _) in enumerate(figs) if r.contains(fitz.Point((f.x0 + f.x1) / 2, (f.y0 + f.y1) / 2))]
-            # отметки бланка кривыми (кружок, квадратик) — знаком в своей ячейке, если там нет такого же текста
-            xs_, ys_ = t[0], t[1]
-            mid = lambda b: fitz.Point((b[0] + b[2]) / 2, (b[1] + b[3]) / 2)
-            glyphs = [{"id": -1 - 1000 * pno - k, "page": pno, "text": ch, "loc": {"bbox": list(b), "frags": [list(b)]}}
-                      for k, (b, ch) in enumerate(marks[pno][0]) if r.contains(mid(b)) and _in_cell(b, xs_, ys_)
-                      and not any(fitz.Rect(s["loc"]["bbox"]).contains(mid(b)) for s in inside)]
-            pua = {}
-            for s in inside:                                # одинокий значок частной области — по виду на листе
-                ch = s["text"].strip()
-                if len(ch) == 1 and "\uf020" <= ch <= "\uf0ff" and ch not in pua:
-                    pua[ch] = _pua_glyph(page, s["loc"]["bbox"]) or ch
-            # поля ввода — внутри одной ячейки сетки, не на её линиях и не во всю ячейку
-            fields = [f for f in marks[pno][1] if _in_cell(f, xs_, ys_, whole=True)]
+            xs_ = t[0]
+            glyphs, pua, fields = _cell_marks(page, pno, marks, t, r, inside, [q for q, _ in subs])
             # рамка вокруг строки (одна ячейка) — таблицей только в теле листа и не вокруг заголовка: рамка шапки (выше
             # полосы колонтитула) и заголовок в рамке или на плашке («7. Vezérlő táblák feliratai.» 3SZ23 — полужирный)
             # — как прежде, иначе заголовок переставал быть заголовком (ред-тим 02.11)
             if len(xs_) == 2 and (r.y1 < GM.HEAD_EDGE * page.rect.height or any(
                     s["loc"].get("bold") or s["loc"].get("role") == "heading" for s in inside)):
                 continue
-            if inside:
+            if inside or subs:
                 used |= set(mine)
-                blk = _table_block(t, inside + glyphs, pno, bold, font, size, mono, [figs[i] for i in mine], pua, fields)
+                blk = _table_block(t, inside + glyphs, pno, bold, font, size, mono, [figs[i] for i in mine], pua, fields,
+                                   subs)
                 # заливка ячейки — как у размеченного PDF (docx_struct.cell_fills): серый фон заголовков разделов и шапок
                 # таблиц текстового слоя терялся (3PR10, 3SZ23 «2. Üzemmódok», D2 аудита 30.10); тонкие линии — не фон
                 if fills is None:
@@ -1475,7 +1538,9 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
                              for dr in page.get_drawings() for q in [fitz.Rect(dr["rect"])]
                              if GM.tint(dr.get("fill")) and q.width >= GM.LINE and q.height >= GM.LINE]
                 docx_struct.cell_fills(blk["rows"], lambda pg: fills)
-                regs.append({"rect": r, "ids": {s["id"] for s in inside}, "block": blk})
+                for _, sub in subs:
+                    docx_struct.cell_fills(sub["rows"], lambda pg: fills)
+                regs.append({"rect": r, "ids": {s["id"] for s in inside} | taken, "block": blk})
         for i, (r, img) in enumerate(figs):
             if i in used or any(r.intersects(g["rect"]) for g in regs):
                 continue
@@ -1537,7 +1602,11 @@ def load(src, segs, text=False):
     # месте почти на каждом листе (раздел — с нового листа) и снималась как повтор с прошлого листа на 39 листах из 68
     # (20.10); лист без рамки — как прежде
     frames = rules[4]
-    under = lambda s: frames[s["page"]] is not None and s["loc"]["bbox"][1] >= frames[s["page"]] - 1
+    # «под рамкой» — по середине строки: по верху с допуском 1 pt заголовок сразу под рамкой (верх 91,4 при рамке 92,6,
+    # 30RR2126GT стр. 10–12) считался «в рамке», и «A 30RR25S002 ellenőrzése» снималась повтором прошлого листа (цифры —
+    # маской) — два заголовка из трёх пропадали (E9_DESIGN §5, F-1)
+    under = lambda s: frames[s["page"]] is not None and \
+        (s["loc"]["bbox"][1] + s["loc"]["bbox"][3]) / 2 >= frames[s["page"]]
     titled = lambda s: s["id"] not in heads and not under(s) and len(re.sub(r"\W", "", s["text"])) >= 6 \
         and re.search(r"[^\W\d_]{3}", s["text"])
     # пробелы — без счёта: OCR читает название то с двойным пробелом после номера, то с одним («1.1.  Turbina …»
@@ -1562,8 +1631,14 @@ def load(src, segs, text=False):
     # («1.3/1. SZBV kazetta leesése» дважды подряд, 3PR42)
     norm = lambda t: re.sub(r"\s+", " ", _sig(t))
     lower = {}                                  # лист → [(верх, текст)]; заголовок бывает и в верхней пятой части листа
+    # только заголовок ниже (полужирный, по центру, метка портала «заголовок»): при любом повторе пропадали «Sziasztok!»
+    # письма 31/32SDTÖMGT, «Schnepp Péter» 30RYBSZGT, «BLOKKINDÍTÁSKOR» титула 30TKBSZ36BIGT (E9_DESIGN §5, F-2)
     for s in content:
-        lower.setdefault(s["page"], []).append((s["loc"]["bbox"][1], norm(s["text"])))
+        # заголовок — как у _role: метка портала «заголовок» или полужирный по центру / с номером; полужирная строка
+        # слева без номера — тело («Sziasztok!» письма, «BLOKKINDÍTÁSKOR» в названии титула)
+        if s["loc"].get("role") == "heading" or s["loc"].get("bold") and (
+                s["loc"].get("align") == "center" or re.match(rf"\s*{PT.ITEM_LABEL}\s", s["text"])):
+            lower.setdefault(s["page"], []).append((s["loc"]["bbox"][1], norm(s["text"])))
     content = [s for s in content if not (s["loc"]["bbox"][3] < 0.2 * H and titled(s) and any(
         y > s["loc"]["bbox"][3] and t == norm(s["text"]) for y, t in lower.get(s["page"], ())))]
     if not content:
