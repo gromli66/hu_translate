@@ -961,8 +961,9 @@ def join_pages(bs, cell=False):
     (с отступом первой строки у второй половины, синтетика 16.10). Соседние абзацы на соседних листах — один, если
     первый не кончен знаком конца фразы, а второй начат строчной или без отступа первой строки, который есть у
     первого. Внутри пунктов списков и ячеек — так же. В ячейке слово прописными, перенесённое с дефисом в следующий
-    абзац («ELLENŐR-» / «ZÉS HELYE», шапка таблицы 30YCGT), — один абзац: с текстом страницы («ELLENŐR- ZÉS HELYE») он
-    совпадает, а половинами переводился «МЕСТО» / «КОНТРОЛЯ»."""
+    абзац («ELLENŐR-» / «ZÉS HELYE», шапка таблицы 30YCGT), — один абзац: половинами переводился «МЕСТО» / «КОНТРОЛЯ».
+    Стык половин после «-» — по lines.glue, как строки текста страницы («ELLENŐRZÉS HELYE», «kö-» / «vetelmények» —
+    «követelmények»; E9.7б, прежде «ELLENŐR- ZÉS» и «kö-vetelmények» — не совпадали с текстом страницы)."""
     out = []
     for b in bs:
         if b["k"] == "list":
@@ -975,9 +976,9 @@ def join_pages(bs, cell=False):
                 and "t" in b["runs"][0] and ga.get("page") == gb.get("page"):
             ta, tb = text_of(a["runs"]).rstrip(), text_of(b["runs"]).lstrip()
             if re.search(r"[A-ZÁÉÍÓÖŐÚÜŰ]{3,}-$", ta) and tb[:1].isupper() and len(tb) <= 40:
-                runs = list(a["runs"]) + [dict(r) for r in b["runs"]]
-                runs[len(a["runs"])]["t"] = " " + runs[len(a["runs"])]["t"].lstrip()
-                out[-1] = dict(a, runs=runs, **join_notes(a, b))
+                runs = [dict(r) for r in a["runs"]] + [dict(r) for r in b["runs"]]
+                runs[len(a["runs"])]["t"] = BREAK + runs[len(a["runs"])]["t"].lstrip()
+                out[-1] = dict(a, runs=_unbreak(runs), **join_notes(a, b))
                 continue
         if a and a["k"] == b["k"] == "p" and ga.get("page") and gb.get("page") and gb["page"] == ga["page"] + 1 \
                 and a["runs"] and b["runs"] and "t" in a["runs"][-1] and "t" in b["runs"][0]:
@@ -992,9 +993,12 @@ def join_pages(bs, cell=False):
             label = re.match(r"\(?[a-zа-яё]{1,3}\)|\d+(\.\d+)*[.)]\s|[–•\-]\s", tb)
             if ta and tb and not label and not re.search(r"[.!?:;]$", ta) \
                     and (tb[0].islower() or indent or full and tb[0].isalpha()):
-                runs = list(a["runs"]) + [dict(r) for r in b["runs"]]
+                runs = [dict(r) for r in a["runs"]] + [dict(r) for r in b["runs"]]
                 k = len(a["runs"])
-                if not runs[k - 1]["t"].endswith((" ", "-", "\u00ad")):
+                if runs[k - 1]["t"].endswith("-"):             # перенос слова через лист — по glue (_unbreak)
+                    runs[k]["t"] = BREAK + runs[k]["t"]
+                    _unbreak(runs)
+                elif not runs[k - 1]["t"].endswith((" ", "\u00ad")):
                     runs[k]["t"] = " " + runs[k]["t"].lstrip()
                 out[-1] = dict(a, runs=runs, **join_notes(a, b))
                 continue

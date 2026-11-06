@@ -830,8 +830,9 @@ def test_overlapping_header_texts_are_not_interleaved_by_position():
 
 
 def test_caps_word_split_between_cell_paragraphs_is_one_paragraph():
-    """Шапка таблицы 30YCGT: «ELLENŐR-» и «ZÉS HELYE» — два P одной ячейки; с текстом страницы («ELLENŐR- ZÉS HELYE») они
-    не совпадали, и половины переводились «МЕСТО» / «КОНТРОЛЯ» (28.10). Вне ячейки и со строчной второй частью — как было."""
+    """Шапка таблицы 30YCGT: «ELLENŐR-» и «ZÉS HELYE» — два P одной ячейки; половинами переводились «МЕСТО» / «КОНТРОЛЯ»
+    (28.10). Стык — по lines.glue, как текст страницы: «ELLENŐRZÉS HELYE» (E9.7б; прежде «ELLENŐR- ZÉS HELYE» — с текстом
+    страницы не совпадало). Вне ячейки и со строчной второй частью — как было."""
     g = {"page": 4, "top": 100, "bottom": 110, "x0": 80, "x1": 140, "first_x0": 80, "size": 9, "lines": 1}
     para = lambda t: {"k": "p", "runs": [{"t": t, "font": "Tahoma", "size": 9, "b": True, "i": False, "color": "000000"}],
                       "geom": dict(g)}
@@ -839,7 +840,7 @@ def test_caps_word_split_between_cell_paragraphs_is_one_paragraph():
     tab = {"k": "table", "rows": [[cell("ELLENŐR-", "ZÉS HELYE"), cell("MEGNEVEZÉS-", "tetel")]], "geom": dict(g)}
     out = D.join_pages([tab, para("ELLENŐR-"), para("ZÉS HELYE")])
     texts = [[D.text_of(x["runs"]) for x in c["blocks"]] for c in out[0]["rows"][0]]
-    assert texts == [["ELLENŐR- ZÉS HELYE"], ["MEGNEVEZÉS-", "tetel"]]
+    assert texts == [["ELLENŐRZÉS HELYE"], ["MEGNEVEZÉS-", "tetel"]]
     assert len(out) == 3                                        # вне ячейки абзацы не склеиваются
 
 
