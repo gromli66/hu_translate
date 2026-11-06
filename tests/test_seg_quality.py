@@ -202,6 +202,11 @@ def test_paragraph_does_not_skip_a_line_of_its_column():
     b = _fr("blokk teljesítménye csökken, a kezelő a táblán", (71.0, 162.0, 300.0, 177.0), 9.0)
     c = _fr("ellenőrzi az állapotot.", (71.0, 172.0, 180.0, 187.0), 9.0)
     assert _texts([a, b, c], vs=vs) == [a["t"] + " " + b["t"] + " " + c["t"]]
+    # кусок той же строки, поднятый надстрочным знаком («³ vizet …» после «3812 m», HAKSER л. 14), — не строка между
+    l1 = _fr("Az atomerőmű az üzemzavari időszakban (2003.04.07.-05.11.) az ellenőrző", (126.0, 211.7, 508.9, 223.0), 11.3)
+    sup = _fr("3 vizet bocsátott a Dunába. Az összes-béta mérések szerint a hasadási", (185.6, 223.0, 508.9, 238.0), 11.3)
+    l2 = _fr("tartályokból 3812 m", (92.7, 226.7, 185.8, 238.0), 11.3)
+    assert l1["t"] + " " + l2["t"] in _texts([l1, sup, l2])
 
 
 def test_code_enumeration_continues_after_short_line():

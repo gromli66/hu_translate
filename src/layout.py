@@ -420,10 +420,13 @@ def group(frags, hs, vs=(), form=False, rows=None):
         (3SZ17 л. 9)."""
         a, b = q["frags"][-1]["bbox"], f["bbox"]
         lo, hi = (a[1] + a[3]) / 2 + 1, (b[1] + b[3]) / 2 - 1
+        # другая строка — не на одной линии ни с одной из двух (кусок с надстрочным «³» в «m³» выше рамкой, но той же
+        # строки, HAKSER л. 14) и задевает обе по ширине больше чем на 1 pt
+        line = lambda g, c: abs(g[1] + g[3] - c[1] - c[3]) / 2 < 0.35 * min(g[3] - g[1], c[3] - c[1])
         for _, k in by_mid[bisect.bisect_right(mid_keys, lo):bisect.bisect_left(mid_keys, hi)]:
             g = frags[k]["bbox"]
-            if frags[k] is not f and all(frags[k] is not h for h in q["frags"]) \
-                    and min(g[2], a[2]) - max(g[0], a[0]) > 0 and min(g[2], b[2]) - max(g[0], b[0]) > 0:
+            if frags[k] is not f and all(frags[k] is not h for h in q["frags"]) and not line(g, a) and not line(g, b) \
+                    and min(g[2], a[2]) - max(g[0], a[0]) > 1 and min(g[2], b[2]) - max(g[0], b[0]) > 1:
                 return True
         return False
 
