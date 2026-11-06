@@ -26,6 +26,26 @@ def code_line(t):
         re.search(r"\d", x) or (x.isupper() and len(re.sub(r"\W", "", x)) <= 4) for x in toks)
 
 
+def code_enum(left, right):
+    """Коды через запятую — перечисление внутри фразы, а не ячейки: «30TD97S202,  30TD98S201,  …» — промежутки растянула
+    выключка по ширине (02VE25 л. 44, раздел 5.2): строка шла пятью «ячейками», коды разлетались по сегментам вразнобой,
+    в переводе строки начинались с середины (NIGHT2_EYES п. 14)."""
+    return code_line(left) and code_line(right) and left.rstrip().endswith(",")
+
+
+def code_cells(left, right):
+    """Две части строки через промежуток от CODE_GAP (layout) — разные ячейки перечня («TK41D001 ⇥ KM2/1»): обе — строки
+    из кодов, и это не перечисление через запятую (code_enum)."""
+    return code_line(left) and code_line(right) and not code_enum(left, right)
+
+
+def code_rows(upper, lower):
+    """Две строки из кодов подряд — ячейки перечня, каждая своим куском; кроме перечисления, которое продолжается на
+    следующей строке: в верхней от двух кодов и запятая в конце («30TD97S202, 30TD98S201, … 40TD97S202,»)."""
+    up = upper.rstrip()
+    return code_line(up) and code_line(lower) and not (up.endswith(",") and len(up.split()) >= 2)
+
+
 def is_anchor(t):
     """Якорь ряда: номер пункта («1.2.») или до трёх слов из кодов с цифрой («31UJ21S601», «YA-K7»)."""
     t = t.strip()

@@ -541,7 +541,8 @@ def ocr_frags(words, vs=(), pix=None):
     Кегль — по высоте слов без выносных вниз и без прописных с диакритикой (высота такого слова ≈ 0,72 кегля),
     жирность — по плотности краски относительно слов той же высоты. pix — список для рамок значений после подписи, которые
     остаются пикселями (число, дата, штамп: PF.value_tail)."""
-    from layout import GAP, CODE_GAP, _vrule_in, _union, code_line
+    from layout import GAP, CODE_GAP, _vrule_in, _union
+    from rows import code_cells, code_enum               # коды через запятую — перечисление, не ячейки (02VE25)
     words = _split_at_rules(words, vs)
     inks = sorted(w["ink"] for w in words if "ink" in w)
     # рамка слова, задетого рукописной подписью, раздута по высоте («Aláírás:» 9,4 pt вместо 3,8): по вертикали —
@@ -573,9 +574,10 @@ def ocr_frags(words, vs=(), pix=None):
     for w in words:
         # слово левее правого края куска — не продолжение: Tesseract держит «Verziószám: 2» и «Megnevezés: …» одной строкой
         # блока, и подписи двух столбцов шапки склеивались в один фрагмент (титул и лист регистрации, N1 аудита 29.10)
-        if cur is not None and cur["line"] == w["line"] and -w["h"] <= w["box"][0] - cur["bbox"][2] <= GAP                 and not (w["box"][0] - cur["bbox"][2] >= COL_GAP and any(abs(w["box"][0] - e) <= 3 for e in edges)) \
+        if cur is not None and cur["line"] == w["line"] and -w["h"] <= w["box"][0] - cur["bbox"][2] <= GAP                 and not (w["box"][0] - cur["bbox"][2] >= COL_GAP and any(abs(w["box"][0] - e) <= 3 for e in edges)
+                         and not code_enum(cur["t"], w["t"])) \
                 and not _vrule_in(vs, cur["bbox"][2], w["box"][0], w["box"][1], w["box"][3]) \
-                and not (w["box"][0] - cur["bbox"][2] >= CODE_GAP and code_line(cur["t"]) and code_line(w["t"])):
+                and not (w["box"][0] - cur["bbox"][2] >= CODE_GAP and code_cells(cur["t"], w["t"])):
             cur["t"] += " " + w["t"]; cur["bbox"] = _union([cur["bbox"], w["box"]]); cur["ws"].append(w)
         else:
             if cur is not None:
@@ -939,7 +941,7 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
             # две колонки сплошного текста (E46): просвет — невидимой линейкой (строки через него не склеиваются, место
             # строки и перевода — до него), абзацы — колонка за колонкой
             from layout import gutter, column_order
-            g = gutter(group(frags, hs, vs, rows=rw), page.rect.width)
+            g = gutter(group(frags, hs, vs, rows=rw), page.rect.width, hs)
             if g is not None:
                 rw = Rows(frags, hs, vs, gutter=g)      # нумерованный столбец левой колонки — не ряды для правой
                 vs = list(vs) + [(0, page.rect.height, g)]
