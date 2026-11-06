@@ -1305,6 +1305,26 @@ def test_line_hyphen_joins_word_keeps_suspended_and_compound():
         assert p0["runs"][0]["t"] == want
 
 
+def test_assembly_join_is_extraction_join():
+    """E9.7г: строка, пришитая к абзацу при сборке (docx_layout._join), — тот же текст, что строки абзаца при извлечении
+    (layout.join_lines → lines.glue): одно правило переноса. Строка × строка — таблицей, включая прежние расхождения
+    копии в сборке: «KI-» + «KAPCSOLVA» (было «KI-KAPCSOLVA»), «a mosatás-» + «12 perc» (было без пробела), союз в
+    конце текста «fűtő-» + «és» (было «fűtőés»)."""
+    import layout as LY
+    import docx_layout as DL
+    pairs = [("написан акку-", "ратно"), ("a fűtő-", "és hűtő"), ("a fűtő-", "és"), ("ÜFK-", "nak"),
+             ("loss-of-", "coolant"), ("KI-", "KAPCSOLVA"), ("RO-", "ROP"), ("1000-", "1200 bar"),
+             ("a mosatás-", "12 perc"), ("a próba -", "12 perc"), ("szöveg", "folytatás"), ("vége.", "Új mondat"),
+             ("szöveg ", "folytatás"), ("bar-", "Nyomás")]
+    for a, b in pairs:
+        p0 = {"k": "p", "runs": [{"t": a}], "geom": {"x1": 300, "bottom": 100}}
+        DL._join(p0, [{"t": b}], {"x1": 300, "bottom": 112})
+        assert p0["runs"][0]["t"] == LY.join_lines([a, b]), (a, b)
+    p0 = {"k": "p", "runs": [{"t": "KI-"}], "geom": {"x1": 300, "bottom": 100}}
+    DL._join(p0, [{"t": "KAPCSOLVA"}], {"x1": 300, "bottom": 112})
+    assert p0["runs"][0]["t"] == "KIKAPCSOLVA"
+
+
 def test_hanging_indent_gap_is_tab():
     """Промежуток в первой строке до висячего отступа — табуляция («MSZ 27003-0:2013 ⇥ Nukleáris…», OAH), хотя он
     уже порога «1,8 кегля»; обычный пробел — пробел."""

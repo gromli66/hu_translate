@@ -1771,20 +1771,19 @@ def _continues(prev, s, lh):
         -2 <= y0 - g["bottom"] < 0.8 * lh and start
 
 
-SUSPENDED = re.compile(r"(?:és|vagy|illetve|ill\.|и|или|либо|and|or)\s", re.I)   # «fűtő- és …»: дефис — не перенос
-
-
 def _join(prev, runs, geom):
-    """Строку — в конец абзаца: через пробел (после переноса «bar-» — без него и без дефиса, как layout.join_lines:
-    «акку-» + «ратно» печаталось «акку-ратно», NSU 18.10; дефис составного слова и после прописной или цифры — на
-    месте), прогоны одного начертания — одним."""
+    """Строку — в конец абзаца: перенос слова — по общему правилу lines.glue, как при извлечении (layout.join_lines):
+    «акку-» + «ратно» — «аккуратно» (NSU 18.10), дефис составного слова и после прописной — на месте, «fűtő- és» — с
+    пробелом, «1000-» + «1200» — диапазон; иначе через пробел. Прогоны одного начертания — одним. До E9.7г здесь была
+    своя копия правил (без «KI-» + «KAPCSOLVA», «x-» + «12» — без пробела)."""
+    import lines as LN
     tail = prev["runs"][-1]
     head = (runs[0].get("t") or "") if runs else ""
-    if tail["t"].endswith("-") and head[:1].islower() and not SUSPENDED.match(head) \
-            and not re.search(r"[A-ZÁÉÍÓÖŐÚÜŰА-ЯЁ0-9]-$", tail["t"]) and not re.search(r"\w-\w+-$", tail["t"]):
-        tail["t"] = tail["t"][:-1]
-    elif not tail["t"].endswith(" ") and (not tail["t"].endswith("-") or SUSPENDED.match(head)):
-        tail["t"] += " "                                    # «fűtő- és hűtő…» — дефис с пробелом перед союзом
+    glued = LN.glue(tail["t"], head)
+    if glued is not None:
+        tail["t"] = glued[:len(glued) - len(head)]          # glue = хвост (без дефиса переноса) + head
+    elif not tail["t"].endswith(" "):
+        tail["t"] += " "
     for r in runs:
         tail = prev["runs"][-1]
         if (tail.get("b"), tail.get("i")) == (r.get("b"), r.get("i")) and not tail.get("tabs") and not tail.get("rtab"):
