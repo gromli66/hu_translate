@@ -274,3 +274,33 @@ def test_minus_sign_is_list_marker_for_memory_and_text_layer():
     m = B.Memory([("− 30YP15S101 zárva (lámpajelzés)", "− 30YP15S101 закрыта (световая сигнализация)")])
     assert m("30YP15S101 zárva (lámpajelzés)") == "30YP15S101 закрыта (световая сигнализация)"
     assert DLx.SIGN.match("− 30YP15S101 zárva") and not DLx.SIGN.match("−5 °C")
+
+
+def test_blank_line_between_paragraphs_of_whole_sheet_cell_is_kept():
+    """01-02FMP0BIGT л. 2 (NIGHT2_EYES п. 15, просмотр 06.11 п. 11): лист бланка — одна большая ячейка, между абзацами —
+    пустая строка (зазор 9–15 pt при обычном −2…+4), в DOCX её нет — лист плотнее оригинала. Зазоры всех ячеек раньше
+    сознательно не переносили (30RL2126GT: 449 границ из 738 — 49 листов при 46): теперь пустая строка — только в ячейке
+    во весь лист (абзацы ячейки — больше половины высоты листа); в обычной ячейке — как прежде."""
+    import tempfile, os
+    def para(t, top, lines=1):
+        g = {"page": 1, "top": top, "bottom": top + 13.8 * lines, "x0": 136, "x1": 460, "first_x0": 136, "size": 10,
+             "lines": lines}
+        return {"k": "p", "runs": [{"t": t, "font": "Times New Roman", "size": 10, "b": False, "i": False,
+                                    "color": "000000"}], "geom": g, "seg": True, "align": "left"}
+    edges = {"top": True, "bottom": True, "left": True, "right": True}
+    big = [para("A próba terjedelme:", 140.6), para("4.1 - MET-re hozás.", 163.6), para("4.3 - Az SZBV hajtások.", 175.1),
+           para("A program érvényessége:", 234.2), para("A programban leírt információk érvényesek.", 257.3, 2),
+           para("A mérési program ütemezése:", 578.7), para("A zóna ellenőrző rendszer hőmérői.", 601.9, 3)]
+    small = [para("Első sor a kis cellában.", 120), para("Második sor a kis cellában.", 145)]
+    cell = lambda ps: {"blocks": ps, "th": False, "geom": ps[0]["geom"], "span": 1, "edges": edges}
+    rows = [[cell(big), cell(small)]]
+    tab = {"k": "table", "rows": rows, "borders": True, "frame": {"xs": [71, 470, 540], "ys": [100, 700]},
+           "geom": {"page": 1, "top": 100, "bottom": 700, "x0": 71, "x1": 540, "first_x0": 71, "size": 10}}
+    out = os.path.join(tempfile.mkdtemp(), "gap.docx")
+    B.Builder(B.Memory([]), lambda img: png(), PROFILE).build([tab], out, dict(LAYOUT, first_is_body=True))
+    t = Document(out).tables[0]
+    sb = {p.text: p.paragraph_format.space_before for c in t._cells for p in c.paragraphs if p.text}
+    assert sb["4.1 - MET-re hozás."] is not None and round(sb["4.1 - MET-re hozás."].pt) == 9      # пустая строка
+    assert not sb["4.3 - Az SZBV hajtások."]                                     # строка за строкой — без зазора
+    assert round(sb["A mérési program ütemezése:"].pt) >= 9
+    assert not sb["Második sor a kis cellában."]                                 # обычная ячейка — как прежде

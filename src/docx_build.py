@@ -1131,7 +1131,8 @@ class Builder:
         (01-02FMP0BIGT л. 2, NIGHT2_EYES п. 15), и заголовок по центру уходил влево, пункт «1. …» шёл без висячего
         отступа. edges — края ячейки на листе (линии столбцов), al — выключка столбца, right — строка столбца,
         выключенного в оригинале вправо (table: общий правый край). Пустые строки между абзацами ячейки — нет: зазоры
-        оригинала (до строки) у 30RL2126GT на 449 границах из 738 дали 49 листов при 46."""
+        оригинала (до строки) у 30RL2126GT на 449 границах из 738 дали 49 листов при 46; только в ячейке во весь лист
+        (table, 06.11)."""
         from docx.shared import Pt
         g = x.get("geom") or {}
         pf = par.paragraph_format
@@ -1799,6 +1800,14 @@ class Builder:
                 if al:
                     style = self._aligned(style, al)
                 cell_x = (bounds[spans[ci][0]], bounds[spans[ci][1] + 1]) if len(bounds) == ncol + 1 else None
+                # ячейка во весь лист (лист бланка — одна большая ячейка, 01-02FMP0BIGT л. 2): пустая строка оригинала между
+                # абзацами (зазор от половины строки) — зазором перед абзацем; в обычных ячейках — нет (30RL2126GT: 449
+                # границ из 738 — 49 листов при 46), там абзацы и так строка за строкой (просмотр 06.11, п. 11)
+                gs = [x["geom"] for x in cell["blocks"] if x["k"] == "p" and x.get("seg") and (x.get("geom") or {}).get(
+                    "top") is not None]
+                sheet_cell = bool(gs and self.L) and max(q["bottom"] for q in gs) - min(q["top"] for q in gs) \
+                    >= 0.5 * self.L["H"]
+                prev_g = None
                 for x in cell["blocks"]:
                     if x["k"] == "list":
                         self.list_(x, 0, dc); continue
@@ -1828,6 +1837,13 @@ class Builder:
                         par.paragraph_format.left_indent = Pt(round(nest[id(x)], 1))
                     elif par is not None and x.get("seg"):
                         self._cell_par(par, x, cell_x, al, id(x.get("geom")) in flush)
+                    xg = x.get("geom") or {}
+                    if sheet_cell and par is not None and x.get("seg") and xg.get("top") is not None:
+                        if prev_g is not None and prev_g.get("page") == xg.get("page"):
+                            gap = xg["top"] - prev_g["bottom"]
+                            if gap >= 0.5 * (xg["bottom"] - xg["top"]) / max(1, xg.get("lines") or 1):
+                                par.paragraph_format.space_before = Pt(round(gap, 1))
+                        prev_g = xg
                 room = self._room.get(starts[ci]) if spans[ci][1] == spans[ci][0] else None
 
                 def widest(par, eff, whole=False):
