@@ -2087,13 +2087,39 @@ class Builder:
         body = self.doc.element.body
         last = next((e for e in reversed(body) if e.tag != W + "sectPr"), None)
         prev = last.getprevious() if last is not None else None
-        if last is not None and last.tag == W + "p" and not "".join(last.itertext()).strip()                 and prev is not None and prev.tag == W + "tbl":
+        # абзац, что уже несёт разрыв раздела (_add_section), — не хвост: его не убирать и разрыв на него не ставить
+        if last is not None and last.tag == W + "p" and not "".join(last.itertext()).strip() \
+                and last.find(W + "pPr/" + W + "sectPr") is None and prev is not None and prev.tag == W + "tbl":
             par = self.doc.paragraphs[-1]
             if par._p is last:
                 par.paragraph_format.space_before = par.paragraph_format.space_after = Pt(0)
                 par.paragraph_format.line_spacing = Pt(1)
                 return par
         return None
+
+    def _add_section(self):
+        """Новый раздел с нового листа. python-docx ставит разрыв раздела в новый пустой абзац кеглем тела в конце
+        прошлого раздела, а после таблицы там уже стоит пустой абзац Word: два пустых абзаца не влезали под таблицу,
+        кончавшуюся у низа листа, и уходили на свой лист — пустая страница (30THHAGT стр. 2 после листа изменений:
+        низ таблицы 722 pt при нижнем поле 733, просмотр 06.11). Теперь разрыв несёт сам абзац после таблицы (он в 1 pt,
+        _shrink_tail), а где таблицы нет — абзац разрыва в 1 pt."""
+        from docx.enum.section import WD_SECTION
+        from docx.shared import Pt
+        from docx.text.paragraph import Paragraph
+        tail = self._shrink_tail()
+        sec = self.doc.add_section(WD_SECTION.NEW_PAGE)
+        body = self.doc.element.body
+        brk = body[-1].getprevious() if body[-1].tag == W + "sectPr" else None    # абзац с копией sectPr
+        if brk is None or brk.find(W + "pPr/" + W + "sectPr") is None:
+            return sec
+        if tail is not None and brk.getprevious() is tail._p:
+            tail._p.get_or_add_pPr().append(brk.find(W + "pPr/" + W + "sectPr"))
+            body.remove(brk)
+        else:
+            pf = Paragraph(brk, self.doc._body).paragraph_format
+            pf.space_before = pf.space_after = Pt(0)
+            pf.line_spacing = Pt(1)
+        return sec
 
     def block(self, b):
         k = b["k"]
@@ -2612,7 +2638,7 @@ class Builder:
             # следующий (HAKSER: 74 листа → 94), а раздел в один лист оригинала docx_fit ужимает кеглем (22.10)
             if not in_title and page and sizes and (land(page) != cur_land or cur_land and page > last):
                 cur_land = land(page)
-                sec = made = self.doc.add_section(WD_SECTION.NEW_PAGE)
+                sec = made = self._add_section()
                 self.fresh = True
                 self._page(sec, L, L["left"], L["right"], L["top"], L["bottom"], sizes[page - 1])
                 # книжный лист после альбомного со своим номером — тоже раздел-лист (путь А): docx_fit и «(прод.)»
@@ -2622,7 +2648,7 @@ class Builder:
                 last = max(last, page)
             if in_title and page is not None and page >= 2:
                 in_title = False
-                sec = made = self.doc.add_section(WD_SECTION.NEW_PAGE)
+                sec = made = self._add_section()
                 self.fresh = True
                 self._page(sec, L, L["left"], L["right"], L["top"], L["bottom"])
                 self.left = L["left"]
@@ -2634,7 +2660,7 @@ class Builder:
                     restart = own_num = True
             if in_front and page is not None and page > front["to"]:
                 in_front = False
-                sec = made = self.doc.add_section(WD_SECTION.NEW_PAGE)
+                sec = made = self._add_section()
                 self.fresh = True
                 self._page(sec, L, L["left"], L["right"], L["top"], L["bottom"])
                 self._header(sec, L)
@@ -2650,7 +2676,7 @@ class Builder:
                 page = b["sheet"]
             if (b.get("sheet") or made is not None) and page and not in_title and not in_front and sheet_no.get(page):
                 if made is None:
-                    sec = made = self.doc.add_section(WD_SECTION.NEW_PAGE)
+                    sec = made = self._add_section()
                     self.fresh = True
                 # раздел — листы оригинала до следующего раздела: перелившийся на лишний лист — мельче кеглем
                 # (docx_fit, как альбомный: 30KBFPRBIGT, строки «ПЛОМБИРОВАНИЕ, ВЫВЕШИВАНИЕ ПЛАКАТА» в две строки);
@@ -2664,7 +2690,7 @@ class Builder:
                     zcur = zk
                     Lz = dict(L, **zones[zk]) if zk is not None else L
                     if made is None and placed:
-                        made = self.doc.add_section(WD_SECTION.NEW_PAGE)
+                        made = self._add_section()
                         self.fresh = True
                         starts.append((len(self.doc.sections) - 1, page, "zone"))   # для «(прод.)» ниже
                     sec = made if made is not None else self.doc.sections[-1]
