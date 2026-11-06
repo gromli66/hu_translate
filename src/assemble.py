@@ -302,6 +302,36 @@ def prepare_translation(d, ctx, sink):
     return d, form, n_lab, n_uni
 
 
+def _hrules(dark, k=150 / 72):
+    """Маска длинных (от 20 pt) тонких горизонтальных линеек в чёрной краске листа: рамки и линии таблиц. Толстое (штамп, жирный
+    заголовок) — не линейка: то же условие, что у _foreign_ink."""
+    import cv2
+    import numpy as np
+    m = dark.astype(np.uint8)
+    op = lambda w, h: cv2.morphologyEx(m, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (w, h)))
+    return (op(int(20 * k), 1) & ~op(5, 5)).astype(bool)
+
+
+def _trim_rules(rect, hmask, k=150 / 72, zone=3.5):
+    """Плашка строки скана без линеек таблицы у её верхнего и нижнего края: рамка красной плашки «AZ UT_ÜVIG_25 …» лежит в 1,5 pt от
+    букв, и плашка (запас 1,5 pt вокруг рамки строки) стирала верхнюю и нижнюю линии на всю ширину надписи. Сплошная (от 60 % ширины
+    плашки) линейка в крайних zone pt плашки остаётся: плашка обрезается по ней."""
+    import fitz
+    H, W = hmask.shape
+    x0, x1 = max(int(rect.x0 * k), 0), min(int(rect.x1 * k), W)
+    if x1 - x0 < 10:
+        return rect
+
+    def rows(y_from, y_to):
+        a, b = max(int(y_from * k), 0), min(int(y_to * k) + 1, H)
+        return [a + i for i, c in enumerate(hmask[a:b, x0:x1].mean(axis=1)) if c >= 0.6] if b > a else []
+    top, bottom = rows(rect.y0, rect.y0 + zone), rows(rect.y1 - zone, rect.y1)
+    # с запасом в пиксель: стирание картинки округляет рамку плашки наружу по пикселям самой картинки скана
+    y0 = (max(top) + 2) / k if top else rect.y0
+    y1 = (min(bottom) - 1) / k if bottom else rect.y1
+    return fitz.Rect(rect.x0, y0, rect.x1, y1) if y1 - y0 >= 2 else rect
+
+
 def _foreign_ink(page, plates, dpi=150):
     """Краска скана, которую перевод не должен задеть: подписи, штампы, чужие надписи. Возвращает (поверх, место):
     поверх — [(рамка, PNG с прозрачностью)]: цветные штрихи (не серые), что выходят за белые плашки строк, своими
@@ -445,12 +475,13 @@ def build_pdf(src, out, segs, res, progress=None, check=True):
         # минимум по всей форме мельчил её целиком (30RDIT_TU: медиана 10 → 9 pt, красная команда 15.10)
         tabs = [] if ocr or page.rotation else [r for r in (fitz.Rect(t.bbox) for t in page.find_tables().tables)
                                                  if r.get_area() < 0.5 * page.rect.get_area()]
-        plates = []
+        plates, hmask = [], None
         if ocr and not page.rotation:                   # краска листа — где кончается слово (_ink_span)
             import numpy as np
             pm = page.get_pixmap(dpi=150, annots=False)
             rgb = np.frombuffer(pm.samples, np.uint8).reshape(pm.height, pm.width, pm.n)[:, :, :3].astype(np.int16)
             dark = (rgb.min(2) < 128) & (rgb.max(2) - rgb.min(2) < 60)          # чёрная краска, не цветная
+            hmask = _hrules(dark)                                               # линейки таблиц: плашка их не стирает
             lines = [tuple(f) for t in segs if t["page"] == pno for f in t["loc"]["frags"]]
         for s, r in todo:
             if ocr:
@@ -468,7 +499,8 @@ def build_pdf(src, out, segs, res, progress=None, check=True):
                     e1 = _guard("assemble._ink_span", lambda: _ink_span(
                         dark, 150 / 72, (x0, y0, x1, y1), [f for f in lines if f != (x0, y0, x1, y1)], reach + 2), x1,
                         steps_failed, f"{name}, лист {pno + 1}") if not page.rotation and reach > 0 else x1
-                    plates.append(fitz.Rect(x0 - left, y0 - 1.5, max(x1 + 2, e1 + 1), y1 + 1.5))
+                    plate = fitz.Rect(x0 - left, y0 - 1.5, max(x1 + 2, e1 + 1), y1 + 1.5)
+                    plates.append(_trim_rules(plate, hmask) if hmask is not None else plate)
                     page.add_redact_annot(plates[-1] * der, fill=(1, 1, 1))
             else:
                 for bb in s["loc"]["frags"]:

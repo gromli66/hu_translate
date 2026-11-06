@@ -543,7 +543,13 @@ def ocr_frags(words, vs=(), pix=None):
     остаются пикселями (число, дата, штамп: PF.value_tail)."""
     from layout import GAP, CODE_GAP, _vrule_in, _union
     from rows import code_cells, code_enum               # коды через запятую — перечисление, не ячейки (02VE25)
+    import pagefit as PF
     words = _split_at_rules(words, vs)
+    bars = [w for w in words if PF.ruleword(w)]          # обрывок линейки ячейки, прочитанный знаками («[d»), — картинка, не слово
+    if bars:
+        if pix is not None:
+            pix += [w["box"] for w in bars]
+        words = [w for w in words if not PF.ruleword(w)]
     inks = sorted(w["ink"] for w in words if "ink" in w)
     # рамка слова, задетого рукописной подписью, раздута по высоте («Aláírás:» 9,4 pt вместо 3,8): по вертикали —
     # как у обычных слов той же строки, иначе и кегль перевода, и белая плашка вырастают и затирают подпись
@@ -563,18 +569,24 @@ def ocr_frags(words, vs=(), pix=None):
     # которого слово начинается после пустого места от COL_GAP на своей строке (слева на той же высоте — другое слово),
     # у двух и более строк один (±3 pt) — граница столбца, фрагмент через неё не продолжается
     starts = []
+    # зазор в 12–14 pt в строке прозы (машинопись: пробелы по 10–12 pt) — пробел, не пустое место перед столбцом (PF.wide_gap)
+    gaps = {}
+    for a, b_ in zip(words, words[1:]):
+        if a["line"] == b_["line"]:
+            gaps.setdefault(a["line"], []).append(b_["box"][0] - a["box"][2])
+    wide = lambda w, g: PF.wide_gap(g, gaps.get(w["line"], ()), COL_GAP)
     for w in words:
         b = w["box"]
         left = [v["box"][2] for v in words if v is not w and v["box"][2] <= b[0] + 1
                 and min(v["box"][3], b[3]) - max(v["box"][1], b[1]) > 0.5 * min(v["h"], w["h"])]
-        if left and b[0] - max(left) >= COL_GAP:
+        if left and wide(w, b[0] - max(left)):
             starts.append((b[0], (b[1] + b[3]) / 2, w["h"]))
     edges = [x for x, y, h in starts if any(abs(x2 - x) <= 3 and abs(y2 - y) > 0.8 * h for x2, y2, _ in starts)]
     out, cur = [], None
     for w in words:
         # слово левее правого края куска — не продолжение: Tesseract держит «Verziószám: 2» и «Megnevezés: …» одной строкой
         # блока, и подписи двух столбцов шапки склеивались в один фрагмент (титул и лист регистрации, N1 аудита 29.10)
-        if cur is not None and cur["line"] == w["line"] and -w["h"] <= w["box"][0] - cur["bbox"][2] <= GAP                 and not (w["box"][0] - cur["bbox"][2] >= COL_GAP and any(abs(w["box"][0] - e) <= 3 for e in edges)
+        if cur is not None and cur["line"] == w["line"] and -w["h"] <= w["box"][0] - cur["bbox"][2] <= GAP                 and not (wide(w, w["box"][0] - cur["bbox"][2]) and any(abs(w["box"][0] - e) <= 3 for e in edges)
                          and not code_enum(cur["t"], w["t"])) \
                 and not _vrule_in(vs, cur["bbox"][2], w["box"][0], w["box"][1], w["box"][3]) \
                 and not (w["box"][0] - cur["bbox"][2] >= CODE_GAP and code_cells(cur["t"], w["t"])):
@@ -585,7 +597,7 @@ def ocr_frags(words, vs=(), pix=None):
             cur = {"t": w["t"], "bbox": list(w["box"]), "line": w["line"], "ws": [w]}
     if cur is not None:
         out.append(cur)
-    import pagefit as PF
+    out = PF.split_values(out, pix, _union)      # значение между двумя подписями — пиксели оригинала
     for f in out:
         ws = f.pop("ws"); f.pop("line")
         # значение после подписи («Dátum: 2025 JAN 31», «Verziószám: 2») — пиксели оригинала, не текст (PF.value_tail)
@@ -700,7 +712,7 @@ def _dehyphen(words):
     out = []
     for w in words:
         prev = out[-1] if out else None
-        word = glue(prev["t"], w["t"]) if prev and prev["line"] != w["line"] and prev["key"] == w["key"] else None
+        word = glue(prev["t"], w["t"], ranges=False) if prev and prev["line"] != w["line"] and prev["key"] == w["key"] else None
         if word:
             out[-1] = dict(out[-1], t=word)
         else:
@@ -843,22 +855,30 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
             if isinstance(cached, dict):            # старый кэш (список слов без уверенности) — пересчитать
                 for w in cached["words"]:           # из JSON номера строк приходят списками — ключи словаря
                     w["line"], w["key"] = tuple(w["line"]), tuple(w["key"])
-                if all("stroke" in w for w in cached["words"]):
+                if all("stroke" in w and "ink_c" in w for w in cached["words"]):
                     return cached
-                # кэш без толщины штриха: досчитать по картинке, Tesseract не перезапускать
-                pix = fitz.open(path)[pno].get_pixmap(dpi=dpi_tess, colorspace=fitz.csGRAY)
+                # кэш без толщины штриха или красной краски: досчитать по картинке, Tesseract не перезапускать
+                page_ = fitz.open(path)[pno]
+                pix = page_.get_pixmap(dpi=dpi_tess, colorspace=fitz.csGRAY)
                 gray = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width)
+                px = page_.get_pixmap(dpi=dpi_tess)
+                rgb = np.frombuffer(px.samples, dtype=np.uint8).reshape(px.height, px.width, px.n)[:, :, :3]
                 for w in cached["words"]:
                     w["stroke"] = _stroke(gray, w["box"], dpi_tess)
+                    PF.mark_red_ink(w, rgb, dpi_tess)
                 f.write_text(json.dumps(cached, ensure_ascii=False), encoding="utf-8")
                 return cached
         png = work / f"p{pno:04d}.png"
-        pix = fitz.open(path)[pno].get_pixmap(dpi=dpi_tess, colorspace=fitz.csGRAY)
+        page_ = fitz.open(path)[pno]
+        pix = page_.get_pixmap(dpi=dpi_tess, colorspace=fitz.csGRAY)
         pix.save(str(png))
         ws = _tess_words(png, dpi_tess); png.unlink()
         gray = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width)
+        px = page_.get_pixmap(dpi=dpi_tess)
+        rgb = np.frombuffer(px.samples, dtype=np.uint8).reshape(px.height, px.width, px.n)[:, :, :3]
         for w in ws:
             w["ink"] = round(_ink(gray, w["box"], dpi_tess), 3)
+            PF.mark_red_ink(w, rgb, dpi_tess)
             w["stroke"] = _stroke(gray, w["box"], dpi_tess)
         ih, iv = rules_from_image(gray, dpi_tess)
         out = {"words": ws, "hs": ih, "vs": iv}

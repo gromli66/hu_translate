@@ -235,6 +235,95 @@ def pixels_only(text, known=None):
     return not ("label-acr" in kinds and "name" not in kinds)
 
 
+INK_RED = 0.15      # доля красных пикселей в рамке слова, от которой краска — красная печать (у слов красной плашки 0,2–0,38)
+COL_GAP_LINE = 1.5  # в строке прозы (от трёх пробелов) зазор-столбец — и во столько раз больше её самого большого пробела,
+COL_GAP_MAX = 14.0  # но от 14 pt — столбец и там (граничные 12–14 pt в строке прозы — пробел машинописи)
+
+
+def ink_red(rgb, box, dpi):
+    """Доля красных пикселей в рамке слова. В сером изображении красная печать (251, 61, 49) светлее порога тёмной краски (segments._ink),
+    и уверенно прочитанное слово шло как бледная рукопись (красное предупреждение «… FIGYELEMBEVÉTELÉVEL KÉSZÜLT!», красные
+    заголовки форм: 30YCGT, 30RYBSZGT, 30RVRYTSBIGT). Красный — насыщенный и яркий: R выше G и B не меньше чем на 90; ручка — синяя
+    или чёрная, красной краски в ней нет."""
+    import numpy as np
+    k = dpi / 72
+    x0, y0, x1, y1 = (int(v * k) for v in box)
+    cut = rgb[max(y0, 0):max(y1, y0 + 1), max(x0, 0):max(x1, x0 + 1)].astype(np.int16)
+    if not cut.size:
+        return 0.0
+    return float(((cut[:, :, 0] - np.maximum(cut[:, :, 1], cut[:, :, 2]) >= 90) & (cut[:, :, 0] >= 150)).mean())
+
+
+def mark_red_ink(w, rgb, dpi):
+    """Слову Tesseract — доля красной краски (ink_c); от INK_RED красная печать — краска наравне с тёмной: плотность слова (ink) не ниже неё,
+    и слово не уходит в «бледную рукопись» (segments.ocr_words)."""
+    red = round(ink_red(rgb, w["box"], dpi), 3)
+    w["ink_c"] = red
+    if red >= INK_RED:
+        w["ink"] = max(w.get("ink", 0), red)
+
+
+def wide_gap(g, gaps, col_gap):
+    """Зазор g перед словом — пустое место перед столбцом: от col_gap и, в строке прозы (от трёх зазоров-пробелов меньше col_gap —
+    gaps, зазоры своей строки), не меньше полутора самого большого пробела и COL_GAP_MAX. Машинопись с пробелами по 10–12 pt: зазор в
+    12,0 pt перед словом — пробел, а не столбец; он совпадал с левым краем у чужих строк листа, и строка рвалась («A KU 2.6. |
+    pontjában…», 3PR10 стр. 2). Строки форм (подпись ⇥ значение, поля) пробелов столбцов не теряют."""
+    spaces = [x for x in gaps if x < col_gap]
+    return g >= col_gap and (len(spaces) < 3 or g >= min(COL_GAP_LINE * max(spaces), COL_GAP_MAX))
+
+
+def ruleword(w):
+    """Кусок линейки ячейки, прочитанный знаками («[d», «|1»): два знака и больше в рамке уже 0,3 высоты на знак (букв такой ширины нет)
+    и плотная краска — линия, не слово: картинка, не переводится и не закрывается плашкой («[d Страница» в шапке таблицы версий 3PR10)."""
+    x0, y0, x1, y1 = w["box"]
+    return len(w.get("raw", w["t"])) >= 2 and (x1 - x0) < 0.3 * (y1 - y0) * len(w.get("raw", w["t"])) and w.get("ink", 0) > 0.45
+
+
+def split_values(frags, pix, union):
+    """Фрагменты скана без значений посреди строки: значение между двумя подписями (value_runs) — рамка в pix, подпись и остаток строки —
+    свои фрагменты (union — объединение рамок, layout._union). Фрагмент — словарь с t, bbox, line, ws."""
+    out = []
+    for f in frags:
+        runs = value_runs(f["ws"])
+        if not runs:
+            out.append(f)
+            continue
+        pos = 0
+        for a, b in runs:
+            if pix is not None:
+                pix.append(union([w["box"] for w in f["ws"][a:b]]))
+            if a > pos:
+                out.append(dict(f, ws=f["ws"][pos:a]))
+            pos = b
+        if pos < len(f["ws"]):
+            out.append(dict(f, ws=f["ws"][pos:]))
+    for f in out:
+        f["t"] = " ".join(w["t"] for w in f["ws"])
+        f["bbox"] = union([w["box"] for w in f["ws"]])
+    return out
+
+
+def value_runs(words, known=None):
+    """[(a, b)] — куски words[a:b] посреди фрагмента скана, что остаются пикселями: значение между двумя подписями («Dátum: 71127 JAN 2
+    Név: …»). Начало — слово после подписи с «:», конец — перед следующей подписью с «:»; внутри числа, неизвестные сокращения из
+    заглавных и знаки, и хотя бы одно число (дата, номер) — одно сокращение («Szervezet: ÜVFO |») переводится, как прежде. Хвост строки —
+    value_tail. Неверно прочитанное значение штампа («2022 JAN 25» → «71127 JAN 2») не рисуется заново."""
+    known = known_words() if known is None else known
+    kinds = [_kind(w["t"], known) for w in words]
+    runs, i, n = [], 1, len(words)
+    while i < n:
+        if kinds[i - 1] == "label" and words[i - 1]["t"].rstrip().endswith(":"):
+            j = i
+            while j < n and kinds[j] in ("num", "acr", ""):
+                j += 1
+            if i < j < n and kinds[j] == "label" and words[j]["t"].rstrip().endswith(":") and "num" in kinds[i:j]:
+                runs.append((i, j))
+                i = j
+                continue
+        i += 1
+    return runs
+
+
 def value_tail(words, known=None):
     """Сколько первых слов фрагмента скана остаётся текстом: значение после подписи («Dátum: 2025 JAN 31», «Verziószám: 2»)
     — числа, даты и неизвестные сокращения из заглавных — не читается и не перерисовывается, это пиксели оригинала
