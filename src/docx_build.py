@@ -2156,6 +2156,14 @@ class Builder:
             "printerSettings", "sectPrChange")}), None)
         nxt.addprevious(el) if nxt is not None else sp.append(el)
 
+    def _num_clear(self, sec):
+        """Раздел, открытый на листе без номера оригинала, нумерации не начинает: add_section копирует sectPr прошлого
+        раздела вместе с pgNumType start — и поле PAGE повторило бы номер прошлого листа («2, 2»); без начала номер идёт
+        дальше по документу."""
+        sp = sec._sectPr
+        for el in sp.findall(W + "pgNumType"):
+            sp.remove(el)
+
     def _no_borders(self, table):
         b = _el("w:tblBorders")
         for side in ("top", "left", "bottom", "right", "insideH", "insideV"):
@@ -2590,6 +2598,7 @@ class Builder:
             g = b.get("geom") or {}
             page = g.get("page")
             made = None                     # раздел, начатый на этом блоке
+            own_num = False                 # ему уже задано начало нумерации (num_start, не номер листа)
             # лист другой ориентации, чем раздел (альбомные листы посреди книжного документа) — свой раздел; и каждый
             # альбомный лист — своим разделом: таблица во весь альбомный лист оригинала переливалась 2–3 строками на
             # следующий (HAKSER: 74 листа → 94), а раздел в один лист оригинала docx_fit ужимает кеглем (22.10)
@@ -2614,7 +2623,7 @@ class Builder:
                 self._footer(sec, Lf if in_front else L)
                 if ns and not in_front:
                     self._num_start(sec, ns["value"])
-                    restart = True
+                    restart = own_num = True
             if in_front and page is not None and page > front["to"]:
                 in_front = False
                 sec = made = self.doc.add_section(WD_SECTION.NEW_PAGE)
@@ -2624,7 +2633,7 @@ class Builder:
                 self._footer(sec, L)
                 if ns:
                     self._num_start(sec, ns["value"])
-                    restart = True
+                    restart = own_num = True
             # лист оригинала, закрытый подписью (docx_struct.closed_sheets), — свой раздел: номер листа — его, не
             # подряд по листам перевода
             # (у перечня листа нет в geom — лист его первого пункта: часть перечня, начатая на новом листе, открывала
@@ -2659,6 +2668,8 @@ class Builder:
             if made is not None and not in_title and not in_front and sheet_no.get(page):
                 self._num_start(made, sheet_no[page])
                 restart = True
+            elif made is not None and not own_num:
+                self._num_clear(made)       # номера этого листа нет: начало прошлого раздела не наследуется
             # логотипы обложки — те же, что в шапке тела, или стоящие в полосе шапки (выше поля тела; «atom erőmű» UTS
             # уезжал за правый край), — шапкой титула из логотипов тела. Картинка без xref (снимок скана титула) — не
             # логотип, хоть у векторного логотипа шапки xref тоже нет: скан титула пропадал, лист 1 пустой (ред-тим 20.10)
