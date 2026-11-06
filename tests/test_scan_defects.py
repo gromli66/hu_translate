@@ -7,6 +7,7 @@ import fitz
 import numpy as np
 from PIL import Image
 
+import pagefit as PF
 import segments as S
 from assemble import build_pdf
 
@@ -18,13 +19,38 @@ def word(t, x, y, w=30, h=6, line=(1, 1, 1), c=95, ink=0.2, **kw):
 def test_red_print_is_not_handwriting():
     """Красная печать (предупреждение «AZ UT_ÜVIG_25 … FIGYELEMBEVÉTELÉVEL KÉSZÜLT!», красные заголовки форм) Tesseract читает
     уверенно (89–97), а тёмной краски в сером изображении у неё почти нет (красный (251,61,49) светлее порога): слово шло как
-    «бледная рукопись», не переводилось и не закрывалось плашкой — венгерский остался на листе. Красная краска — тоже краска."""
-    red = [word("AZ", 150, 72, w=11, h=6.5, c=96, ink=0.0, ink_c=0.38),
-           word("UTASÍTÁS", 229, 70, w=48, h=8.6, c=93, ink=0.041, ink_c=0.27),
-           word("FIGYELEMBEVÉTELÉVEL", 281, 70, w=126, h=9.1, c=93, ink=0.024, ink_c=0.27)]
-    hand = [word("Vale", 50, 10, c=0, ink=0.05, ink_c=0.0), word("Tamási", 10, 10, c=96, ink=0.21)]
-    out, _ = S.ocr_words(red + hand, "")
-    assert [w["t"] for w in out] == ["AZ", "UTASÍTÁS", "FIGYELEMBEVÉTELÉVEL", "Tamási"]        # рукопись — по-прежнему не слово
+    «бледная рукопись», не переводилось и не закрывалось плашкой — венгерский остался на листе. Красная краска — тоже краска
+    (PF.mark_red_ink поднимает плотность слова); рукопись (синяя паста, бледно, неуверенно) — по-прежнему рукопись."""
+    k = 300 / 72
+    img = np.full((int(120 * k), int(300 * k), 3), 255, np.uint8)
+    img[int(70 * k):int(80 * k), int(150 * k):int(277 * k)] = (251, 61, 49)               # красная строка
+    img[int(20 * k):int(30 * k), int(50 * k):int(100 * k)] = (60, 70, 170)                # синяя паста
+    red = word("FIGYELEMBEVÉTELÉVEL", 150, 70, w=127, h=10, c=93, ink=0.02)
+    pen = word("Vale", 50, 20, w=50, h=10, c=0, ink=0.05)
+    for w in (red, pen):
+        PF.mark_red_ink(w, img, 300)
+    assert red["ink_c"] > 0.9 and red["ink"] > 0.9 and pen["ink_c"] == 0.0 and pen["ink"] == 0.05
+    out, _ = S.ocr_words([red, pen, word("Tamási", 10, 90, c=96, ink=0.21)], "")
+    assert [w["t"] for w in out] == ["FIGYELEMBEVÉTELÉVEL", "Tamási"]                   # рукопись — не слово, красная печать — слово
+
+
+def test_red_line_of_a_scan_page_becomes_a_segment(tmp_path, monkeypatch):
+    """Через pdf_segments: красная строка скана (Tesseract прочитал её уверенно) — сегмент, синяя подпись рядом — нет."""
+    import llm
+    k = 150 / 72
+    im = np.full((round(842 * k), round(595 * k), 3), 255, np.uint8)
+    im[round(70 * k):round(80 * k), round(150 * k):round(277 * k)] = (251, 61, 49)
+    buf = io.BytesIO()
+    Image.fromarray(im).save(buf, "PNG")
+    d = fitz.open()
+    d.new_page(width=595, height=842).insert_image(fitz.Rect(0, 0, 595, 842), stream=buf.getvalue())
+    d.save(tmp_path / "red.pdf")
+    monkeypatch.setattr(S, "_tess_words", lambda png, dpi: [
+        {"t": "FIGYELEMBEVÉTELÉVEL", "key": (1, 1), "line": (1, 1, 1), "box": [150.0, 70.0, 277.0, 80.0], "h": 10.0, "c": 93.0}])
+    monkeypatch.setattr(llm, "chat", lambda *a, **kw: {"text": "FIGYELEMBEVÉTELÉVEL"})
+    monkeypatch.setattr(S, "OCR_DIR", tmp_path / "ocr")
+    segs, _ = S.pdf_segments(str(tmp_path / "red.pdf"), ocr=True, shots=False)
+    assert [s["text"] for s in segs] == ["FIGYELEMBEVÉTELÉVEL"]
 
 
 def test_ink_red_counts_only_saturated_red_pixels():
@@ -33,19 +59,25 @@ def test_ink_red_counts_only_saturated_red_pixels():
     img[int(10 * k):int(20 * k), int(10 * k):int(60 * k)] = (251, 61, 49)                 # красный блок
     img[int(10 * k):int(20 * k), int(100 * k):int(150 * k)] = (40, 60, 170)               # синяя паста
     img[int(30 * k):int(40 * k), int(10 * k):int(60 * k)] = (132, 132, 132)               # серая печать
-    ink = lambda x0, x1, y0=8, y1=22: S._ink_red(img, [x0, y0, x1, y1], 300)
+    ink = lambda x0, x1, y0=8, y1=22: PF.ink_red(img, [x0, y0, x1, y1], 300)
     assert ink(10, 60) > 0.5 and ink(100, 150) == 0.0 and ink(10, 60, 28, 42) == 0.0
 
 
 def test_cell_rule_read_as_letters_is_not_a_word():
     """Вертикальная линейка ячейки таблицы версий, прочитанная как «[d» (рамка 2,4 × 4,6 pt, краски 0,64, уверенность 92): знаки
-    в такую щель не вмещаются — слово шло в перевод («[d Страница» на титуле 3PR10, п. 5 EYES). Теперь это картинка (линия остаётся)."""
+    в такую щель не вмещаются — слово шло в перевод («[d Страница» на титуле 3PR10, п. 5 EYES). Теперь это картинка (линия остаётся):
+    правило общее — любые два знака и больше в рамке уже 0,3 высоты на знак при плотной краске («|1», «l|», «[d»)."""
     ws = [word("[d", 240.5, 373.9, w=2.4, h=4.6, c=92, ink=0.637), word("Oldal", 247.9, 373.7, w=20.7, h=4.8, c=96, ink=0.3)]
     pix = []
-    out, _ = S.ocr_words(ws, "", pix)
-    assert [w["t"] for w in out] == ["Oldal"] and pix == [[240.5, 373.9, 242.9, 378.5]]
-    ok = [word("Id", 10, 10, w=8, h=5, c=90, ink=0.3), word("il", 30, 10, w=4, h=7, c=90, ink=0.3)]   # настоящие короткие слова
-    assert [w["t"] for w in S.ocr_words(ok, "")[0]] == ["Id", "il"]
+    assert [f["t"] for f in S.ocr_frags(ws, pix=pix)] == ["Oldal"] and pix == [[240.5, 373.9, 242.9, 378.5]]
+    for bar in ("|1", "l|", "[l", "I|I"):                                                       # другие чтения линейки
+        pix = []
+        got = S.ocr_frags([word(bar, 100, 50, w=0.4 * len(bar), h=6, ink=0.8), word("Verzió", 106, 50, w=20, h=6)], pix=pix)
+        assert [f["t"] for f in got] == ["Verzió"] and len(pix) == 1, bar
+    ok = [word("Id", 10, 10, w=8, h=5, c=90, ink=0.3), word("il", 30, 10, w=4, h=7, c=90, ink=0.3),         # настоящие короткие слова
+          word("li", 50, 10, w=5, h=7, c=90, ink=0.5)]
+    assert [f["t"] for f in S.ocr_frags(ok, pix=[])] == ["Id il li"]
+    assert PF.ruleword(word("[d", 0, 0, w=2.4, h=4.6, ink=0.637) | {"raw": "[d"}) and not PF.ruleword(word("Id", 0, 0, w=8, h=5, ink=0.3))
 
 
 def _prose_page():

@@ -342,8 +342,6 @@ def _sim(a, b):
 
 
 COL_GAP = 12        # пустое место перед словом, от которого его левый край может быть границей столбца, pt
-COL_GAP_LINE = 1.5  # в строке прозы (от трёх пробелов) — и во столько раз больше её самого большого пробела,
-COL_GAP_MAX = 14.0  # но зазор от 14 pt — столбец и там (граничные 12–14 pt в строке прозы — пробел машинописи)
 UNSURE = 50         # короткий знак (до 3 знаков) с уверенностью ниже и без подтверждения портала — значок, не слово
 INK_HAND = 0.08     # плотность краски ниже — штрих ручки (0,03–0,05), а не печать (0,11–0,25 даже у кода в скобках)
 # подпись поля «Aláírás:», «Dátum:» — всегда печать: пунктир рядом снижает плотность краски, а рукопись двоеточием
@@ -354,24 +352,6 @@ SYMBOL = re.compile(r"[\w<>≤≥=±÷+%°Δ×→]")
 CHECKBOX = re.compile(r"^\[?[LlI1|]{0,2}\]$|^\[$")
 # подпись поля, слипшаяся с рукописью или линейкой слева: «oílNév:», «INév:»
 GLUED = re.compile(r"^(.+?)([A-ZÁÉÍÓÖŐÚÜŰ][a-záéíóöőúüű]{2,}:)$")
-
-
-INK_RED = 0.15      # доля красных пикселей в рамке слова, от которой краска — красная печать (у слов красной плашки 0,2–0,38)
-
-
-def _eff_ink(w):
-    """Плотность краски слова для решения «печать или рукопись»: тёмная (серое изображение) и красная печать (_ink_red) — красная
-    краска светлая в сером, но это краска, а не бледный штрих ручки."""
-    ink, red = w.get("ink", 1), w.get("ink_c", 0)
-    return max(ink, red) if red >= INK_RED else ink
-
-
-def _ruleword(w):
-    """Кусок линейки ячейки, прочитанный знаками («[d», «|1»): два знака и больше в рамке уже 0,3 высоты на знак (буква уже не бывает),
-    и краска плотная — линия, не слово. Это картинка: не переводится и не закрывается плашкой («[d Страница» в шапке таблицы
-    версий титула 3PR10)."""
-    x0, y0, x1, y1 = w["box"]
-    return len(w["raw"]) >= 2 and (x1 - x0) < 0.3 * (y1 - y0) * len(w["raw"]) and w.get("ink", 0) > 0.45
 
 
 def _boxlike(w, line_h):
@@ -420,7 +400,7 @@ def ocr_words(words, portal_text, pix=None):
         hs_ = sorted(by_line[w["line"]])
         tall = len(hs_) >= 2 and w["h"] > 1.6 * hs_[(len(hs_) - 1) // 2]
         # подпись поля — по исходному тексту: очистка пунктира съедает двоеточие («Aláírás:…»)
-        cf, ink = w.get("c", 100), _eff_ink(w)
+        cf, ink = w.get("c", 100), w.get("ink", 1)
         # рукописные цифры Tesseract читает и с уверенностью 67–75 («242.» вместо «2017.»), но краски в них
         # как у рукописи (0,04–0,075): очень бледное — рукопись всегда, бледное — при уверенности ниже 80
         w["hand"] = (ink < 0.05 or (cf < 80 and ink < INK_HAND) or (cf < 60 and tall)) and not LABEL.match(w["raw"])
@@ -428,7 +408,6 @@ def ocr_words(words, portal_text, pix=None):
         # буллет • читается как «e»: одиночный знак ниже строки и почти сплошная краска (0,66 против 0,2–0,45
         # у букв) — картинка, как флажок; иначе «e» переводилось в «е», а сам буллет закрывался плашкой (32RDGT)
         w["box_like"] |= len(w["raw"]) == 1 and w["h"] < 0.7 * hs_[(len(hs_) - 1) // 2] and ink > 0.55
-        w["box_like"] |= _ruleword(w)
     # флажки и буллеты — картинки: в сверку с порталом не идут ни у Tesseract, ни у портала — иначе кусок
     # «• RD 3.1.;» портала доставался буллету «e» и пропадал вместе с ним (32RDGT, 07.10)
     if pix is not None:
@@ -564,7 +543,13 @@ def ocr_frags(words, vs=(), pix=None):
     остаются пикселями (число, дата, штамп: PF.value_tail)."""
     from layout import GAP, CODE_GAP, _vrule_in, _union
     from rows import code_cells, code_enum               # коды через запятую — перечисление, не ячейки (02VE25)
+    import pagefit as PF
     words = _split_at_rules(words, vs)
+    bars = [w for w in words if PF.ruleword(w)]          # обрывок линейки ячейки, прочитанный знаками («[d»), — картинка, не слово
+    if bars:
+        if pix is not None:
+            pix += [w["box"] for w in bars]
+        words = [w for w in words if not PF.ruleword(w)]
     inks = sorted(w["ink"] for w in words if "ink" in w)
     # рамка слова, задетого рукописной подписью, раздута по высоте («Aláírás:» 9,4 pt вместо 3,8): по вертикали —
     # как у обычных слов той же строки, иначе и кегль перевода, и белая плашка вырастают и затирают подпись
@@ -584,18 +569,12 @@ def ocr_frags(words, vs=(), pix=None):
     # которого слово начинается после пустого места от COL_GAP на своей строке (слева на той же высоте — другое слово),
     # у двух и более строк один (±3 pt) — граница столбца, фрагмент через неё не продолжается
     starts = []
-    # строка прозы: от трёх зазоров-пробелов (меньше COL_GAP), и зазор перед словом не шире полутора самого большого из них и меньше COL_GAP_MAX, — пробел
-    # (машинопись с пробелами по 10–12 pt), не пустое место перед столбцом: 12,0 pt перед словом совпали с краем 125 pt у трёх чужих
-    # строк листа, и «A KU 2.6. | pontjában…» рвалась (3PR10 стр. 2). Строка формы (подпись ⇥ значение, поля) пробелов столбцов не теряет
+    # зазор в 12–14 pt в строке прозы (машинопись: пробелы по 10–12 pt) — пробел, не пустое место перед столбцом (PF.wide_gap)
     gaps = {}
     for a, b_ in zip(words, words[1:]):
-        if a["line"] == b_["line"] and b_["box"][0] - a["box"][2] < COL_GAP:
+        if a["line"] == b_["line"]:
             gaps.setdefault(a["line"], []).append(b_["box"][0] - a["box"][2])
-
-    def wide(w, g):
-        """Зазор g перед словом w — пустое место перед столбцом: от COL_GAP и, в строке прозы, заметно шире её пробелов."""
-        spaces = gaps.get(w["line"], [])
-        return g >= COL_GAP and (len(spaces) < 3 or g >= min(COL_GAP_LINE * max(spaces), COL_GAP_MAX))
+    wide = lambda w, g: PF.wide_gap(g, gaps.get(w["line"], ()), COL_GAP)
     for w in words:
         b = w["box"]
         left = [v["box"][2] for v in words if v is not w and v["box"][2] <= b[0] + 1
@@ -618,27 +597,7 @@ def ocr_frags(words, vs=(), pix=None):
             cur = {"t": w["t"], "bbox": list(w["box"]), "line": w["line"], "ws": [w]}
     if cur is not None:
         out.append(cur)
-    import pagefit as PF
-    # значение между двумя подписями («Dátum: 71127 JAN 2 Név: …») — пиксели оригинала, как хвост строки (value_tail): подпись и остаток
-    # строки — свои куски, между ними место значения (в pix); штамп «2022 JAN 25», прочитанный «71127 JAN 2», не рисуется заново
-    pieces = []
-    for f in out:
-        runs = PF.value_runs(f["ws"])
-        pos = 0
-        for a, b in runs:
-            if pix is not None:
-                pix.append(_union([w["box"] for w in f["ws"][a:b]]))
-            if a > pos:
-                pieces.append(dict(f, ws=f["ws"][pos:a]))
-            pos = b
-        if not runs:
-            pieces.append(f)
-        elif pos < len(f["ws"]):
-            pieces.append(dict(f, ws=f["ws"][pos:]))
-    for f in pieces:
-        f["t"] = " ".join(w["t"] for w in f["ws"])
-        f["bbox"] = _union([w["box"] for w in f["ws"]])
-    out = pieces
+    out = PF.split_values(out, pix, _union)      # значение между двумя подписями — пиксели оригинала
     for f in out:
         ws = f.pop("ws"); f.pop("line")
         # значение после подписи («Dátum: 2025 JAN 31», «Verziószám: 2») — пиксели оригинала, не текст (PF.value_tail)
@@ -731,20 +690,6 @@ def _ink(gray, box, dpi):
     x0, y0, x1, y1 = (int(v * k) for v in box)
     cut = gray[max(y0, 0):max(y1, y0 + 1), max(x0, 0):max(x1, x0 + 1)]
     return float((cut < 128).mean()) if cut.size else 0.0
-
-
-def _ink_red(rgb, box, dpi):
-    """Доля красных пикселей в рамке слова. В сером изображении красная печать (251, 61, 49) светлее порога тёмной краски (_ink),
-    и уверенно прочитанное слово шло как бледная рукопись (красное предупреждение «… FIGYELEMBEVÉTELÉVEL KÉSZÜLT!», красные
-    заголовки форм: 30YCGT, 30RYBSZGT, 30RVRYTSBIGT). Красный — насыщенный и яркий: R выше G и B не меньше чем на 90; ручка — синяя
-    или чёрная, красной краски в ней нет."""
-    import numpy as np
-    k = dpi / 72
-    x0, y0, x1, y1 = (int(v * k) for v in box)
-    cut = rgb[max(y0, 0):max(y1, y0 + 1), max(x0, 0):max(x1, x0 + 1)].astype(np.int16)
-    if not cut.size:
-        return 0.0
-    return float(((cut[:, :, 0] - np.maximum(cut[:, :, 1], cut[:, :, 2]) >= 90) & (cut[:, :, 0] >= 150)).mean())
 
 
 def _stroke(gray, box, dpi):
@@ -920,7 +865,7 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
                 rgb = np.frombuffer(px.samples, dtype=np.uint8).reshape(px.height, px.width, px.n)[:, :, :3]
                 for w in cached["words"]:
                     w["stroke"] = _stroke(gray, w["box"], dpi_tess)
-                    w["ink_c"] = round(_ink_red(rgb, w["box"], dpi_tess), 3)
+                    PF.mark_red_ink(w, rgb, dpi_tess)
                 f.write_text(json.dumps(cached, ensure_ascii=False), encoding="utf-8")
                 return cached
         png = work / f"p{pno:04d}.png"
@@ -933,7 +878,7 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
         rgb = np.frombuffer(px.samples, dtype=np.uint8).reshape(px.height, px.width, px.n)[:, :, :3]
         for w in ws:
             w["ink"] = round(_ink(gray, w["box"], dpi_tess), 3)
-            w["ink_c"] = round(_ink_red(rgb, w["box"], dpi_tess), 3)
+            PF.mark_red_ink(w, rgb, dpi_tess)
             w["stroke"] = _stroke(gray, w["box"], dpi_tess)
         ih, iv = rules_from_image(gray, dpi_tess)
         out = {"words": ws, "hs": ih, "vs": iv}
