@@ -29,6 +29,16 @@ def family(font):
 # заголовком EPM приклеивался к нему, значок пропадал (30PR132GT л. 35, NIGHT2_EYES п. 12)
 MARK = re.compile(r"^\s*(\(?\d+(\.\d+)*\.?\)?|[a-zA-Z]\.?\)|[A-Z]\.\d*\.?|[-–−•▪◦·●○■□☐△▲\uf020-\uf0ff]|\d+/\d+\.|\d+\./"
                   r"|\[\d+\])\s")
+# голое число без точки и скобки и слово со строчной — номер пункта или количество: решает строка выше (is_mark)
+QUANTITY = re.compile(r"^\s*\d+\s+[a-záéíóöőúüűа-яё]")
+
+
+def is_mark(t, prev=None):
+    """Строка t начинается маркером или номером пункта (MARK). Голое число и слово со строчной (QUANTITY) — количество,
+    если строка prev над ней фразу не закончила (lines.mid_phrase: запятая, служебное слово): «…7 bar-os gőzrendszer
+    (RX),» / «5 bar-os gőzrendszer (RY) …» (1SZ01 л. 8) шло отдельным абзацем посреди фразы; иначе — номер, как прежде:
+    «AE-re jóváhagyott ütemben» / «3 havonta egyszer» (1SZ01 л. 97) — два значения столбца, «1 Előzmények» — номер."""
+    return bool(MARK.match(t)) and not (QUANTITY.match(t) and prev is not None and mid_phrase(prev, t))
 
 
 CODE_GAP = 8.0      # код и значение в строке перечня («TK41D001 ⇥ KM2/1»: 10–24 pt, слова прозы — 3–4 pt) — разные куски
@@ -36,6 +46,18 @@ CODE_GAP = 8.0      # код и значение в строке перечня 
 
 def _union(bbs):
     return [min(b[0] for b in bbs), min(b[1] for b in bbs), max(b[2] for b in bbs), max(b[3] for b in bbs)]
+
+
+def _one_line(a, b):
+    """Рамки a и b — куски одной строки: верх и низ в пределах 2,5 pt, или одна рамка по высоте внутри другой (±1 pt), и
+    большая не выше меньшей вдвое. Надстрочный знак поднимает верх рамки куска («tartályokból 3812 m» | «³ vizet bocsátott
+    …», HAKSER л. 14: верх выше на 3,7 pt, куски не склеивались, «³ vizet …» шёл в абзац строки выше); маркер «•» другого
+    шрифта мельче строки (3PR10 л. 10: низ на 4 pt выше). Две строки абзаца так не совпадают: рамки перекрываются частично
+    (моноширинные рамки выше шага), а буквица или рамка в две строки выше вдвое."""
+    if abs(a[1] - b[1]) < 2.5 and abs(a[3] - b[3]) < 2.5:
+        return True
+    big, small = (a, b) if a[3] - a[1] >= b[3] - b[1] else (b, a)
+    return big[1] - 1 <= small[1] and small[3] <= big[3] + 1 and big[3] - big[1] <= 2 * (small[3] - small[1])
 
 
 def _ink_x1(f):
@@ -228,33 +250,49 @@ def frags_from_text(page, vs=()):
                         cur["item"] = True
             if cur is not None:
                 out.append(cur)
-    # выключенная строка: PyMuPDF отдаёт каждое слово отдельной «строкой» — склеить по базовой линии
-    out.sort(key=lambda f: (round((f["bbox"][1] + f["bbox"][3]) / 4), f["bbox"][0]))
+    # выключенная строка: PyMuPDF отдаёт каждое слово отдельной «строкой» — склеить по базовой линии. Порядок — по линиям:
+    # куски одной строки с первым куском линии (_one_line) — одна линия, слева направо. Прежде — по округлённой
+    # середине, и куски одной строки попадали в разные ряды: жирный кусок на 1,8 pt выше («Ha» | «n ≥ 1000 fordulat/perc,
+    # akkor a», 1SZ01 л. 26) шёл раньше левого и не склеивался
+    out.sort(key=lambda f: ((f["bbox"][1] + f["bbox"][3]) / 2, f["bbox"][0]))
+    rows_, row = [], None
+    for f in out:
+        if row is not None and _one_line(row[0]["bbox"], f["bbox"]):
+            row.append(f)
+        else:
+            row = [f]
+            rows_.append(row)
+    out = [f for row in rows_ for f in sorted(row, key=lambda f: f["bbox"][0])]
     merged = []
     for f in out:
         # кусок той же строки левее — ближайший из последних, а не просто последний: высоты середин округляются в разные
         # ряды сортировки, и кусок другого столбца вставал между знаком пункта и его текстом (TU л. 2: «− » | «O» столбца
         # отметок | «be kell kapcsolni …» — знак приклеивался к концу пункта выше: «…biztosítani −»)
-        same = [x for x in merged[-4:] if abs(x["bbox"][1] - f["bbox"][1]) < 2.5 and abs(x["bbox"][3] - f["bbox"][3]) < 2.5
-                and x["bbox"][2] <= f["bbox"][0]]
+        # нахлёст до 1 pt — кернинг на стыке кусков («3812 m» | «³ vizet …» заходит на 0,2 pt)
+        same = [x for x in merged[-4:] if _one_line(x["bbox"], f["bbox"]) and x["bbox"][2] <= f["bbox"][0] + 1]
         m = max(same, key=lambda x: x["bbox"][2]) if same else (merged[-1] if merged else None)
-        if m is not None and abs(m["bbox"][1] - f["bbox"][1]) < 2.5 and abs(m["bbox"][3] - f["bbox"][3]) < 2.5 \
-                and 0 <= f["bbox"][0] - m["bbox"][2] <= GAP and not _vrule_in(vs, _ink_x1(m), f["bbox"][0], f["bbox"][1], f["bbox"][3]) \
+        if m is not None and _one_line(m["bbox"], f["bbox"]) \
+                and -1 <= f["bbox"][0] - m["bbox"][2] <= GAP and not _vrule_in(vs, _ink_x1(m), f["bbox"][0], f["bbox"][1], f["bbox"][3]) \
                 and not (f["bbox"][0] - m["bbox"][2] >= CODE_GAP and code_cells(m["t"], f["t"])) \
                 and not (_lead(m["t"]) and _image_between(icons, m["bbox"][2], f["bbox"][0], f["bbox"][1], f["bbox"][3])) \
                 and not (BULLET.match(m["t"].strip()) and f["bbox"][0] - m["bbox"][2] > 3):
             m["t"] = m["t"].rstrip() + " " + f["t"].lstrip()
             m["bbox"] = _union([m["bbox"], f["bbox"]]); m["chars"] += f["chars"]
         else:
-            if m is not None and BULLET.match(m["t"].strip()) and abs(m["bbox"][3] - f["bbox"][3]) < 2.5 \
+            # маркер и текст пункта — разные «строки» PyMuPDF; одна линия — по _one_line: у «•» другого шрифта низ рамки на
+            # 4 pt выше текста, и текст пункта «YA13D001» не помечался — уходил в конец абзаца выше (3PR10 л. 10)
+            if m is not None and BULLET.match(m["t"].strip()) and _one_line(m["bbox"], f["bbox"]) \
                     and 3 < f["bbox"][0] - m["bbox"][2] <= 2 * GAP:
-                f["item"] = True                        # маркер и текст пункта — разные «строки» PyMuPDF
+                f["item"] = True
             merged.append(f)
     out = _split_columns(merged, [(fitz.Rect(w[:4]) * rot, w[4]) for w in page.get_text("words")])
     for f in out:
         n = sum(c[0] for c in f["chars"]) or 1
         f["size"] = max(f["chars"], key=lambda c: c[0])[1]
-        f["bold"] = sum(c[0] for c in f["chars"] if c[2]) > n / 2
+        nb = sum(c[0] for c in f["chars"] if c[2])
+        f["bold"] = nb > n / 2
+        if nb >= 3 and n - nb >= 3:
+            f["mixed"] = True                   # часть строки жирная: начертанием абзац не рвёт (group)
         fam = {}
         for c in f["chars"]:
             fam[c[3]] = fam.get(c[3], 0) + c[0]
@@ -457,7 +495,9 @@ def group(frags, hs, vs=(), form=False, rows=None):
         best = None
         # маркер пункта отдельным фрагментом — сам по себе: маркеры соседних пунктов слипались в один «• •», и пункт
         # оставался без своего (Eskom 331-165, 17.10)
-        plain = not MARK.match(f["t"]) and not f.get("item") and not BULLET.match(f["t"].strip())
+        # «5 bar-os …» — номер или количество, решает строка выше (is_mark): кандидат — только абзац, чью фразу она продолжает
+        qty = bool(MARK.match(f["t"]) and QUANTITY.match(f["t"]))
+        plain = (not MARK.match(f["t"]) or qty) and not f.get("item") and not BULLET.match(f["t"].strip())
         starts = plain and numbered(f["bbox"])
         # номер строки таблицы напротив последней строки ячейки («0.» против «…szintváltozásának módosítása…»): у первой
         # строки абзаца своего номера нет — продолжение фразы, а не новый пункт (30TH50, 28.10)
@@ -477,6 +517,8 @@ def group(frags, hs, vs=(), form=False, rows=None):
                 # строк перекрываются; строка ниже верха предыдущей на шаг — продолжение, а не та же строка
                 tall = gap < 0 and -0.7 * size <= gap and y0 - last[1] >= 0.85 * size
                 plast = p["frags"][-1]["t"]
+                if qty and is_mark(f["t"], plast):
+                    continue
                 tail = abs(x0 - last[0]) < 3 and orphan_tail(plast, f["t"])
                 cont = (abs(x0 - last[0]) < 3 and mid_phrase(plast, f["t"])) or tail
                 # рамки ещё выше (жирный моноширинный: 19 pt при кегле 10 и шаге 11, 3SZ23): середины строк — через шаг
@@ -484,15 +526,16 @@ def group(frags, hs, vs=(), form=False, rows=None):
                 tall = tall or (cont and gap < 0 and 0.85 * size <= (y0 + y1 - last[1] - last[3]) / 2 <= 1.8 * size)
                 if not (-0.35 * size <= gap <= 0.6 * size or tall):
                     continue
-                # пустая строка между строками — абзац кончился: середины строк дальше 1,8 кегля (строки абзаца — через
-                # 1,0–1,4 кегля, через пустую строку — 2,1–2,4; замер по 7 документам). Рамки моноширинных строк выше шага,
-                # и зазор рамок пустую строку не видел: «02TK47S298 … zárva.» + ряд псевдотаблицы «30TD97S201» (02VE25
-                # л. 44), «… 1*RD31S062,» + «Az alábbi armatúrák ZÁRVA:» (1SZ01 л. 8)
-                if (y0 + y1 - last[1] - last[3]) / 2 > 1.8 * size:
-                    continue
                 if min(x1, px1) - max(x0, px0) <= 0:
                     continue
-                if p["bold"] != f["bold"] or abs(p["size"] - f["size"]) > 1.5:
+                # начертание — у соседних строк; строка, где жирное — только часть («Ha **n ≥ 1000 fordulat/perc**, akkor
+                # a», 1SZ01 л. 26), начертанием абзац не рвёт — если строки с одного левого края и фраза явно продолжается
+                # (не «Verziószám: 0.» справа над строкой шапки «Megnevezés: …» во всю ширину, 30SZBVTIT TU; не «…3.8.-tól
+                # FOLYTATNI.» и метка «MEGJEGYZÉS:» под ней, 1SZ01 л. 26)
+                pl = p["frags"][-1]
+                if pl["bold"] != f["bold"] and not ((pl.get("mixed") or f.get("mixed")) and abs(x0 - last[0]) < 3
+                                                    and (mid_phrase(plast, f["t"]) or f["t"][:1].islower())) \
+                        or abs(p["size"] - f["size"]) > 1.5:
                     continue
                 # граница ряда: линейка между строками (белая подложка под текстом, soft, продолжению фразы не помеха) или
                 # у двух строк слева свои якоря (код, номер пункта) — это строки таблицы, а не строки абзаца: колонка
@@ -553,6 +596,7 @@ def group(frags, hs, vs=(), form=False, rows=None):
             best["frags"].append(f); best["bbox"] = _union([best["bbox"], f["bbox"]])
     for p in pars:
         p["text"] = join_lines([f["t"] for f in p["frags"]])
+        p["bold"] = all(f["bold"] for f in p["frags"])          # абзац со строкой частью жирной — не жирный целиком
         fam = {}
         for f in p["frags"]:
             fam[f.get("family", "serif")] = fam.get(f.get("family", "serif"), 0) + len(f["t"])

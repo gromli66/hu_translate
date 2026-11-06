@@ -21,11 +21,24 @@ def hyphen_break(prev, nxt):
     return bool(HYPHEN.search(prev.rstrip())) and nxt.lstrip()[:1].isalpha()
 
 
+# служебное слово в конце строки — фраза на нём не кончается: артикль, союз (языки пар проекта: венгерский, русский,
+# английский; строчными — прописное «A» в конце строки бывает и обозначением)
+OPEN_TAIL = re.compile(r"(?:^|\s)(?:a|az|egy|és|vagy|illetve|ill\.|the|an|and|or|of|и|или|а|в|на|с|по|к|для)$")
+
+
 def mid_phrase(prev, nxt):
     """Строка оборвалась на середине фразы: в ней ≥ 3 слов, она кончается буквой или запятой, следующая начинается
-    строчной буквой. Одиночные значения столбика («rendben» ×4) и пункты с точкой не подходят."""
+    строчной буквой. Одиночные значения столбика («rendben» ×4) и пункты с точкой не подходят.
+    Продолжение с числа или кода — когда строка кончается запятой или служебным словом: «…háromutú szelepet a» /
+    «30UJ97B001 felé NYITNI.» (3SZ17 л. 9), «…7 bar-os gőzrendszer (RX),» / «5 bar-os gőzrendszer …» (1SZ01 л. 8) шли
+    порознь. Строка, кончающаяся словом или точкой, перед кодом — нет: там код обычно новая строка перечня."""
     prev, nxt = prev.rstrip(), nxt.lstrip()
-    return len(prev.split()) >= 3 and bool(re.search(r"[^\W\d_]$|,$", prev)) and nxt[:1].isalpha() and nxt[:1].islower()
+    if len(prev.split()) < 3:
+        return False
+    if re.search(r"[^\W\d_]$|,$", prev) and nxt[:1].isalpha() and nxt[:1].islower():
+        return True
+    first = nxt.split()[0] if nxt else ""
+    return bool(re.search(r"\d", first)) and (prev.endswith(",") or bool(OPEN_TAIL.search(prev)))
 
 
 def caps_wrap(out, ln):
@@ -35,12 +48,17 @@ def caps_wrap(out, ln):
     return bool(a and b) and (len(a.group(1)) >= 4 or len(b.group(1)) >= 4)
 
 
-def glue(prev, nxt):
+def glue(prev, nxt, ranges=True):
     """Перенос слова: prev кончается «-», nxt — продолжение того же слова → склеенный текст без пробела (дефис уходит,
     если он не часть слова); не перенос — None. Продолжение со строчной буквы — перенос, кроме союза после дефиса;
-    с прописной — только слово из прописных (caps_wrap)."""
+    с прописной — только слово из прописных (caps_wrap); с цифры после «цифра-» — диапазон («1000-» + «1200» →
+    «1000-1200», дефис на месте; прежде «1000- 1200», а копия правил в сборке, docx_layout._join, давала «1000-1200», E9.7г).
+    ranges=False — без диапазонов: у слов Tesseract «118-» в конце строки и номер штампа «10135772» в начале следующей —
+    разные числа; склеенное «118-10135772» не сверялось с чтением портала и терялось (титулы-сканы, 20 JSON)."""
     if not prev.endswith("-") or SUSPENDED.match(nxt):
         return None
+    if ranges and nxt[:1].isdigit() and prev[-2:-1].isdigit():
+        return prev + nxt
     if nxt[:1].islower():
         return (prev if KEEP.search(prev) else prev[:-1]) + nxt
     if caps_wrap(prev, nxt):
