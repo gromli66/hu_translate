@@ -235,6 +235,27 @@ def pixels_only(text, known=None):
     return not ("label-acr" in kinds and "name" not in kinds)
 
 
+def value_runs(words, known=None):
+    """[(a, b)] — куски words[a:b] посреди фрагмента скана, что остаются пикселями: значение между двумя подписями («Dátum: 71127 JAN 2
+    Név: …»). Начало — слово после подписи с «:», конец — перед следующей подписью с «:»; внутри числа, неизвестные сокращения из
+    заглавных и знаки, и хотя бы одно число (дата, номер) — одно сокращение («Szervezet: ÜVFO |») переводится, как прежде. Хвост строки —
+    value_tail. Неверно прочитанное значение штампа («2022 JAN 25» → «71127 JAN 2») не рисуется заново."""
+    known = known_words() if known is None else known
+    kinds = [_kind(w["t"], known) for w in words]
+    runs, i, n = [], 1, len(words)
+    while i < n:
+        if kinds[i - 1] == "label" and words[i - 1]["t"].rstrip().endswith(":"):
+            j = i
+            while j < n and kinds[j] in ("num", "acr", ""):
+                j += 1
+            if i < j < n and kinds[j] == "label" and words[j]["t"].rstrip().endswith(":") and "num" in kinds[i:j]:
+                runs.append((i, j))
+                i = j
+                continue
+        i += 1
+    return runs
+
+
 def value_tail(words, known=None):
     """Сколько первых слов фрагмента скана остаётся текстом: значение после подписи («Dátum: 2025 JAN 31», «Verziószám: 2»)
     — числа, даты и неизвестные сокращения из заглавных — не читается и не перерисовывается, это пиксели оригинала
