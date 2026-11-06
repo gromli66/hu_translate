@@ -529,10 +529,11 @@ def _split_at_rules(words, vs):
             near = sorted((i for i in range(max(0, k - 2), min(len(t), k + 3)) if t[i] in "|Jj[]!lI1"),
                           key=lambda i: abs(i - k))
             a, b = (t[:near[0]], t[near[0] + 1:]) if near else (t[:k], t[k:])
+        # inbox — знаки в рамке куска: raw остаётся чтением целого слова (PF.ruleword меряет по inbox)
         if a:
-            out.append(dict(w, t=a, box=[x0, y0, x - 1, y1]))
+            out.append(dict(w, t=a, box=[x0, y0, x - 1, y1], inbox=a))
         if b:
-            out.append(dict(w, t=b, box=[x + 1, y0, x1, y1]))
+            out.append(dict(w, t=b, box=[x + 1, y0, x1, y1], inbox=b))
     return out
 
 
@@ -574,7 +575,7 @@ def ocr_frags(words, vs=(), pix=None):
     for a, b_ in zip(words, words[1:]):
         if a["line"] == b_["line"]:
             gaps.setdefault(a["line"], []).append(b_["box"][0] - a["box"][2])
-    wide = lambda w, g: PF.wide_gap(g, gaps.get(w["line"], ()), COL_GAP)
+    wide = lambda w, g: PF.wide_gap(g, gaps.get(w["line"], ()), COL_GAP, w["t"])
     for w in words:
         b = w["box"]
         left = [v["box"][2] for v in words if v is not w and v["box"][2] <= b[0] + 1
@@ -707,14 +708,15 @@ def _stroke(gray, box, dpi):
 
 
 def _dehyphen(words):
-    """Склейка переносов на концах строк Tesseract (внутри абзаца Tesseract) — по общим правилам переноса (lines.glue)."""
+    """Склейка переносов на концах строк Tesseract (внутри абзаца Tesseract) — по общим правилам переноса (lines.glue).
+    Рамка склейки — рамка первой половины: inbox — её знаки («mű-» у «működik»; PF.ruleword меряет по ним)."""
     from lines import glue
     out = []
     for w in words:
         prev = out[-1] if out else None
         word = glue(prev["t"], w["t"], ranges=False) if prev and prev["line"] != w["line"] and prev["key"] == w["key"] else None
         if word:
-            out[-1] = dict(out[-1], t=word)
+            out[-1] = dict(out[-1], t=word, inbox=prev.get("inbox", prev["t"]))
         else:
             out.append(dict(w))
     return out

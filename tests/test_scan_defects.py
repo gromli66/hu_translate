@@ -80,6 +80,23 @@ def test_cell_rule_read_as_letters_is_not_a_word():
     assert PF.ruleword(word("[d", 0, 0, w=2.4, h=4.6, ink=0.637) | {"raw": "[d"}) and not PF.ruleword(word("Id", 0, 0, w=8, h=5, ink=0.3))
 
 
+def test_hyphenated_bold_word_is_not_a_cell_rule():
+    """Слово с переносом склеивается (_dehyphen) с рамкой первой половины: «mű-» (10 pt) + «ködik» = «működik» — 7 знаков в рамке
+    шириной на 3, и «обрывок линейки» мерил по 7 (0,3 × 6 × 7 = 12,6 > 10): у жирного слова (краска > 0,45) оно уходило в картинку
+    целиком, вместе со второй половиной (на кэше Tesseract набора у 259 склеек из 950 так; спасал только порог краски, ≤ 0,355)."""
+    ws = [word("A", 10, 10, w=4, line=(1, 1, 1), ink=0.5), word("szivattyú", 18, 10, w=40, line=(1, 1, 1), ink=0.5),
+          word("mű-", 62, 10, w=10, line=(1, 1, 1), ink=0.5), word("ködik.", 10, 20, w=26, line=(1, 1, 2), ink=0.5)]
+    words, _ = S.ocr_words(S._dehyphen(ws), "")
+    assert " ".join(f["t"] for f in S.ocr_frags(words, pix=[])) == "A szivattyú működik."
+
+
+def test_piece_of_word_cut_at_cell_rule_is_measured_by_its_own_letters():
+    """Слово поперёк линейки ячейки («szerintijA.2.2.») режется на куски (_split_at_rules), а raw остаётся чтением целого слова:
+    15 знаков на кусок в 26 pt — оба куска жирного слова сходили за «обрывок линейки» и пропадали."""
+    ws = [word("szerintijA.2.2.", 100, 10, w=50, h=6, ink=0.5, raw="szerintijA.2.2.")]
+    assert [f["t"] for f in S.ocr_frags(ws, [(5, 20, 127)], pix=[])] == ["szerinti", "A.2.2."]
+
+
 def _prose_page():
     """Строка машинописного абзаца (моноширинный, пробелы по 10–12 pt) и три другие строки листа, где слово после зазора ≥ 12 pt
     стоит у x ≈ 122–127 (таблица версий, штамп даты): по ним «граница столбца» 125 pt находилась и у слова прозы."""
@@ -98,6 +115,38 @@ def test_prose_line_is_not_cut_at_false_column_edge():
     перевод рисовался поверх (3PR10 стр. 2, N6 EYES). Зазор строки в обычных пределах её пробелов столбцом не считается."""
     got = [f["t"] for f in S.ocr_frags(_prose_page()) if f["bbox"][1] > 230 and f["bbox"][1] < 240]
     assert got == ["A KU 2.6. pontjában az ideiglenes módosítással történő"]
+
+
+def _signature_row(y, org):
+    """Строка подписей формы (30RVRWVTBIGT стр. 2, «6./ Készítette»): ячейки «Dátum: …», «Név: …», «Szervezet: …», «Aláírás:» без
+    линеек, пробелы 9–10 pt, перед «Aláírás:» — 12,0 pt."""
+    line = (11, 1, y)
+    return [word(t, x, y, w=w, h=7, line=line) for t, x, w in (
+        ("Dátum:", 78.5, 28.8), ("2026.04.16.", 117.4, 46.5), ("Név:", 173.0, 22.8), ("Balogh", 206.2, 28.0),
+        ("Béla", 237.6, 17.5), ("Szervezet:", 289.7, 45.1), (org, 344.2, 17.0), ("Aláírás:", 373.2, 35.0))]
+
+
+def test_signature_row_cells_are_not_glued_across_cell_border():
+    """В строке подписей больше трёх пробелов по 9–10 pt, и правило N6 («зазор 12–14 pt в строке с пробелами машинописи — пробел»)
+    склеивало ячейки через границу: «Szervezet: ÜIO Aláírás:» — одна плашка на две ячейки, линейка между ними под ней (3SZ23,
+    30RVRWVTBIGT, 30RVRYVTBIGT, 30RA+SGT, 01-02FMP0BIGT). Слово с прописной после такого зазора — начало ячейки (подпись поля)."""
+    pix = []
+    got = [f["t"] for f in S.ocr_frags(_signature_row(237.6, "ÜIO") + _signature_row(261.6, "RTO"), pix=pix)]
+    assert "Aláírás:" in got and not any("Szervezet" in t and "Aláírás" in t for t in got), got
+    assert "Dátum:" in got and not any("2026" in t for t in got)            # дата между подписями — пиксели, как прежде
+
+
+def test_table_header_column_edge_survives_typewriter_spaces():
+    """Шапка таблицы версий «Oldal Verzió Oldal Í Verzió Oldal» идёт ячейками через 11,5–12,2 pt (и 3–5 pt у «Í»): по правилу N6 она
+    сходила за строку машинописи, «Verzió» переставало быть краем столбца, и «TU» ⇥ «-ban» под ним шли одним куском — а за ним
+    в абзац уходил номер страницы строки ниже («TU -ban 1», 30RR2126GT, 30YBGT, 01-02FMP0BIGT, 1SZ01, 3SZ23 стр. 3)."""
+    head = [("Oldal", 75.1, 16.3), ("Verzió", 103.4, 19.5), ("Oldal", 134.4, 16.1), ("Í", 155.5, 3.6), ("Verzió", 162.5, 19.2),
+            ("Oldal", 193.4, 16.1)]
+    ws = [word(t, x, 473.3, w=w, h=5, line=(28, 1, 1)) for t, x, w in head]
+    ws += [word(t, x, 490.6, w=w, h=7, line=(30, 1, 1)) for t, x, w in (("TU", 76.8, 13.2), ("-ban", 103.4, 19.2),
+                                                                         ("9", 140.4, 4.3), ("0", 170.2, 4.3))]
+    got = [f["t"] for f in S.ocr_frags(ws, pix=[])]
+    assert "TU" in got and not any("TU" in t and "-ban" in t for t in got), got
 
 
 def test_real_column_gap_still_cuts_header_line():
