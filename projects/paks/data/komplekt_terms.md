@@ -1734,11 +1734,10 @@
 | helyreállítás befejezése / A helyreállítás befejezése / „Helyreállítás befejezése” időtartam | до завершения восстановления | риск высокий; проверено Claude; ÜFK DSZ: срок в графе «время выполнения»; как название срока — «Завершение восстановления» |
 | helyreállítási idő / (helyreállítási idő) / a 360 órás helyreállítási idő | время восстановления |  |
 | helyreállító intézkedés / helyreállító / helyreállítási intézkedéseket | восстановительная мера |  |
-| helyszín / helyszíni / helyszínét / helyszínen | место установки (по месту) | риск высокий; варианты: место (по месту), по месту; helyszínen → по месту |
-| helyszíni / helyszín / helyszínen | местный (по месту) | риск высокий; a helyszínen → по месту |
+| helyszín / helyszíni / helyszínét / helyszínen | место установки (по месту) | риск высокий; helyszínen → по месту; helyszíni → местный; шапка «Helyszín» → место установки; helyszínei → места проведения |
 | helyszíni beavatkozás / helyszíni beavatkozást | действие по месту |  |
 | helyszíni bejárás / Helyszíni bejárással | обход по месту |  |
-| helyszíni ellenőrzés / helyszínen / Helyszínt ellenőrizni / helyszíni ellenőrzést | проверка (осмотр) по месту | варианты: проверка по месту, осмотр (обход) по месту |
+| helyszíni ellenőrzés / Helyszínt ellenőrizni / helyszíni ellenőrzést | проверка (осмотр) по месту | варианты: проверка по месту, осмотр (обход) по месту |
 | helyszíni gépész beavatkozás / helyszíni gépész beavatkozással | действие машиниста-обходчика по месту | риск высокий; gépész → машинист (обходчик); не «механик» |
 | helyszíni mintavételi hely / helyszíni mintavételi helyei | местная точка отбора проб |  |
 | helyszíni mérés / helyszíni méréssel / helyszíni méréssekkel | местное измерение (по месту) |  |
