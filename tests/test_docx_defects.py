@@ -423,3 +423,15 @@ def test_code_lines_of_one_cell_with_marks_keep_indent():
     ind = {p.text: p.paragraph_format.left_indent for c in t._cells for p in c.paragraphs if p.text}
     assert round(ind["30RZ31,51,71S202 zárva"].pt) == 27 and round(ind["30RZ31,51,71S203 zárva"].pt) == 27
     assert ind["A mérés után a szelepeket nyitni kell."] is None
+
+
+def test_minus_label_in_own_style_piece_is_found_without_it():
+    """Харнесс после 3c12c25: у TU «−» стоит своим куском начертания — «<f1>− </f1><f2>30EV felől …</f2>». Список «тире»
+    снимает знак, и сборка спрашивает память «30EV felől …» без меток, а вариант без метки был только
+    «<f1></f1><f2>…</f2>» — «нет перевода» и потеря по id (TU __new: 0 → 5). Пустой кусок после снятия метки — прочь,
+    единственный оставшийся — без меток."""
+    hu = "<f1>− </f1><f2>30EV felől turbinavédelmi táblák betáplálását biztosítani</f2>"
+    ru = "<f1>− </f1><f2>обеспечить питание панелей защиты турбины со стороны 30EV</f2>"
+    m = B.Memory([(hu, ru)])
+    assert m("30EV felől turbinavédelmi táblák betáplálását biztosítani") == \
+        "обеспечить питание панелей защиты турбины со стороны 30EV"

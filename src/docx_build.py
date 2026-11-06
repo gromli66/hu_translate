@@ -525,10 +525,17 @@ class Memory:
         # пункт списка: номер «a.» в памяти — частью текста, в сборке номер даёт автонумерация (docx_struct.relist);
         # в тексте с метками начертания номер — внутри первой метки: «<f1>a. az UTS …</f1><f2>ping x_pb</f2>»
         mh, mr = LABEL_T.match(hu), LABEL_RU_T.match(ru)
+        # метка своим куском начертания («<f1>− </f1><f2>30EV felől …</f2>», TU): после неё пустой кусок — прочь,
+        # единственный оставшийся — без меток; иначе пункт «тире» без знака («30EV felől …») не находился в памяти
+        # (харнесс после 3c12c25: TU __new «нет перевода» 0 → 5)
+        def bare(t):
+            t = re.sub(r"<f(\d+)>\s*</f\1>", "", t)
+            m1 = re.fullmatch(r"\s*<f(\d+)>(.*)</f\1>\s*", t, re.S)
+            return m1.group(2) if m1 and not TAGS.search(m1.group(2)) else t
         if mh and mr:
-            self.add(mh.group(1) + hu[mh.end():], mr.group(1) + ru[mr.end():])
+            self.add(bare(mh.group(1) + hu[mh.end():]), bare(mr.group(1) + ru[mr.end():]))
         elif mh:                                    # перевод без метки (тире перевод опустил) — как есть
-            self.add(mh.group(1) + hu[mh.end():], ru)
+            self.add(bare(mh.group(1) + hu[mh.end():]), ru)
 
     def expected(self, seg):
         """Перевод, который сборка должна положить на место сегмента: его собственный (res[id].ru), без id — по тексту, как
