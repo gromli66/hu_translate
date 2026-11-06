@@ -232,7 +232,12 @@ def frags_from_text(page, vs=()):
     out.sort(key=lambda f: (round((f["bbox"][1] + f["bbox"][3]) / 4), f["bbox"][0]))
     merged = []
     for f in out:
-        m = merged[-1] if merged else None
+        # кусок той же строки левее — ближайший из последних, а не просто последний: высоты середин округляются в разные
+        # ряды сортировки, и кусок другого столбца вставал между знаком пункта и его текстом (TU л. 2: «− » | «O» столбца
+        # отметок | «be kell kapcsolni …» — знак приклеивался к концу пункта выше: «…biztosítani −»)
+        same = [x for x in merged[-4:] if abs(x["bbox"][1] - f["bbox"][1]) < 2.5 and abs(x["bbox"][3] - f["bbox"][3]) < 2.5
+                and x["bbox"][2] <= f["bbox"][0]]
+        m = max(same, key=lambda x: x["bbox"][2]) if same else (merged[-1] if merged else None)
         if m is not None and abs(m["bbox"][1] - f["bbox"][1]) < 2.5 and abs(m["bbox"][3] - f["bbox"][3]) < 2.5 \
                 and 0 <= f["bbox"][0] - m["bbox"][2] <= GAP and not _vrule_in(vs, _ink_x1(m), f["bbox"][0], f["bbox"][1], f["bbox"][3]) \
                 and not (f["bbox"][0] - m["bbox"][2] >= CODE_GAP and code_cells(m["t"], f["t"])) \

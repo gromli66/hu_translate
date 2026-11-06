@@ -231,3 +231,24 @@ def test_blank_line_ends_paragraph_with_tall_monospace_boxes():
     c = _fr("02TD90D001 Indítási feltétel, (a kiválasztott tartály ürítő és töltő", (70.8, 76.1, 531.1, 94.9), 11.04)
     d = _fr("vezetéke nyitva, a többi tartály ürítő és töltő vezetéke zárva és", (70.8, 90.4, 531.1, 109.1), 11.04)
     assert _texts([c, d]) == [c["t"] + " " + d["t"]]
+
+
+def test_line_pieces_merge_across_sort_rows():
+    """Знак пункта «−» и текст пункта — куски одной строки (у Word знак — символьным шрифтом, своей «строкой» PyMuPDF), а
+    правее, на полпункта выше, — отметка «O» столбца отметок. Высоты середин округляются в ряды сортировки по-разному, и
+    «O» вставал между знаком и текстом: знак оставался один и приклеивался к концу пункта выше («…biztosítani −», TU л. 2),
+    а текст пункта шёл без знака — дерево разметки ищет «− be kell kapcsolni …», пары не было. Проверка на сетке высот
+    строки: при любой высоте знак и текст — один кусок."""
+    bad = []
+    for k in range(40):
+        y = 100 + 0.1 * k                   # знак на 0,35 pt выше текста, «O» — на 1,2 pt (как TU л. 2)
+        d = fitz.open()
+        pg = d.new_page(width=595, height=842)
+        pg.insert_text((168.3, y - 0.35), "−", fontname="F0", fontfile=FONT, fontsize=8.6)
+        pg.insert_text((186.3, y), "be kell kapcsolni a 31, 32HC02 turbinavédelmi táblákat", fontname="F0",
+                       fontfile=FONT, fontsize=9)
+        pg.insert_text((510.6, y - 1.2), "O", fontname="F0", fontfile=FONT, fontsize=9)
+        ts = [" ".join(f["t"].split()) for f in LY.frags_from_text(pg)]
+        if "− be kell kapcsolni a 31, 32HC02 turbinavédelmi táblákat" not in ts:
+            bad.append((y, ts))
+    assert not bad, bad[:2]
