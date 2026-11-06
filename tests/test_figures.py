@@ -488,3 +488,16 @@ def test_build_pdf_step_failure_is_loud_and_page_is_still_built(tmp_path, monkey
     assert any("_ink_span" in f and "лист 1" in f for f in fails)
     log = capsys.readouterr().out
     assert "Traceback" in log and "_foreign_ink" in log and "scan.pdf, лист 1" in log          # в лог — причина и место
+
+
+def test_form_label_replaces_translation_whose_short_form_was_made_for_the_label():
+    """Сокращение для PDF, сделанное pipeline.fit для подписи по словарю формы (ru_pdf_of — подпись), перевод записи не
+    защищает: подпись по словарю подставляется, и сокращение к ней подходит (ревью 03.11, 🟡3); своё сокращение — защищает."""
+    import assemble as A
+    segs = [{"id": i, "page": 0, "text": t, "loc": {}} for i, t in enumerate(["NYILVÁNTARTÓ LAP", "Dátum:", "Dátum:"])]
+    res = {"0": {"ru": "ЛИСТ РЕГИСТРАЦИИ"},
+           "1": {"ru": "Число:", "ru_pdf": "Дат.:", "ru_pdf_of": "Дата:"},                # сделано для подписи словаря
+           "2": {"ru": "Числа:", "ru_pdf": "Ч.:", "ru_pdf_of": "Числа:"}}                 # своё — защищает
+    out, n, form = FIG.apply_form_labels(segs, res)
+    assert form == "nyilv" and n == 1 and out["2"]["ru"] == "Числа:"
+    assert out["1"]["ru"] == "Дата:" and A.pdf_text(out["1"]) == "Дат.:"

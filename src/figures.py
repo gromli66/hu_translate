@@ -300,16 +300,18 @@ PROTECTED = ("edited", "tm", "copied", "polish", "ru_pdf")      # перевод
 def apply_form_labels(segs, res):
     """Подписи известной формы — по словарю: один перевод на подпись во всех документах формы (портал давал «Да»/«да»/
     «ДА», «Подпись:»/«Подпись: |»). Не трогаются перевод редактора (edited), память переводов (tm), сегмент без
-    изменения (copied), шлифованный (polish: словарь заказчика) и сокращённый для PDF (ru_pdf). → (res, сколько подписей заменено, форма); res — новый словарь, исходный не меняется."""
+    изменения (copied), шлифованный (polish: словарь заказчика) и сокращённый для PDF (ru_pdf, сделанный для этого же перевода — termvar.own_short). → (res, сколько подписей заменено, форма); res — новый словарь, исходный не меняется."""
     form = known_form(segs)
     labels = form_labels().get(form) or {} if form else {}
     if not labels:
         return res, 0, form
+    from termvar import own_short
     out, n = dict(res), 0
     for s in segs:
         r = res.get(str(s["id"]))
         k = label_key(s["text"])
-        if not r or not r.get("ru") or k not in labels or any(r.get(f) for f in PROTECTED):
+        if not r or not r.get("ru") or k not in labels or own_short(r) \
+                or any(r.get(f) for f in PROTECTED if f != "ru_pdf"):
             continue
         if r["ru"] != labels[k]:
             out[str(s["id"])] = dict(r, ru=labels[k])

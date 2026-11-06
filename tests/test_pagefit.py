@@ -150,3 +150,41 @@ def test_flowchart_diamond_and_outlined_blocks_hold_their_text(tmp_path):
     ru = [w for w in fitz.open(str(out))[0].get_text("words") if any("а" <= c.lower() <= "я" for c in w[4]) and w[0] < 200]
     # внутри ромба: каждое слово — в вписанном прямоугольнике половинного размера (70..130 × 80..120)
     assert len(ru) == 3 and all(70 <= w[0] and w[2] <= 130 and 80 <= w[1] and w[3] <= 120 for w in ru), ru
+
+
+def test_fit_trial_sees_unified_translation_in_narrow_cell(tmp_path, monkeypatch):
+    """pipeline.fit мерил тесноту по переводу «как в JSON», а сборка берёт единый перевод одинаковых текстов
+    (termvar.same_source): короткий перевод в узкой ячейке заменялся длинным из широкой, не проверенным на тесноту, и
+    в PDF ужимался мельче 0,7 без короткой формулировки (ревью 03.11, 🟡3). Теперь пробная сборка — по тому же переводу,
+    а сокращение остаётся действительным, когда единый перевод подставлен."""
+    import json
+    import llm
+    import pipeline as P
+    import termvar
+    hu = "Nyomás ellenőrzése"
+    long_ru, short_ru = "Контроль давления в системе подачи теплоносителя", "Давление"
+    doc = fitz.open()
+    pg = doc.new_page(width=600, height=200)
+    pg.insert_text((20, 40), hu, fontsize=8)
+    pg.insert_text((20, 100), hu, fontsize=8)
+    for i in range(4):
+        pg.insert_text((20, 130 + 12 * i), "Rendben", fontsize=8)
+    src = tmp_path / "doc.pdf"
+    doc.save(src)
+    segs = [_seg(0, hu, [20, 32, 100, 44], avail=[20, 32, 560, 44]),                  # широкая ячейка: длинный перевод — единый
+            _seg(1, hu, [20, 92, 100, 104], avail=[20, 92, 70, 104])]                 # узкая: короткий перевод заменится длинным
+    segs += [_seg(2 + i, "Rendben", [20, 122 + 12 * i, 60, 132 + 12 * i], avail=[20, 122 + 12 * i, 560, 132 + 12 * i])
+             for i in range(4)]
+    res = {"0": {"ru": long_ru}, "1": {"ru": short_ru}, **{str(2 + i): {"ru": "Хорошо"} for i in range(4)}}
+    out, _ = termvar.same_source(segs, res)
+    assert out["1"]["ru"] == long_ru                                                   # сборка подставит единый перевод
+    work = tmp_path / "work"
+    (work / "json").mkdir(parents=True)
+    P.save_doc(work, "doc", {"file": str(src), "segs": segs, "res": res, "info": {}})
+    monkeypatch.setattr(llm, "chat", lambda msgs, max_tokens=0, tag="": {"text": "Контроль давления"})
+    P.fit(work)
+    d = json.loads((work / "json" / "doc.json").read_text(encoding="utf-8"))
+    assert d["res"]["1"]["ru_pdf"] == "Контроль давления" and d["res"]["1"]["ru_pdf_of"] == long_ru
+    final, _ = termvar.same_source(d["segs"], d["res"])                                 # как в сборке: единый + сокращение
+    assert final["1"]["ru"] == long_ru and A.pdf_text(final["1"]) == "Контроль давления"
+    assert "ru_pdf" not in d["res"]["0"] or d["res"]["0"]["ru_pdf_of"] == long_ru
