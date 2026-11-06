@@ -147,3 +147,55 @@ def test_top_line_repeated_lower_is_dropped_only_before_its_heading(tmp_path):
     texts = _texts(blocks)
     assert sum(t == "Sziasztok!" for _, t in texts) == 2                 # обычный повтор ниже — оба на месте
     assert sum(t == "1.3/1. SZBV kazetta leesése" for _, t in texts) == 1  # название в рамке перед заголовком — прочь
+
+
+def _printed_pdf(path, pages=7, ver=None):
+    """Листы бланка с версией в шапке (серия листов со своей версией) и подвалом печати «Nyomtatva: 2026-06-01 08:28»
+    и номером листа «N/46» правее на той же строке (30RL2126GT, 30RR0102ÁTJGT); номера листа в шапке нет."""
+    from test_text_forms import _segs
+    ver = ver or {}
+    doc = fitz.open()
+    for pno in range(pages):
+        pg = doc.new_page(width=595, height=842)
+        sh = pg.new_shape()
+        sh.draw_rect(fitz.Rect(60, 90, 540, 700))
+        sh.draw_line((60, 130), (540, 130))
+        for x in (140, 440):
+            sh.draw_line((x, 130), (x, 700))
+        sh.finish(color=(0, 0, 0), width=0.6)
+        sh.commit()
+        put = lambda x, y, t: pg.insert_text((x, y), t, fontsize=9, fontname="tiro")
+        put(62, 40, "Azonosító: 30XYZ")
+        put(400, 40, f"Verziószám: {ver.get(pno, 0)}")
+        put(62, 56, "Megnevezés: Próba")
+        put(64, 124, "Sorsz.")
+        put(200, 124, "Művelet, ellenőrzés")
+        for k in range(14):
+            put(64, 150 + 22 * k, f"{pno + 1}.{k + 1}.")
+            put(200, 150 + 22 * k, f"A {pno + 1}. lap {k + 1}. lépése megtörtént.")
+        put(62, 800, "Nyomtatva: 2026-06-01 08:28")
+        put(298, 800, f" {pno + 2}/46")
+    doc.save(str(path))
+    return _segs(path)
+
+
+def _zone_texts(z):
+    rows = (z.get("stamp_paras") or {}).get("rows") or []
+    return [part[0] for r in rows for part in r["parts"]] + [c for r in z.get("stamp") or [] for c in r["cells"]]
+
+
+def test_series_counter_is_a_word_not_digits_glued_to_print_time(tmp_path):
+    """Счётчик листа серии (раздел листов со своей версией, zones(own=True)) метился по знакам подряд: «08:28» и
+    номер «2/46» правее на той же строке склеивались в «08:282/46», число «282» — счётчик, и поле PAGE съедало минуты:
+    в подвале «Nyomtatva: 2026-06-01 08:» + PAGE + PAGE + «/46» (30RL2126GT, 30RR0102ÁTJGT; E9_DESIGN §5, F-3).
+    Счётчик — по словам: минуты остаются текстом, полем — только номер листа."""
+    src = tmp_path / "printed.pdf"
+    segs = _printed_pdf(src, ver={3: 1, 4: 1})
+    blocks, info = DL.load(str(src), segs, text=True)
+    L = D.layout(str(src), blocks, content=info.get("content_boxes"))
+    assert [(v["from"], v["to"]) for v in L["variants"]] == [(4, 5)]
+    for z in [L] + L["variants"]:
+        texts = _zone_texts(z)
+        assert any(t.endswith("08:28") for t in texts), texts           # минуты — текстом
+        marked = [t for t in texts if D.PAGE_MARK in t]
+        assert marked and all(t == D.PAGE_MARK + "/46" for t in marked), texts   # полем — только номер листа
