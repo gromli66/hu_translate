@@ -12,6 +12,7 @@ import geom as GM
 import patterns as PT
 import sids as SIDS
 from docx_struct import text_of, insert_imgs, PAGE_MARK
+from rows import FORM_MARK
 from segments import unpua
 
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -1668,7 +1669,13 @@ class Builder:
         # под ней 30HU175GT, +19 pt; строка, разрезанная на подстроки, — тоже) — с отступом от её края, пока идут
         # правее. Прочие сдвиги в ячейке (код по центру подстолбца, строка через линию столбца) — нет: от самого левого
         # края столбца отступ получали сотни абзацев (30THHAGT, 30RVRWVTBIGT, ред-тим 02.11)
-        nest, intro = {}, {}
+        # и подпункт пункта с отметками: строка с кода оборудования со своей отметкой в ряду, правее строки над ней в
+        # столбце («30TE61S201 tömören zár» под п. 9.4.4 30HU675GT, «30TE32S001 visszacsapó szelep nyitva» под 4.1.4
+        # 30HU375GT, +20…35 pt; просмотр 06.11, п. 8) — с отступом от неё
+        nest, intro, above = {}, {}, {}
+        marks = lambda c: bool(c["blocks"]) and all(
+            x["k"] == "p" and FORM_MARK.match(unpua(text_of(x["runs"])).strip()) for x in c["blocks"])   # △ Wingdings — U+F072
+        code_first = re.compile(rf"\s*{PT.EQUIP_CODE}\b")
         for row in rows:
             if all("span" in c for c in row):
                 for i, c in enumerate(row):
@@ -1680,7 +1687,13 @@ class Builder:
                         if intro.get(a) is not None and x.get("align") == "left" and 6 <= x0 - intro[a] <= 72:
                             nest[id(x)] = x0 - intro[a]
                             continue
+                        if above.get(a) is not None and x.get("align") == "left" and 6 <= x0 - above[a] <= 72 \
+                                and code_first.match(text_of(x["runs"])) and len(c["blocks"]) == 1 \
+                                and any(marks(q) for j, q in enumerate(row) if j != i):
+                            nest[id(x)] = x0 - above[a]
+                            continue
                         intro[a] = x0 if text_of(x["runs"]).rstrip().endswith(":") else None
+                        above[a] = x0
         # строки столбца, выключенные в оригинале вправо: у трёх и больше абзацев столбца на листе (не шапки) общий
         # правый край (±1,5 pt, и у последней строки), а середины расходятся на 10 pt и больше (не столбец по центру:
         # коды одной ширины, «Наименование», значения «20 бар» по центру — 3SZ17, 3SZ23, 30PR25GT, ред-тим 02.11), и

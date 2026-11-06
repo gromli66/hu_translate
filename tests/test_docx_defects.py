@@ -233,3 +233,33 @@ def test_sheet_after_whole_page_picture_starts_on_new_page(tmp_path):
     pb = {x.text: bool(x.paragraph_format.page_break_before) for x in doc.paragraphs if x.text}
     assert pb["Azonosító: 3PR10"]                                   # лист после скана — с новой страницы
     assert not pb["TARTALOMJEGYZÉK"] and not pb["A rajz alatt a szöveg folytatódik."]   # после мелкой картинки — поток
+
+
+def test_sub_line_with_own_mark_keeps_indent_under_its_item():
+    """30HU675GT стр. 33 (п. 9.4.4, 9.4.7), 30HU375GT стр. 12 (п. 4.1.4): строки под пунктом — «30TE61S201 tömören zár»,
+    «30TE32S001 visszacsapó szelep nyitva», каждая со своей отметкой △ в столбце отметок, — в оригинале с отступом от
+    текста пункта (+20…35 pt), в DOCX шли с края текста столбца: вложенный перечень знали только после строки с
+    двоеточием («1-es hurok:»). Подпункт с кода оборудования, со своей отметкой в ряду, правее строки над ним в
+    столбце, — с отступом от неё. Строка без своей отметки — как прежде."""
+    import tempfile, os
+    g = lambda x0, top: {"page": 1, "top": top, "bottom": top + 10, "x0": x0, "x1": x0 + 200, "first_x0": x0, "size": 10,
+                         "lines": 1}
+    run = lambda t: {"t": t, "font": "Times New Roman", "size": 10, "b": False, "i": False, "color": "000000"}
+    para = lambda t, x0, top: {"k": "p", "runs": [run(t)], "geom": g(x0, top), "seg": True, "align": "left"}
+    edges = {"top": True, "bottom": True, "left": True, "right": True}
+    cell = lambda ps: {"blocks": ps, "th": False, "geom": ps[0]["geom"] if ps else None, "span": 1, "edges": edges}
+    rows = [[cell([para("9.4.4.", 84, 290)]),
+             cell([para("5 perc elteltével ellenőrizni, hogy a nyomáscsökkenés kisebb, mint 5,4 bar", 128, 290)]),
+             cell([para("△", 480, 290)])],
+            [cell([]), cell([para("30TE61S201 tömören zár", 163, 304)]), cell([para("△", 480, 304)])],
+            [cell([]), cell([para("30TE62S201 tömören zár", 163, 316)]), cell([para("\uf072", 480, 316)])],   # △ Wingdings
+            [cell([]), cell([para("30TE63S201 nyitva", 150, 330)]), cell([])]]           # без своей отметки
+    tab = {"k": "table", "rows": rows, "borders": True, "frame": {"xs": [71, 120, 453, 520], "ys": [288, 302, 314, 328, 342]},
+           "geom": {"page": 1, "top": 288, "bottom": 342, "x0": 71, "x1": 520, "first_x0": 71, "size": 10}}
+    out = os.path.join(tempfile.mkdtemp(), "sub.docx")
+    B.Builder(B.Memory([]), lambda img: png(), PROFILE).build([tab], out, dict(LAYOUT, first_is_body=True))
+    t = Document(out).tables[0]
+    ind = {p.text: p.paragraph_format.left_indent for c in t._cells for p in c.paragraphs if p.text}
+    assert ind["30TE61S201 tömören zár"] is not None and round(ind["30TE61S201 tömören zár"].pt) == 35
+    assert round(ind["30TE62S201 tömören zár"].pt) == 35
+    assert ind["30TE63S201 nyitva"] is None
