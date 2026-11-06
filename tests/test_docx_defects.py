@@ -70,3 +70,52 @@ def test_last_sheet_before_blank_tail_page_is_one_sheet(tmp_path):
     assert bld.fit_want.get(last) == 1
     sec = doc.sections[last]
     assert sec.different_first_page_header_footer and "(прод.)" in _sec_head(sec)
+
+
+def _frame_doc(tmp_path, name, pages):
+    """Лист с рамкой шапки (линии 35/68/82/110) и сегментами pages[pno] = [(текст, x0, y0, x1, align, role, bold)]."""
+    doc = fitz.open()
+    segs = []
+    for pno, lines in enumerate(pages):
+        page = doc.new_page(width=595, height=842)
+        sh = page.new_shape()
+        for y in (35, 68, 82, 110):
+            sh.draw_line((70, y), (559, y))
+        sh.finish(color=(0, 0, 0), width=0.6)
+        sh.commit()
+        for text, x0, y0, x1, align, role, bold in lines:
+            segs.append({"id": len(segs), "page": pno, "text": text,
+                         "loc": {"bbox": [x0, y0, x1, y0 + 9], "frags": [[x0, y0, x1, y0 + 9]], "size": 9.7,
+                                 "bold": bold, "align": align, "family": "serif", "ocr": False, "roles": True,
+                                 "role": role}})
+    path = tmp_path / f"{name}.pdf"
+    doc.save(path)
+    return str(path), segs
+
+
+def _texts(blocks):
+    return [(b["geom"]["page"], B.text_of(b["runs"]).strip()) for b in B._paras(blocks)]
+
+
+def test_heading_just_under_header_frame_with_other_code_is_kept(tmp_path):
+    """30RR2126GT стр. 10–12 (E9_DESIGN §5, F-1): заголовки «A 30RR24S002 / 25S002 / 26S002 ellenőrzése» стоят сразу
+    под рамкой шапки, верх строки на 1,2 pt выше её низа (91,4 при рамке 92,6), — допуск «под рамкой» был по верху
+    строки, 1 pt: строка считалась «в рамке», и бегущее название (тот же текст вверху прошлого листа, цифры — маской)
+    снимало два заголовка из трёх. «Под рамкой» — по середине строки."""
+    head = [("Azonosító: 30RR2126GT", 77, 40, 220, "left", None, False),
+            ("Oldalszám: {n}", 460, 57, 538, "left", None, False)]
+    pages = []
+    codes = {3: "30RR24S002", 4: "30RR25S002", 5: "30RR26S002"}        # три листа из восьми — не колонтитул
+    for k in range(8):
+        lines = [(t.format(n=k + 7), *rest) for t, *rest in head]
+        if k in codes:
+            lines.append((f"A {codes[k]} ellenőrzése", 90, 108.8, 300, "left", None, True))
+        lines.append((f"A {k + 1}. lépés: a szelepet nyitni, a mérést elvégezni és rögzíteni.", 90, 130, 480,
+                      "left", None, False))
+        pages.append(lines)
+    src, segs = _frame_doc(tmp_path, "rr", pages)
+    blocks, _ = DL.load(src, segs, text=True)
+    texts = [t for _, t in _texts(blocks)]
+    for code in ("30RR24S002", "30RR25S002", "30RR26S002"):
+        assert f"A {code} ellenőrzése" in texts
+

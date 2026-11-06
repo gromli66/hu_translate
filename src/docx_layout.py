@@ -1537,7 +1537,11 @@ def load(src, segs, text=False):
     # месте почти на каждом листе (раздел — с нового листа) и снималась как повтор с прошлого листа на 39 листах из 68
     # (20.10); лист без рамки — как прежде
     frames = rules[4]
-    under = lambda s: frames[s["page"]] is not None and s["loc"]["bbox"][1] >= frames[s["page"]] - 1
+    # «под рамкой» — по середине строки: по верху с допуском 1 pt заголовок сразу под рамкой (верх 91,4 при рамке 92,6,
+    # 30RR2126GT стр. 10–12) считался «в рамке», и «A 30RR25S002 ellenőrzése» снималась повтором прошлого листа (цифры —
+    # маской) — два заголовка из трёх пропадали (E9_DESIGN §5, F-1)
+    under = lambda s: frames[s["page"]] is not None and \
+        (s["loc"]["bbox"][1] + s["loc"]["bbox"][3]) / 2 >= frames[s["page"]]
     titled = lambda s: s["id"] not in heads and not under(s) and len(re.sub(r"\W", "", s["text"])) >= 6 \
         and re.search(r"[^\W\d_]{3}", s["text"])
     # пробелы — без счёта: OCR читает название то с двойным пробелом после номера, то с одним («1.1.  Turbina …»
