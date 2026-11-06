@@ -1305,6 +1305,28 @@ def test_line_hyphen_joins_word_keeps_suspended_and_compound():
         assert p0["runs"][0]["t"] == want
 
 
+def test_struct_line_break_after_hyphen_is_extraction_join():
+    """E9.7а: перенос строки после «-» в абзаце разметки — по lines.glue, как строки текста страницы (layout.join_lines):
+    «ELLENŐR-» / «ZÉS HELYE» — «ELLENŐRZÉS HELYE» (30YCGT TU: прежде «ELLENŐR- ZÉS» не совпадал с текстом страницы и
+    уходил порталу отдельным переводом), «meg-» / «kezdhető» (30BOXVILGT_TU); союз, пара аббревиатур, не перенос — с
+    пробелом; дефис переноса уходит и из прогона другого начертания."""
+    import layout as LY
+
+    def word(t, x0, top, font="Arial"):
+        return [{"text": c, "x0": x0 + 5 * i, "x1": x0 + 5 * i + 5, "top": top, "size": 10, "fontname": font,
+                 "page_number": 1} for i, c in enumerate(t)]
+    for a, b in [("ELLENŐR-", "ZÉS HELYE"), ("meg-", "kezdhető"), ("a fűtő-", "és hűtő"), ("RO-", "ROP"),
+                 ("1000-", "1200 bar"), ("szöveg", "folytatás"), ("ÜFK-", "nak")]:
+        runs = D._runs([{"ch": c} for c in word(a, 100, 100) + word(b, 100, 114)])
+        assert B.text_of(runs) == LY.join_lines([a, b]), (a, b)
+    runs = D._runs([{"ch": c} for c in word("Módosí-", 100, 100) + word("tás", 100, 114, "Arial-BoldMT")])
+    assert [r["t"] for r in runs] == ["Módosí", "tás"]
+    assert not any(D.BREAK in r.get("t", "") for r in runs)
+    # «\x00» — значок символьного шрифта в тексте PDF («□ sikerességi kritérium»), не метка переноса: остаётся
+    runs = D._runs([{"ch": c} for c in word("\x00 sikeres", 100, 100) + word("ELLENŐR-", 100, 114) + word("ZÉS", 100, 128)])
+    assert B.text_of(runs) == "\x00 sikeres ELLENŐRZÉS"
+
+
 def test_assembly_join_is_extraction_join():
     """E9.7г: строка, пришитая к абзацу при сборке (docx_layout._join), — тот же текст, что строки абзаца при извлечении
     (layout.join_lines → lines.glue): одно правило переноса. Строка × строка — таблицей, включая прежние расхождения

@@ -155,6 +155,31 @@ def _fmt(ch):
 
 
 SUP = str.maketrans("0123456789+-oоº°", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻°°°°")
+BREAK = "\ufdd0"          # место переноса после «-» до решения lines.glue (_unbreak); несимвол Юникода: «\x00» бывает в тексте PDF (значок «□»)
+
+
+def _unbreak(runs):
+    """Места BREAK в прогонах абзаца — по общему правилу переноса lines.glue, как строки текста страницы
+    (layout.join_lines): «ELLENŐR-» + «ZÉS HELYE» — «ELLENŐRZÉS HELYE», «meg-» + «kezdhető» — «megkezdhető», «fűtő-» +
+    «és» — «fűtő- és», «ÜFK-» + «nak» — «ÜFK-nak»; не перенос — пробел. Решение — по всему тексту абзаца до и после
+    места (союз и слово прописными видны только целиком). Прежде здесь всегда стоял пробел: «ELLENŐR- ZÉS» не совпадал с
+    текстом страницы, и абзац уходил порталу отдельным переводом (struct_only, E9.7)."""
+    import lines as LN
+    txt = [i for i, r in enumerate(runs) if "t" in r]
+    for n, i in enumerate(txt):
+        while BREAK in runs[i]["t"]:
+            k = runs[i]["t"].index(BREAK)
+            before = "".join(runs[j]["t"] for j in txt[:n]) + runs[i]["t"][:k]
+            after = (runs[i]["t"][k + 1:] + "".join(runs[j]["t"] for j in txt[n + 1:])).replace(BREAK, " ")
+            g = LN.glue(before, after)
+            runs[i]["t"] = runs[i]["t"][:k] + ("" if g is not None else " ") + runs[i]["t"][k + 1:]
+            if g is not None and len(g) < len(before) + len(after):          # дефис переноса — прочь
+                if k:
+                    runs[i]["t"] = runs[i]["t"][:k - 1] + runs[i]["t"][k:]
+                else:
+                    j = next(j for j in reversed(txt[:n]) if runs[j]["t"])
+                    runs[j]["t"] = runs[j]["t"][:-1]
+    return runs
 SUB = str.maketrans("0123456789+-", "₀₁₂₃₄₅₆₇₈₉₊₋")
 
 
@@ -189,7 +214,7 @@ def _runs(items):
             same_line = abs(ch["top"] - prev["top"]) < 0.5 * prev["size"] or min(bot(ch), bot(prev)) - max(
                 float(ch["top"]), float(prev["top"])) > 0.3 * min(bot(ch) - float(ch["top"]), bot(prev) - float(prev["top"]))
             if not same_line and runs and "t" in runs[-1] and not runs[-1]["t"].endswith((" ", "\t")):
-                t = " " + t
+                t = (BREAK if runs[-1]["t"].endswith("-") else " ") + t      # после «-» — решит glue (_unbreak)
             elif same_line and (ch["x0"] - prev["x1"] > 1.8 * prev["size"] or id(ch) in hang) and t != " " \
                     and id(ch) not in just and runs and "t" in runs[-1] and not runs[-1]["t"].endswith("\t"):
                 runs[-1]["t"] = runs[-1]["t"].rstrip(" ") + "\t"
@@ -203,6 +228,7 @@ def _runs(items):
             runs.append(dict(f, t=t, x=float(ch["x0"]), x1=float(ch["x1"]) if t.strip() else None, top=float(ch["top"]),
                              page=ch.get("page_number")))
         prev = ch
+    _unbreak(runs)
     # выключка по ширине даёт широкие пробелы в каждом промежутке строки — это не табуляции («Linux⇥alatt⇥például»):
     # табуляция — один-два разрыва в абзаце
     if sum(r.get("t", "").count("\t") for r in runs) >= 3:
