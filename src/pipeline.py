@@ -14,7 +14,7 @@
 
 Рабочая папка: <work>/ocr (кэш OCR), <work>/json/<док>.json (состояние), <work>/out (результаты).
 Ответы портала кэшируются (cache/), перезапуск после обрыва дешёвый."""
-import os, re, json, html, time, difflib, threading, collections
+import os, re, json, html, time, difflib, threading, collections, ntpath
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
@@ -224,6 +224,17 @@ def _replace_attachment(d, key, data, fname, mime_reset=False):
         d.xref_set_key(x, "Subtype", "null")             # тип файла сменился (.doc → .docx)
 
 
+def _portfolio_source(m, work):
+    """Исходное портфолио по описи: путь из описи, а нет файла по нему (опись записана на другой машине: путь Windows в
+    контейнере — задание 3c2f3e 03.11 упало на сборке) — файл с тем же именем в папке in/ задания рядом с work."""
+    src = Path(m["source"])
+    if not src.exists():
+        alt = Path(work).parent / "in" / ntpath.basename(m["source"])     # ntpath: и «\», и «/»
+        if alt.exists():
+            return alt
+    return src
+
+
 def rebuild_portfolios(work, out, sfx="_RU"):
     """Переведённое портфолио: копия исходного, где каждое вложение заменено своим переводом (PDF — PDF «на месте»,
     DOCX — DOCX). Заказчик получает один файл той же структуры, что прислал; переводы по отдельности тоже остаются."""
@@ -231,7 +242,8 @@ def rebuild_portfolios(work, out, sfx="_RU"):
     renamed = _renamed(work)
     for man in sorted((Path(work) / "unpacked").glob("*/_portfolio.json")):
         m = json.loads(man.read_text(encoding="utf-8"))
-        d = fitz.open(m["source"])
+        src = _portfolio_source(m, work)
+        d = fitz.open(src)
         keys = d.embfile_names()                 # по ключам, не по номерам: удаление сдвигает номера
         done = []
         for idx, name in m["map"].items():
@@ -256,7 +268,7 @@ def rebuild_portfolios(work, out, sfx="_RU"):
         if done:
             portfolio_cover(d[0], done, sfx.lstrip("_").lower())
         done = len(done)
-        stem = Path(m["source"]).stem
+        stem = src.stem
         target = portfolio_target(out, stem, sfx, m["map"].values())
         stale = Path(out) / f"{stem}{sfx}_портфолио.pdf"
         if target != stale and stale.exists() and _is_portfolio(stale):

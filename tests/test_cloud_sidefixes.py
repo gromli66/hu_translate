@@ -424,6 +424,31 @@ def test_old_doc_attachment_replaced_by_its_docx_translation(tmp_path):
     assert "30W kezi.docx" in d[0].get_text().replace("\n", " ")                 # и в перечне на обложке
 
 
+def test_portfolio_source_found_in_job_in_when_manifest_path_is_foreign(tmp_path):
+    """Опись портфолио хранит полный путь исходника: перезаписанная скриптом на хосте (путь Windows), в контейнере она
+    не открывалась — сборка задания падала целиком (03.11, 3c2f3e: «no such file: 'C:\\project\\…\\in\\30RVRXTSBIGT.PDF'»).
+    Нет файла по пути описи — исходник с тем же именем в папке in/ задания."""
+    import json
+    import fitz
+    job = tmp_path / "job"
+    (job / "in").mkdir(parents=True)
+    _portfolio(job / "in" / "30X.PDF", [("30X lap.pdf", _pdf("Lap."))])
+    work, out = job / "work", job / "work" / "out"
+    P.unpack_portfolio(job / "in" / "30X.PDF", work / "unpacked" / "30X")
+    out.mkdir(parents=True)
+    (out / "30X lap_RU.pdf").write_bytes(_pdf("List."))
+    man = work / "unpacked" / "30X" / "_portfolio.json"
+    for foreign in ("C:\\project\\hu_translate\\data\\jobs\\nojob\\in\\30X.PDF", "/app/data/jobs/nojob/in/30X.PDF"):
+        m = json.loads(man.read_text(encoding="utf-8"))
+        m["source"] = foreign
+        man.write_text(json.dumps(m, ensure_ascii=False), encoding="utf-8")
+        P.rebuild_portfolios(work, out)
+        d = fitz.open(out / "30X_RU.pdf")
+        assert fitz.open(stream=d.embfile_get(0), filetype="pdf")[0].get_text().strip() == "List."
+        d.close()
+        (out / "30X_RU.pdf").unlink()
+
+
 def test_replacing_later_attachment_keeps_earlier_untouched(tmp_path, monkeypatch):
     """embfile_del PyMuPDF 1.28 удаляет не ту пару массива имён (idx и idx+1 вместо 2·idx и 2·idx+1): замена вложения
     не первым по счёту отдавала предыдущему чужое содержимое — картинка или непереведённый документ перед переведённым
