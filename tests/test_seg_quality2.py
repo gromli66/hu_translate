@@ -175,8 +175,10 @@ def test_form_items_with_own_marks_are_separate():
     ("nyomás 1000-", "1200 bar között", "nyomás 1000-1200 bar között"),     # диапазон: дефис на месте, без пробела
     ("a 30-", "as szelep", "a 30-as szelep"),                               # как прежде
     ("a TH10-", "20 vezetékek", "a TH10-20 vezetékek"),                     # код с цифрой перед дефисом
-    ("a próba -", "12 perc", "a próba - 12 perc"),                          # тире с пробелом — не перенос
+    ("szekrény -", "30XM:4 kapcsain", "szekrény -30XM:4 kapcsain"),        # клемма «-30XM:4» (30SZBVBIT TU), прежде «- 30XM:4»
     ("a mosatás-", "12 perc", "a mosatás- 12 perc"),                        # буква перед дефисом — как прежде
+    ("a 30TH50L101 szint felé -", "1,2 mm", "a 30TH50L101 szint felé -1,2 mm"),  # отдельный «-» после слова + число — минус (3SZ19)
+    ("p = 20 -", "25 bar", "p = 20 - 25 bar"),                            # «число -» + число — диапазон через пробелы
 ])
 def test_digit_hyphen_digit_is_range(prev, nxt, want):
     """E9.7г: «цифра-» + цифра — диапазон, склеивается без пробела (сборка, docx_layout._join, давала «x-12», нарезка —
