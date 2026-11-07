@@ -871,21 +871,41 @@ def lost_segments(out, segs, expect, skip_pages=(), H=842):
     return [(s, ru, n - blob.count(k)) for k, (s, ru, n) in groups.items() if blob.count(k) < n and k not in rep]
 
 
+def _reglued(text):
+    """Текст абзаца разметки, как его даёт docx_struct с E9.7: перенос строки после «-» («буква-␣», «цифра-␣цифра» в тексте
+    struct_only извлечения до E9.7) — по lines.glue, иначе пробел."""
+    import lines as LN
+    parts = re.split(r"(?<=[^\W\d_]-) |(?<=\d-) (?=\d)", text)
+    out = parts[0]
+    for nxt in parts[1:]:
+        g = LN.glue(out, nxt)
+        out = g if g is not None else out + " " + nxt
+    return out
+
+
 def lost_ids(segs, res, used, exempt=None, dropped=(), skip_pages=(), H=842, tree=False):
     """Инвариант сборки по id (E6, П5, sids.py): сегмент с переводом, который сборка не взяла в документ, — потеря, если его
     никто не снял с причиной: exempt ({id: причина}: колонтитул, рисунок, маркер пункта — docx_layout.load; нет словаря —
     полосы колонтитула у края листа), dropped (повтор шапки таблицы — docx_struct.join_tables) и те же исключения, что у
     lost_segments (_out_of_body). Дополняет lost_segments, не дублирует: тот ищет перевод в тексте готового DOCX, этот —
     что сборка спрашивала у памяти. tree — DOCX по дереву разметки: сегменты страницы там не абзацы дерева (строки листа
-    склеены и разрезаны иначе), поштучно сверяются только абзацы разметки (struct_only: их текст — абзац дерева). → [(сегмент, перевод)]."""
+    склеены и разрезаны иначе), поштучно сверяются только абзацы разметки (struct_only: их текст — абзац дерева); абзац
+    разметки, чей текст после склейки переноса (_reglued) — текст взятого сегмента страницы, — не потеря: блок взял тот
+    перевод, а этот struct_only извлечения до E9.7 лишний (ложное «ВНИМАНИЕ» 30BOXVILGT_MODJ/TU, 30SZBVBIT EPM, 30YCGT TU).
+    → [(сегмент, перевод)]."""
     import geom as GM
-    out = []
+    out, taken = [], None
+    key = lambda x: re.sub(r"\s+", "", x or "")
     for s in segs:
         ru = (res.get(str(s["id"])) or {}).get("ru")
         if not ru or s["id"] in used or s["id"] in dropped:
             continue
         if tree:
             if "struct_only" not in s["loc"] or "shot" in s["loc"] or s["page"] in skip_pages:
+                continue
+            if taken is None:
+                taken = {key(t["text"]) for t in segs if t["id"] in used and "struct_only" not in t["loc"]}
+            if key(_reglued(s["text"])) in taken:
                 continue
         elif _out_of_body(s, skip_pages):
             continue
