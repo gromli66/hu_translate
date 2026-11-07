@@ -155,6 +155,20 @@ def test_lost_ids_rules():
     assert [s["id"] for s, _ in lost] == [7, 10]                          # со словарём край листа сам не снимает
 
 
+def test_lost_ids_tree_struct_only_taken_by_page_segment_after_glue_is_not_lost():
+    """Дерево разметки (E9.7): абзац «Módosí- tás sorszá- ma» теперь склеен по lines.glue — «Módosítás sorszáma», это текст
+    сегмента страницы, и блок взял его перевод. Абзац разметки (struct_only извлечения до E9.7) — лишний, не потеря:
+    ложное «ВНИМАНИЕ» в 30BOXVILGT_MODJ/TU, 30SZBVBIT EPM, 30YCGT TU. Абзац, чей склеенный текст ни один взятый сегмент не
+    дал («MŰKÖ- DÖTT» — текст страницы склеен не теми столбцами), — по-прежнему потеря: в DOCX он остался без перевода."""
+    segs = [seg(1, "Módosítás sorszáma"), seg(2, "Módosí- tás sorszá- ma", struct_only=True),
+            seg(3, "ELLENŐRZÉS HELYE"), seg(4, "ELLENŐR- ZÉS HELYE", struct_only=True),
+            seg(5, "MŰKÖ- DÖTT", struct_only=True), seg(6, "MŰKÖSÉG"), seg(7, "Nyitni a szelepet", struct_only=True)]
+    res = {str(i): {"ru": "ру"} for i in range(1, 8)}
+    lost = A.lost_ids(segs, res, used={1, 3}, tree=True)
+    assert [s["id"] for s, _ in lost] == [5, 7]
+    assert [s["id"] for s, _ in A.lost_ids(segs, res, used={3}, tree=True)] == [2, 5, 7]   # сегмент страницы не взят
+
+
 def test_lost_id_rows_do_not_repeat_what_the_docx_text_check_named():
     segs = [seg(1, "Egy"), seg(2, "Kettő")]
     lost = [(segs[0], "Первое слово абзаца"), (segs[1], "Второе слово абзаца")]
