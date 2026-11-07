@@ -31,11 +31,6 @@ SIGN = re.compile(rf"\s*([{PT.MARKERS}\uf020-\uf0ff])\s")        # знак ма
 PLABEL = re.compile(r"^\s*(\d{1,2}|[a-z]|[A-Z])(\.\)|\))\s+\S")  # «a)», «1)», «a.)» — как docx_struct.PLABEL
 
 
-def is_scan(page):
-    """Лист — картинка (скан): растровые изображения закрывают хотя бы половину листа (figures.is_scan)."""
-    return FIG.is_scan(page)
-
-
 def suits(path, ocr_pages):
     """Распознанный PDF собирается по сегментам листа, если распознано больше половины листов и это не сканы, а
     листы с текстом контурами («Печать в PDF»: 3SZ19, 3PR42). Скан формы (титул и лист регистрации 30RDGT, 30RDIT)
@@ -46,7 +41,7 @@ def suits(path, ocr_pages):
     with fitz.open(str(path)) as doc:
         if not ocr or 2 * len(ocr) < doc.page_count:
             return False
-        return sum(1 for p in ocr if p < doc.page_count and is_scan(doc[p])) * 2 < len(ocr)
+        return sum(1 for p in ocr if p < doc.page_count and FIG.is_scan(doc[p])) * 2 < len(ocr)
 
 
 def _zone(s, H):
@@ -80,13 +75,6 @@ def _running(segs, H, pages):
 def _is_running(s, keys, H):
     z = _zone(s, H)
     return bool(z) and ((z, _sig(s["text"])) in keys or (z, round(s["loc"]["bbox"][1] / 4)) in keys)
-
-
-def _portal_running(s):
-    """Колонтитул распознанного листа по метке портала (roles.py): OCR читает шапку по-разному на разных листах («T0.7. sz.
-    útmutató» / «3.7. sz. útmutató»), и повтор по тексту её не узнаёт — шапка печаталась посреди текста (замер на сканах
-    18.10: колонтитулы правилами 0,27)."""
-    return bool(s["loc"].get("ocr")) and s["loc"].get("role") == "header"
 
 
 def _stable_running(s, pool, keys, H):
@@ -736,118 +724,6 @@ def _figures(page, segs, drawings, scan=False):
     return out
 
 
-def _on_rule(r, rules, long=40):
-    """Фигура — кусок длинной линии листа: тонкая и лежит на линии от long pt. Рамку и столбцы таблицы Word рисует по
-    строкам — десятки отрезков в 11 pt один над другим; _rules склеивает их в одну линию, а рисунком они были «схемой»
-    (3PR10: оглавление и тело листа с рамкой; 30PR132GT: бланк на 37 листах — снимком листа вместо таблицы)."""
-    hs, vs = rules
-    if r.height <= 4.5 and any(abs(y - (r.y0 + r.y1) / 2) <= 2 and a - 2 <= r.x0 and r.x1 <= b + 2 and b - a >= long
-                               for y, a, b in hs):
-        return True
-    return r.width <= 4.5 and any(abs(x - (r.x0 + r.x1) / 2) <= 2 and a - 2 <= r.y0 and r.y1 <= b + 2 and b - a >= long
-                                  for x, a, b in vs)
-
-
-def _vector_figures(page, pno, drawings, segs, masked, tabs, figs, rules=((), ())):
-    """Скопления векторных фигур (от 6, не во весь лист, не в таблицах и не в найденных рисунках, не куски длинных
-    линий — _on_rule), от 80×60 pt, с двумя и больше подписями внутри и без обычного текста, задетого краем:
-    [(рамка, img)], img — область листа ({"clip", "page_number"}: сборка снимет её с переведённого PDF, надписи —
-    переводом)."""
-    import fitz
-    W, H = page.rect.width, page.rect.height
-    off = [fitz.Rect(s["loc"]["bbox"]) for s in masked if s not in segs]       # колонтитулы
-    rs = [fitz.Rect(d["rect"]) + (-0.5, -0.5, 0.5, 0.5) for d in drawings]   # линия без толщины — не пустая рамка
-    rs = [r for r in rs if r.width < 0.75 * W and r.height < 0.75 * H and (r.width > 0.5 or r.height > 0.5)
-          and not _on_rule(r, rules)
-          and not any(r.intersects(t) for t in tabs) and not any(r.intersects(f) for f in figs)
-          and not any(r.intersects(o) for o in off)]
-    groups = []
-    for r in rs:                                            # 20 pt: надписи-рамки стоят в 18 pt от скобки (Eskom)
-        hit = [g for g in groups if g[0].intersects(r + (-20, -20, 20, 20))]
-        R, n = fitz.Rect(r), 1
-        for g in hit:
-            groups.remove(g)
-            R |= g[0]
-            n += g[1]
-        groups.append((R, n))
-    out = []
-    for R, n in groups:
-        if n < 6 or R.width < 80 or R.height < 60:
-            continue
-        boxes = [fitz.Rect(s["loc"]["bbox"]) for s in segs]
-        # подпись — серединой в области (с запасом 10 pt) и не шире её; длинная строка текста, задетая краем, — помеха
-        inside = [b for b in boxes if (R + (-10, -10, 10, 10)).contains((b.tl + b.br) / 2) and b.width <= R.width + 20]
-        cut = [b for b in boxes if b.intersects(R) and b not in inside]
-        if len(inside) < 2 or cut:
-            continue
-        for b in inside:
-            R |= b
-        R = (R + (-3, -3, 3, 3)) & page.rect
-        out.append((R, {"clip": [R.x0, R.y0, R.x1, R.y1], "page_number": pno + 1, "x0": R.x0, "x1": R.x1, "top": R.y0,
-                        "bottom": R.y1}))
-    return out
-
-
-def _scheme_figures(page, pno, drawings, segs, tabs, figs):
-    """Схема распознанного листа (текст — контурами): стрелки-связки с короткими подписями — областью листа с
-    переведённого PDF, как _vector_figures. Связки разнесены дальше 20 pt и соединяются через подписи (стрелка
-    упирается в подпись, следующая начинается под ней) — подпись в 10 pt от фигуры склеивает группы, подписи одного
-    ряда (до 60 pt между ними) и строки одной подписи друг под другом — тоже; контуры букв (в рамке сегмента) и
-    шапка/подвал — не фигуры. Схема — от 6 фигур, из них от 3 тонких линий длиннее 15 pt, и вертикальные, и
-    горизонтальные (список условий 3SZ19 л. 4 с метками в рамочках «[3/2]» и тире — без вертикалей, это текст; поля
-    бланка — одни горизонтали), от 2 подписей, ни одна не абзац (до 120 знаков: OCR сливает подписи ряда в одну —
-    «Turbina főgépész Primerköri főgépész Villamos művezető»), и ни одна строка не задета краем. 3PR42 л. 113 (кто где
-    при расхолаживании) рассыпался на абзацы «Turbi Reaktor operátor», «na operátor» (20.10)."""
-    import fitz
-    W, H = page.rect.width, page.rect.height
-    sb = [fitz.Rect(s["loc"]["bbox"]) for s in segs]
-    rs = [fitz.Rect(d["rect"]) + (-0.5, -0.5, 0.5, 0.5) for d in drawings]
-    rs = [r for r in rs if r.width < 0.75 * W and r.height < 0.75 * H and (r.width > 0.5 or r.height > 0.5)
-          and r.y1 >= GM.HEAD_EDGE * H and r.y0 <= GM.FOOT_EDGE * H and not any((b + (-2, -2, 2, 2)).contains(r) for b in sb)
-          and not any(r.intersects(t) for t in tabs) and not any(r.intersects(f) for f in figs)]
-    items = [(True, r) for r in rs] + [(False, b) for b in sb]
-    up = list(range(len(items)))
-
-    def root(i):
-        while up[i] != i:
-            up[i] = up[up[i]]
-            i = up[i]
-        return i
-    for i, (fa, a) in enumerate(items):
-        for j in range(i + 1, len(items)):
-            fb, b = items[j]
-            if fa or fb:
-                m = 20 if fa and fb else 10
-                near = (a + (-m, -m, m, m)).intersects(b)
-            else:                                               # подписи — одного ряда или строки одной подписи
-                h = min(a.height, b.height)
-                near = min(a.y1, b.y1) - max(a.y0, b.y0) >= 0.5 * h and max(a.x0, b.x0) - min(a.x1, b.x1) <= 60 \
-                    or min(a.x1, b.x1) > max(a.x0, b.x0) and max(a.y0, b.y0) - min(a.y1, b.y1) <= 0.6 * h
-            if near:
-                up[root(i)] = root(j)
-    comps = {}
-    for i, it in enumerate(items):
-        comps.setdefault(root(i), []).append(it)
-    out = []
-    for c in comps.values():
-        shapes = [r for f, r in c if f]
-        vert = sum(r.width <= 3.5 and r.height >= 15 for r in shapes)
-        horz = sum(r.height <= 3.5 and r.width >= 15 for r in shapes)
-        if len(shapes) < 6 or vert + horz < 3 or not vert or not horz or len(c) - len(shapes) < 2:
-            continue
-        R = fitz.Rect(shapes[0])
-        for _, r in c:
-            R |= r
-        inside = [s for s, b in zip(segs, sb) if R.contains((b.tl + b.br) / 2)]
-        if any(len(s["text"].strip()) > 120 for s in inside) or any(b.intersects(R) and s not in inside
-                                                                     for s, b in zip(segs, sb)):
-            continue
-        R = (R + (-3, -3, 3, 3)) & page.rect
-        out.append((R, {"clip": [R.x0, R.y0, R.x1, R.y1], "page_number": pno + 1, "x0": R.x0, "x1": R.x1, "top": R.y0,
-                        "bottom": R.y1}))
-    return out
-
-
 def _runs_of(group, bold, font, size, mono, right=None):
     """Прогоны абзаца из сегментов одной строки: части — через табуляцию по месту оригинала (оглавление «1.4.» ⇥
     «Tengelyelmozdulás …» ⇥ «13»: память переводит части по отдельности, 16.10); полужирные слова (по картинке,
@@ -1213,13 +1089,13 @@ def _page_rules(doc, text=False):
     draw, per, scans, marks = [], [], [], []
     for page in doc:
         d = page.get_cdrawings()
-        # «solid» — залитая фигура не белым (полоса графика, ромб вехи, плашка) — для таблиц-графиков (_chart_table)
+        # «solid» — залитая фигура не белым (полоса графика, ромб вехи, плашка) — для таблиц-графиков (figures.chart_table)
         draw.append([{"rect": x["rect"], "solid": "f" in (x.get("type") or "") and x.get("fill") is not None
                       and min(x["fill"]) < 0.95, "fill": x.get("fill")} for x in d])
         hs, vs = _rules(d)
         marks.append((_form_marks(d), _form_fields(d)))
         del d
-        scan = is_scan(page)                                # отдельный скан в документе: линий-векторов нет
+        scan = FIG.is_scan(page)                            # отдельный скан в документе: линий-векторов нет
         if scan:
             pix = page.get_pixmap(dpi=200, colorspace=fitz.csGRAY)
             ih, iv = rules_from_image(np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.stride)[:, :pix.width]
@@ -1309,11 +1185,6 @@ def _head_rows(rules, body, keys, H):
                                                          or not any(seen[place(s)] > 1 for s in ids)) for s in ids}
 
 
-def _graphic_page(page, segs, figs):
-    """Лист-плакат (figures.graphic_page): картинка или схема во весь лист с подписями, обложка, разворот брошюры."""
-    return FIG.graphic_page(page, segs, figs)
-
-
 def _textless(doc, pno, boxes):
     """Копия листа pno, где снят текст в рамках boxes (сегменты), — картинки и графика целы: рисунок текстового слоя
     вырезается без текста, перевод которого идёт абзацами (22.10)."""
@@ -1325,16 +1196,6 @@ def _textless(doc, pno, boxes):
     c[0].apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE, graphics=fitz.PDF_REDACT_LINE_ART_NONE,
                           text=fitz.PDF_REDACT_TEXT_REMOVE)
     return c
-
-
-def _ocr_layer(page):
-    """Текст листа — невидимый слой распознавания поверх скана (figures.ocr_layer)."""
-    return FIG.ocr_layer(page)
-
-
-def _chart_table(t, draw, inner=()):
-    """Таблица-график: от трёх залитых фигур, не совпадающих с ячейками (figures.chart_table); inner — рамки вложенных."""
-    return FIG.chart_table(t, draw, inner)
 
 
 def _cell_marks(page, pno, marks, t, r, inside, out=()):
@@ -1386,7 +1247,6 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
     import docx_struct
     pr = rules or _page_rules(doc, mask is not None)
     draw, per, scans, marks = pr[:4]
-    scheme = FIG.scheme_regions if FIG.enabled() else None     # один набор признаков схемы (E7); None — прежние два
     # картинки на нескольких листах (логотип шапки) — только текстовому слою; get_images не раскодирует картинки
     reused = Counter(x for page in doc for x in {im[0] for im in page.get_images()}) if mask is not None else Counter()
     by_page, masks = {}, {}
@@ -1417,11 +1277,8 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
         rect_of = lambda t: fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1])
         inner_of = lambda k: [rect_of(tbls[j]) for j in nest.get(k, ())]
         charts = sum(rect_of(t).get_area() for k, t in enumerate(tbls)
-                     if _chart_table(t, draw[pno], inner_of(k))) if mask is not None else 0
-        if mask is not None and segs and (FIG.figure_kind(page, segs, figs, scans[pno], charts, True) if scheme else
-                                          scans[pno] and any(s["loc"].get("ocr") for s in segs)
-                                          or not (scans[pno] and _ocr_layer(page)) and _graphic_page(page, segs, figs)
-                                          or charts >= 0.3 * page.rect.get_area()):
+                     if FIG.chart_table(t, draw[pno], inner_of(k))) if mask is not None else 0
+        if mask is not None and segs and FIG.figure_kind(page, segs, figs, scans[pno], charts, True):
             # скан посреди текстового слоя (лист регистрации, титул с подписями 32RDGT) — листом с переведённого PDF,
             # как отдельный скан формы (16.10): по сегментам сетка, подписи и штампы бланка рассыпались, 8 листов → 11
             # (20.10). Колонтитулы листа (повтор шапки других листов) посреди тела — не в снимке: их печатает шапка
@@ -1445,7 +1302,7 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
             if any(_zone(s, Hp) == "foot" for s in off):
                 R.y1 = min(R.y1, min(s["loc"]["bbox"][1] for s in off if _zone(s, Hp) == "foot") - 2)
             R = (R + (-4, -4, 4, 4)) & page.rect
-            if scheme and not lead:                             # колонтитул оригинала — не в снимке: его печатает DOCX
+            if not lead:                                        # колонтитул оригинала — не в снимке: его печатает DOCX
                 FIG.clamp_zones(R, [s["loc"]["bbox"] for s in off if _zone(s, Hp) == "head"],
                                 [s["loc"]["bbox"] for s in off if _zone(s, Hp) == "foot"], per[pno][0], page.rect.width,
                                 [s["loc"]["bbox"] for s in segs])
@@ -1468,7 +1325,7 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
             # схема из линий с подписями (дерево «Layout format» Eskom: линии короче порога краски — рисунок не
             # находился, подписи перемешивались между разделами, 19.10) — областью листа с переведённого PDF
             tabs = [fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1]) for t in _tables(hs, vs)]
-            figs += (scheme or _vector_figures)(page, pno, draw[pno], segs, masks.get(pno, []), tabs, [f for f, _ in figs], per[pno])
+            figs += FIG.scheme_regions(page, pno, draw[pno], segs, masks.get(pno, []), tabs, [f for f, _ in figs], per[pno])
             # схема из блоков-рамок и ромбов (3FI18 «3.1 Kézi indítás»): рамки блоков — маленькие таблицы, фигуры, что их
             # касаются, в схему не шли — ромбы и стрелки терялись, подписи рассыпались строками (аудит 30.10). Ромб —
             # косые отрезки от 25 pt (у значков «△» и галочек короче): где их от четырёх, схема ищется и поверх таблиц.
@@ -1484,13 +1341,12 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
             if len(slant) >= 4:
                 # длинные линии здесь — связки схемы, не линейки листа: боковая рамка «Telefonon visszajelent…» и петля
                 # «igen» схемы 3.2 соединены линиями от 40 pt, и снимок выходил без них (рамка — таблицей ниже схемы)
-                for R, img in (scheme or _vector_figures)(page, pno, draw[pno], segs, masks.get(pno, []), [], []):
+                for R, img in FIG.scheme_regions(page, pno, draw[pno], segs, masks.get(pno, []), [], []):
                     if sum(R.contains(q) for q in slant) >= 4:
                         figs = [(f, i) for f, i in figs if not R.contains(f)] + [(R, img)]
         elif not scans[pno]:
             tabs = [fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1]) for t in _tables(hs, vs)]
-            figs += scheme(page, pno, draw[pno], segs, [], tabs, [f for f, _ in figs]) if scheme else \
-                _scheme_figures(page, pno, draw[pno], segs, tabs, [f for f, _ in figs])
+            figs += FIG.scheme_regions(page, pno, draw[pno], segs, [], tabs, [f for f, _ in figs])
         regs, used, fills = [], set(), None                 # fills — заливки листа (по первой таблице)
         inner_set = {j for js in nest.values() for j in js}
         for k, t in enumerate(tbls):
@@ -1499,7 +1355,7 @@ def _regions(doc, content, bold, font, size, mono, mask=None, rules=None):
             r = fitz.Rect(t[0][0], t[1][0], t[0][-1], t[1][-1])
             if any((f & r).get_area() > 0.8 * r.get_area() for f, _ in figs):
                 continue                                    # сетка внутри рисунка (график) — часть рисунка
-            if _chart_table(t, draw[pno], inner_of(k)):
+            if FIG.chart_table(t, draw[pno], inner_of(k)):
                 # таблица-график (диаграмма Ганта) — рисунком с переведённого PDF, подписи — переводом
                 R = (r + (-2, -2, 2, 2)) & page.rect
                 figs.append((R, {"clip": [R.x0, R.y0, R.x1, R.y1], "page_number": pno + 1, "x0": R.x0, "x1": R.x1,
@@ -1572,16 +1428,20 @@ def load(src, segs, text=False):
     rules = _page_rules(doc, text)
     # шапка таблицы (строка заголовков столбцов) повторяется на каждом листе, но это не колонтитул и не бегущее название
     heads = _head_rows(rules, body, run_keys, H)
-    pool = [s for s in body if s["id"] not in heads and (_is_running(s, run_keys, H) or _portal_running(s))]
+    # распознанная строка с меткой портала «колонтитул» (roles.py) — свидетельство колонтитула второго ранга (_role, п. 1):
+    # OCR читает шапку по-разному на разных листах («T0.7. sz. útmutató» / «3.7. sz. útmutató»), и повтор по тексту её
+    # не узнаёт (замер на сканах 18.10: колонтитулы правилами 0,27); колонтитул — если стоит так же почти на всех листах
+    hdr = {s["id"] for s in body if s["loc"].get("ocr") and s["loc"].get("role") == "header"}
+    pool = [s for s in body if s["id"] not in heads and (_is_running(s, run_keys, H) or s["id"] in hdr)]
     content = [s for s in body if _role({
         "table_head": s["id"] in heads, "repeat": _is_running(s, run_keys, H), "ocr": bool(s["loc"].get("ocr")),
-        "label": s["loc"].get("role"), "stable": _portal_running(s) and _stable_running(s, pool, run_keys, H)})
+        "label": s["loc"].get("role"), "stable": s["id"] in hdr and _stable_running(s, pool, run_keys, H)})
         != "running"]
     # меняющееся название раздела в рамке (метка портала, но не на всех листах одинаково) — один раз, первым появлением:
     # OCR читает его на каждом листе чуть по-разному, и точное сравнение с предыдущим листом ниже оставляло копии
     # посреди раздела (3SZ19, 19.10); похожие строки верхней зоны — одна группа
     from difflib import SequenceMatcher
-    titles = {_sig(s["text"]) for s in pool if _portal_running(s) and not _stable_running(s, pool, run_keys, H)}
+    titles = {_sig(s["text"]) for s in pool if s["id"] in hdr and not _stable_running(s, pool, run_keys, H)}
     titles = [k for k in titles if len(k) >= 6]
     like = lambda k, q: SequenceMatcher(None, k, q).ratio() >= 0.8
     seen, drop = [], set()
@@ -1843,15 +1703,6 @@ def load(src, segs, text=False):
         if indent >= 9 and loc.get("align") != "center":
             para["indent"] = min(indent, 90)                # отступ по оригиналу — уровнем стиля (сборщик)
         blocks.append(para)
-    # номер раздела из рамки отдельной строкой («1.1.») прямо перед заголовком с тем же номером («1.1. Срабатывание
-    # АЗ…»): название из рамки снято как повтор, номер оставался строкой-сиротой над каждым разделом (3PR42, 19.10)
-    txt = lambda b: "".join(r.get("t", "") for r in b.get("runs") or []).strip()
-    num = re.compile(r"\d+(?:\.\d+)*(?:/\d+)?\.?")
-    gone = [b for i, b in enumerate(blocks)
-            if b["k"] in ("p", "h") and num.fullmatch(txt(b)) and i + 1 < len(blocks)
-            and blocks[i + 1]["k"] in ("p", "h") and txt(blocks[i + 1]).startswith(txt(b).rstrip("."))]
-    exempt |= {i: "номер раздела" for b in gone for i in b.get("sids") or ()}
-    blocks = [b for b in blocks if not any(b is g for g in gone)]
     # уровень пункта — ступень его отступа среди отступов всех списков документа (3PR42: «-» у края рамки и «-»
     # под пунктом 2.1.1. — раньше один уровень, вложенность пропадала)
     xs = [b["x0"] for b in blocks if b["k"] == "list"]
@@ -1881,12 +1732,11 @@ def load(src, segs, text=False):
             boxes.setdefault(s["page"] + 1, []).append(tuple(f))
     info = {"width": W, "height": H, "pages": len(doc), "artifacts": {"chars": [], "imgs": []},
             "font": font, "size": size, "style": bold, "content_boxes": boxes}
-    if SIDS.enabled():
-        # сегменты тела, снятые с причиной: колонтитул и повтор названия раздела (не в content), рисунок (текст в картинке)
-        kept = {s["id"] for s in content_all}
-        exempt |= {s["id"]: "колонтитул" for s in body if s["id"] not in kept}
-        exempt |= {i: "рисунок" for regs in regions.values() for g in regs if g["block"].get("figure") for i in g["ids"]}
-        info["exempt"] = exempt
+    # сегменты тела, снятые с причиной: колонтитул и повтор названия раздела (не в content), рисунок (текст в картинке)
+    kept = {s["id"] for s in content_all}
+    exempt |= {s["id"]: "колонтитул" for s in body if s["id"] not in kept}
+    exempt |= {i: "рисунок" for regs in regions.values() for g in regs if g["block"].get("figure") for i in g["ids"]}
+    info["exempt"] = exempt
     return blocks, info
 
 
@@ -1912,20 +1762,19 @@ def _continues(prev, s, lh):
         -2 <= y0 - g["bottom"] < 0.8 * lh and start
 
 
-SUSPENDED = re.compile(r"(?:és|vagy|illetve|ill\.|и|или|либо|and|or)\s", re.I)   # «fűtő- és …»: дефис — не перенос
-
-
 def _join(prev, runs, geom):
-    """Строку — в конец абзаца: через пробел (после переноса «bar-» — без него и без дефиса, как layout.join_lines:
-    «акку-» + «ратно» печаталось «акку-ратно», NSU 18.10; дефис составного слова и после прописной или цифры — на
-    месте), прогоны одного начертания — одним."""
+    """Строку — в конец абзаца: перенос слова — по общему правилу lines.glue, как при извлечении (layout.join_lines):
+    «акку-» + «ратно» — «аккуратно» (NSU 18.10), дефис составного слова и после прописной — на месте, «fűtő- és» — с
+    пробелом, «1000-» + «1200» — диапазон; иначе через пробел. Прогоны одного начертания — одним. До E9.7г здесь была
+    своя копия правил (без «KI-» + «KAPCSOLVA», «x-» + «12» — без пробела)."""
+    import lines as LN
     tail = prev["runs"][-1]
     head = (runs[0].get("t") or "") if runs else ""
-    if tail["t"].endswith("-") and head[:1].islower() and not SUSPENDED.match(head) \
-            and not re.search(r"[A-ZÁÉÍÓÖŐÚÜŰА-ЯЁ0-9]-$", tail["t"]) and not re.search(r"\w-\w+-$", tail["t"]):
-        tail["t"] = tail["t"][:-1]
-    elif not tail["t"].endswith(" ") and (not tail["t"].endswith("-") or SUSPENDED.match(head)):
-        tail["t"] += " "                                    # «fűtő- és hűtő…» — дефис с пробелом перед союзом
+    glued = LN.glue(tail["t"], head)
+    if glued is not None:
+        tail["t"] = glued[:len(glued) - len(head)]          # glue = хвост (без дефиса переноса) + head
+    elif not tail["t"].endswith(" "):
+        tail["t"] += " "
     for r in runs:
         tail = prev["runs"][-1]
         if (tail.get("b"), tail.get("i")) == (r.get("b"), r.get("i")) and not tail.get("tabs") and not tail.get("rtab"):
@@ -2005,7 +1854,8 @@ def layout(src, blocks, segs, info):
     W, H = doc[0].rect.width, doc[0].rect.height
     body = [s for s in segs if "shot" not in s["loc"] and s["loc"].get("bbox") and s["text"].strip()]
     run_keys = _running(body, H, len(doc))
-    runs = [s for s in body if _is_running(s, run_keys, H) or _portal_running(s)]
+    # колонтитул: повтор по тексту или распознанная строка с меткой портала «колонтитул» (как в load, _role п. 1)
+    runs = [s for s in body if _is_running(s, run_keys, H) or s["loc"].get("ocr") and s["loc"].get("role") == "header"]
     geoms = [b["geom"] for b in blocks if b.get("geom") and b["k"] in ("p", "h")] + \
         [p["geom"] for b in blocks if b["k"] == "list" for it in b["items"] for p in it if p.get("geom")]
     left = sorted(g["x0"] for g in geoms)[len(geoms) // 10] if geoms else 62

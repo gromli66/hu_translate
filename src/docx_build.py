@@ -504,7 +504,7 @@ class Memory:
         if not ru:
             return
         ru = unpua(ru)                              # значки символьных шрифтов — знаком Юникода (аудит 29.10)
-        if sid is not None and SIDS.enabled():
+        if sid is not None:
             self.ids[sid] = (hu, ru)
             self.pool.setdefault(KEY(hu), ([], []))[tree].append(sid)
         # «Alfanumerika |» — вертикаль таблицы, прочитанная OCR; сборка (docx_layout) спрашивает текст без неё
@@ -1162,8 +1162,8 @@ class Builder:
     # ---------------------------------------------------------------- блоки
     @contextlib.contextmanager
     def _at(self, b):
-        """Блок b собирается: память ищет его перевод по id его сегментов (sids.py); без флага и без памяти с `at` — как есть."""
-        at = getattr(self.tr, "at", None) if SIDS.enabled() else None
+        """Блок b собирается: память ищет его перевод по id его сегментов (sids.py); без памяти с `at` — как есть."""
+        at = getattr(self.tr, "at", None)
         if at is None:
             yield
             return
@@ -2632,7 +2632,7 @@ class Builder:
         head_x = {i["xref"] for i in L.get("head_imgs") or []}
         logos_head = False
         blocks = merge_inline(blocks)
-        if SIDS.enabled() and L.get("exempt_ids") is None and hasattr(self.tr, "attach"):
+        if L.get("exempt_ids") is None and hasattr(self.tr, "attach"):
             self.tr.attach(blocks)              # размеченный PDF: id абзацев — по тексту после склейки (Memory.attach)
         if in_title:                            # титул — сверху вниз по листу (логотип OAH в дереве — после названия)
             n1 = next((i for i, b in enumerate(blocks) if ((b.get("geom") or {}).get("page") or 1) >= 2), len(blocks))

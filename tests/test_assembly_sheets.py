@@ -7,6 +7,7 @@ from docx.oxml.ns import qn
 import docx_build as B
 import docx_layout as DL
 import docx_struct as D
+import figures as FIG
 
 from test_struct_docx import LAYOUT, PROFILE, png
 from test_text_forms import _segs
@@ -77,11 +78,11 @@ def test_piece_of_long_rule_is_not_a_vector_shape():
     """Вертикаль таблицы Word — стопка отрезков по строкам (1×11 pt): _rules склеивает их в линию, а как «схема» они
     давали область листа снимком (3PR10: оглавление и тело листа с рамкой) — кусок длинной линии фигурой не считается."""
     rules = ([(100.0, 60.0, 540.0)], [(140.0, 130.0, 700.0)])
-    assert DL._on_rule(fitz.Rect(139.5, 140, 140.5, 151) + (-0.5, -0.5, 0.5, 0.5), rules)
-    assert DL._on_rule(fitz.Rect(70, 100, 90, 100) + (-0.5, -0.5, 0.5, 0.5), rules)
-    assert not DL._on_rule(fitz.Rect(200, 140, 201, 151), rules)                    # не на линии
-    assert not DL._on_rule(fitz.Rect(130, 140, 150, 160), rules)                    # рамка, не отрезок линии
-    assert not DL._on_rule(fitz.Rect(139.5, 60, 140.5, 71), ([], [(140.0, 60.0, 80.0)]))   # линия короче 40 pt
+    assert FIG.on_rule(fitz.Rect(139.5, 140, 140.5, 151) + (-0.5, -0.5, 0.5, 0.5), rules)
+    assert FIG.on_rule(fitz.Rect(70, 100, 90, 100) + (-0.5, -0.5, 0.5, 0.5), rules)
+    assert not FIG.on_rule(fitz.Rect(200, 140, 201, 151), rules)                    # не на линии
+    assert not FIG.on_rule(fitz.Rect(130, 140, 150, 160), rules)                    # рамка, не отрезок линии
+    assert not FIG.on_rule(fitz.Rect(139.5, 60, 140.5, 71), ([], [(140.0, 60.0, 80.0)]))   # линия короче 40 pt
 
 
 def test_row_labels_at_sheet_top_stay_in_table_on_every_sheet(tmp_path):

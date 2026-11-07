@@ -5,6 +5,7 @@ from docx import Document
 
 import docx_build as B
 import docx_layout as DL
+import figures as FIG
 
 from test_struct_docx import LAYOUT, PROFILE, p, png
 
@@ -17,12 +18,12 @@ def test_graphic_page_poster_and_fragmented_art():
     page = fitz.open().new_page(width=842, height=595)
     big = [(fitz.Rect(20, 20, 800, 560), {})]
     labels = [_seg(i, 100 + 40 * i, 200, 130 + 40 * i) for i in range(10)]
-    assert DL._graphic_page(page, labels, big)                                  # плакат: схема с подписями
+    assert FIG.graphic_page(page, labels, big)                                  # плакат: схема с подписями
     pieces = [(fitz.Rect(20 + 90 * k, 20, 100 + 90 * k, 100), {}) for k in range(6)]
-    assert DL._graphic_page(page, labels[:4], pieces)                           # картинка обрывками, текста мало
+    assert FIG.graphic_page(page, labels[:4], pieces)                           # картинка обрывками, текста мало
     prose = [_seg(i, 60, 100 + 14 * i, 780, "szöveg " * 20) for i in range(30)]
     shot = [(fitz.Rect(60, 300, 500, 560), {})]
-    assert not DL._graphic_page(page, prose, shot)                              # абзацы и один снимок экрана
+    assert not FIG.graphic_page(page, prose, shot)                              # абзацы и один снимок экрана
 
 
 def test_chart_table_needs_shapes_inside_not_cell_fills():
@@ -31,7 +32,7 @@ def test_chart_table_needs_shapes_inside_not_cell_fills():
     bars = [{"rect": (210 + 20 * k, 103 + 20 * k, 290 + 20 * k, 112 + 20 * k), "solid": True} for k in range(3)]
     fills = [{"rect": (40, 100, 200, 120), "solid": True}, {"rect": (200, 120, 300, 140), "solid": True},
              {"rect": (300, 140, 400, 160), "solid": True}]
-    assert DL._chart_table(t, bars) and not DL._chart_table(t, fills)
+    assert FIG.chart_table(t, bars) and not FIG.chart_table(t, fills)
 
 
 def test_landscape_pages_get_landscape_sections(tmp_path):
@@ -102,7 +103,7 @@ def test_ocr_layer_only_invisible_text_over_scan():
         pg = doc.new_page()
         pg.insert_image(pg.rect, stream=buf.getvalue())
         pg.insert_text((72, 100), "Szöveg a háttér felett", render_mode=mode)
-    assert DL._ocr_layer(doc[0]) and not DL._ocr_layer(doc[1])
+    assert FIG.ocr_layer(doc[0]) and not FIG.ocr_layer(doc[1])
 
 
 def test_nested_table_in_cell_keeps_its_text(tmp_path):

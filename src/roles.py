@@ -248,7 +248,7 @@ def apply(pars, lines, labels, join_lines, apart=None):
         p = {"frags": frags, "bbox": bb, "size": max(f["size"] for f in frags),
              "bold": all(f["bold"] for f in frags), "text": join_lines([f["t"] for f in frags]),
              "family": max(fam, key=fam.get) if fam else "serif"}
-        # колонтитул — роль для распознанных листов (docx_layout._portal_running); на текстовом слое — правилами
+        # колонтитул — роль для распознанных листов (docx_layout.load, _role п. 1); на текстовом слое — правилами
         if lab is not None and lab["role"] in ("heading", "list", "caption", "header"):
             p["role"] = lab["role"]
         res.append(p)

@@ -12,12 +12,6 @@ from test_assembly_sheets import _sheets_pdf
 from test_struct_docx import LAYOUT, PROFILE, png
 from test_text_forms import _segs
 
-@pytest.fixture(autouse=True)
-def _flag_on(monkeypatch):
-    """Тесты этапа — с включённым флагом, что бы ни стояло в среде; выключенный проверяют свои тесты."""
-    monkeypatch.setenv("HU_U_SIDS", "1")
-
-
 seg = lambda i, text, page=0, y=300.0, **loc: {"id": i, "page": page, "text": text,
                                                "loc": dict({"bbox": [60.0, y, 200.0, y + 10]}, **loc)}
 
@@ -75,14 +69,13 @@ def test_value_without_words_takes_its_res_by_id():
     assert mem.get("1,7 kW") == "1,7 кВт" and mem.used == {3}
 
 
-def test_flag_off_memory_is_text_only(monkeypatch):
-    """HU_U_SIDS=0: память не знает id — первый перевод текста побеждает везде, used пуст."""
+def test_flag_removed_blocks_always_carry_ids(monkeypatch):
+    """E9.3: флага HU_U_SIDS нет — блок всегда несёт id сегментов, память знает id; HU_U_SIDS=0 в среде ничего не меняет."""
     monkeypatch.setenv("HU_U_SIDS", "0")
+    assert not hasattr(S, "enabled")
     mem = B.Memory([("Állapot ellenőrzése", "Проверка состояния", 1), ("Állapot ellenőrzése", "Контроль состояния", 2)])
-    prev = mem.at([2])
-    mem.at(*prev)
-    assert mem.ids == {} and mem.get("Állapot ellenőrzése") == "Проверка состояния"
-    assert S.of([seg(1, "x")]) == {} and S.add({"k": "p"}, [1]) == {"k": "p"}
+    assert set(mem.ids) == {1, 2}
+    assert S.of([seg(1, "x")]) == {"sids": [1]} and S.add({"k": "p"}, [1]) == {"k": "p", "sids": [1]}
 
 
 def test_builder_writes_own_variant_per_block(tmp_path):
@@ -118,14 +111,6 @@ def test_every_segment_is_in_a_block_or_removed_with_a_reason(tmp_path):
     assert dropped and not dropped & in_blocks                          # повторы шапки таблицы — по три на листах 2–4
     assert {s["id"] for s in segs} == in_blocks | set(info["exempt"]) | dropped
     assert set(info["exempt"].values()) == {"колонтитул"}
-
-
-def test_load_without_flag_leaves_blocks_as_before(tmp_path, monkeypatch):
-    monkeypatch.setenv("HU_U_SIDS", "0")
-    src = tmp_path / "a.pdf"
-    segs = _sheets_pdf(src, pages=3)
-    blocks, info = DL.load(str(src), segs, text=True)
-    assert "exempt" not in info and not any("sids" in b or "sids_dropped" in b for b in walk(blocks))
 
 
 def test_build_takes_every_body_segment_and_a_dropped_block_is_lost(tmp_path):
@@ -276,25 +261,6 @@ def test_memory_context_is_restored_when_a_block_fails(tmp_path):
     assert mem.cur == () and not mem.inside and mem.used == set()
 
 
-def test_flag_off_builder_ignores_sids_in_blocks(tmp_path, monkeypatch):
-    """HU_U_SIDS=0: блоки с sids собираются так же, как без них (document.xml тот же), id не берутся."""
-    import zipfile
-    para = lambda t, sids: dict({"k": "p", "runs": [{"t": t, "size": 10}], "seg": True,
-                                 "geom": {"page": 1, "top": 100, "x0": 60, "x1": 200, "bottom": 110, "first_x0": 60}},
-                                **({"sids": sids} if sids else {}))
-    pairs = [("Állapot ellenőrzése", "Проверка состояния", 1), ("Állapot ellenőrzése", "Контроль состояния", 2)]
-    monkeypatch.setenv("HU_U_SIDS", "0")
-    xml = []
-    for name, ids in (("a", ([1], [2])), ("b", (None, None))):
-        mem = B.Memory(pairs)
-        used = B.Builder(mem, lambda img: png(), PROFILE).build(
-            [para("Állapot ellenőrzése", ids[0]), para("Állapot ellenőrzése", ids[1])], str(tmp_path / f"{name}.docx"),
-            LAYOUT)
-        assert used == set()
-        xml.append(zipfile.ZipFile(tmp_path / f"{name}.docx").read("word/document.xml"))
-    assert xml[0] == xml[1]
-
-
 def test_same_source_leaves_polished_and_shortened_translations_alone():
     import termvar
     segs = [seg(1, "Állapot ellenőrzése"), seg(2, "Állapot ellenőrzése"), seg(3, "Állapot ellenőrzése"),
@@ -402,8 +368,6 @@ def test_same_source_pick_carries_its_own_review_marks_and_abbreviation_rules():
     assert out2["1"]["ru"] == "СУЗ (SZBV) прекратила" and was2 == {}   # первое упоминание не лишается аббревиатуры
 
 
-def test_review_sheet_notes_unified_translation(monkeypatch):
+def test_review_sheet_notes_unified_translation():
     r = {"ru": "Клапан открыт", "unified": "Клапан открыт 5", "issues": []}
     assert "Единый перевод для того же текста в документе, было: Клапан открыт 5" in A._h_note(r)
-    monkeypatch.setenv("HU_U_SIDS", "0")
-    assert A._h_note(r) == ""                                   # без флага вычитка прежняя

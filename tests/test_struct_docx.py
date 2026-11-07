@@ -460,7 +460,6 @@ def test_tagged_pdf_is_recognized_by_coverage(tmp_path):
 
 
 def test_pipeline_struct_fill_polish_assemble(tmp_path, monkeypatch):
-    monkeypatch.setenv("HU_U_SIDS", "1")      # E6: проверка ниже — о сборке с id
     import pipeline as P
     import translate as T
     from openpyxl import load_workbook
@@ -1306,6 +1305,48 @@ def test_line_hyphen_joins_word_keeps_suspended_and_compound():
         assert p0["runs"][0]["t"] == want
 
 
+def test_struct_line_break_after_hyphen_is_extraction_join():
+    """E9.7а: перенос строки после «-» в абзаце разметки — по lines.glue, как строки текста страницы (layout.join_lines):
+    «ELLENŐR-» / «ZÉS HELYE» — «ELLENŐRZÉS HELYE» (30YCGT TU: прежде «ELLENŐR- ZÉS» не совпадал с текстом страницы и
+    уходил порталу отдельным переводом), «meg-» / «kezdhető» (30BOXVILGT_TU); союз, пара аббревиатур, не перенос — с
+    пробелом; дефис переноса уходит и из прогона другого начертания."""
+    import layout as LY
+
+    def word(t, x0, top, font="Arial"):
+        return [{"text": c, "x0": x0 + 5 * i, "x1": x0 + 5 * i + 5, "top": top, "size": 10, "fontname": font,
+                 "page_number": 1} for i, c in enumerate(t)]
+    for a, b in [("ELLENŐR-", "ZÉS HELYE"), ("meg-", "kezdhető"), ("a fűtő-", "és hűtő"), ("RO-", "ROP"),
+                 ("1000-", "1200 bar"), ("szöveg", "folytatás"), ("ÜFK-", "nak")]:
+        runs = D._runs([{"ch": c} for c in word(a, 100, 100) + word(b, 100, 114)])
+        assert B.text_of(runs) == LY.join_lines([a, b]), (a, b)
+    runs = D._runs([{"ch": c} for c in word("Módosí-", 100, 100) + word("tás", 100, 114, "Arial-BoldMT")])
+    assert [r["t"] for r in runs] == ["Módosí", "tás"]
+    assert not any(D.BREAK in r.get("t", "") for r in runs)
+    # «\x00» — значок символьного шрифта в тексте PDF («□ sikerességi kritérium»), не метка переноса: остаётся
+    runs = D._runs([{"ch": c} for c in word("\x00 sikeres", 100, 100) + word("ELLENŐR-", 100, 114) + word("ZÉS", 100, 128)])
+    assert B.text_of(runs) == "\x00 sikeres ELLENŐRZÉS"
+
+
+def test_assembly_join_is_extraction_join():
+    """E9.7г: строка, пришитая к абзацу при сборке (docx_layout._join), — тот же текст, что строки абзаца при извлечении
+    (layout.join_lines → lines.glue): одно правило переноса. Строка × строка — таблицей, включая прежние расхождения
+    копии в сборке: «KI-» + «KAPCSOLVA» (было «KI-KAPCSOLVA»), «a mosatás-» + «12 perc» (было без пробела), союз в
+    конце текста «fűtő-» + «és» (было «fűtőés»)."""
+    import layout as LY
+    import docx_layout as DL
+    pairs = [("написан акку-", "ратно"), ("a fűtő-", "és hűtő"), ("a fűtő-", "és"), ("ÜFK-", "nak"),
+             ("loss-of-", "coolant"), ("KI-", "KAPCSOLVA"), ("RO-", "ROP"), ("1000-", "1200 bar"),
+             ("a mosatás-", "12 perc"), ("a próba -", "12 perc"), ("szöveg", "folytatás"), ("vége.", "Új mondat"),
+             ("szöveg ", "folytatás"), ("bar-", "Nyomás")]
+    for a, b in pairs:
+        p0 = {"k": "p", "runs": [{"t": a}], "geom": {"x1": 300, "bottom": 100}}
+        DL._join(p0, [{"t": b}], {"x1": 300, "bottom": 112})
+        assert p0["runs"][0]["t"] == LY.join_lines([a, b]), (a, b)
+    p0 = {"k": "p", "runs": [{"t": "KI-"}], "geom": {"x1": 300, "bottom": 100}}
+    DL._join(p0, [{"t": "KAPCSOLVA"}], {"x1": 300, "bottom": 112})
+    assert p0["runs"][0]["t"] == "KIKAPCSOLVA"
+
+
 def test_hanging_indent_gap_is_tab():
     """Промежуток в первой строке до висячего отступа — табуляция («MSZ 27003-0:2013 ⇥ Nukleáris…», OAH), хотя он
     уже порога «1,8 кегля»; обычный пробел — пробел."""
@@ -1398,10 +1439,7 @@ def test_code_paragraph_keeps_keys_translates_comments(tmp_path):
     assert any(par.text == "LogFile=/tmp/canframes.log" for par in Document(out).paragraphs)
 
 
-def test_vector_tree_with_labels_is_figure_text_paragraph_is_not():
-    """Схема из линий с подписями (дерево Eskom) на текстовом слое — рисунок областью листа; абзац текста, задетый
-    скоплением, — не рисунок."""
-    import docx_layout as DL
+def _eskom_tree():
     doc = fitz.open()
     page = doc.new_page()
     page.draw_line((150, 100), (150, 300))
@@ -1411,10 +1449,27 @@ def test_vector_tree_with_labels_is_figure_text_paragraph_is_not():
     seg = lambda i, r, t: {"id": i, "page": 0, "text": t, "loc": {"bbox": list(r)}}
     segs = [seg(0, (60, 194, 120, 206), "1. Scope"), seg(1, (175, 94, 240, 106), "General"),
             seg(2, (175, 244, 260, 256), "Normative"), seg(3, (60, 400, 500, 412), "Body text paragraph.")]
-    got = DL._vector_figures(page, 0, page.get_cdrawings(), segs, segs, [], [])
+    return doc, page, seg, segs
+
+
+def test_vector_tree_with_labels_is_figure_text_paragraph_is_not():
+    """Схема из линий с подписями (дерево Eskom) на текстовом слое — рисунок областью листа (figures.scheme_regions; до
+    E9.2 — docx_layout._vector_figures, тот же вход и ответ)."""
+    import figures as FIG
+    doc, page, seg, segs = _eskom_tree()
+    got = FIG.scheme_regions(page, 0, page.get_cdrawings(), segs, segs, [], [])
     assert len(got) == 1 and got[0][1]["page_number"] == 1 and got[0][0].y1 < 400
+
+
+@pytest.mark.xfail(strict=True, reason="E9.2: scheme_regions (с E7 по умолчанию) берёт в схему строку тела уже 60 % листа, "
+                   "задетую скоплением; прежний _vector_figures её отвергал (строка не внутри и задета краем) — "
+                   "расхождение E7, не E9.2: выход сборки при флаге по умолчанию тот же")
+def test_vector_tree_body_line_crossing_it_is_not_a_figure():
+    """Абзац текста, задетый скоплением, — не рисунок (контрпример прежнего теста _vector_figures)."""
+    import figures as FIG
+    doc, page, seg, segs = _eskom_tree()
     segs.append(seg(4, (100, 140, 400, 160), "A long body line crossing the drawing"))
-    assert DL._vector_figures(page, 0, page.get_cdrawings(), segs, segs, [], []) == []
+    assert FIG.scheme_regions(page, 0, page.get_cdrawings(), segs, segs, [], []) == []
 
 
 def test_cell_fill_legend_stays_in_its_row(tmp_path):
@@ -2012,6 +2067,22 @@ def test_short_capital_abbreviations_are_not_hungarian_leftovers():
     выдумывает «УБО»/«ИВ» (30BL150FÜT: 30 строк); слово из пяти и более прописных букв — по-прежнему замечается."""
     assert C._hungarian("Подразделение: ÜBO, ÍV, ÜIO") == [] and C._hungarian("ЗАКРЫТО ZÁRVA") == ["ZÁRVA"]
     assert C._hungarian("с идентификатором 30BLHÜT, TLÜ302") == []                           # обозначения с цифрами
+
+
+def test_join_tables_same_grid_for_every_table_with_column_frame_and_after_last_page():
+    """E9.6: «та же сетка» — у любых таблиц с рамкой столбцов (frame.xs: линии листа, вертикали размеченного PDF, сетка
+    выравнивания), не только по линиям листа; продолжение — на листе после последнего листа склеенной таблицы: другая
+    таблица на листе 2 не приклеивается к таблице листов 1–2."""
+    cell = lambda t, pg: {"blocks": [{"k": "p", "runs": [{"t": t}]}], "th": False,
+                          "geom": {"page": pg, "top": 100, "bottom": 110, "x0": 0, "x1": 10}}
+    tab = lambda a, b, pg, xs: {"k": "table", "rows": [[cell(a, pg), cell(b, pg)]], "geom": {"page": pg},
+                                "frame": {"xs": xs, "ys": [100, 110]}}
+    assert len(D.join_tables([tab("A", "B", 1, [50, 200, 500]), tab("C", "D", 2, [50, 300, 500])])) == 2   # другая сетка
+    assert len(D.join_tables([tab("A", "B", 1, [50, 200, 500]), tab("C", "D", 2, [51, 201, 499])])) == 1   # та же
+    assert len(D.join_tables([tab("A", "B", 1, []), tab("C", "D", 2, [50, 300, 500])])) == 1       # без рамки — не мерим
+    got = D.join_tables([tab("A", "B", 1, [50, 200, 500]), tab("C", "D", 2, [50, 200, 500]),
+                         tab("E", "F", 2, [50, 200, 500])])
+    assert [len(t["rows"]) for t in got] == [2, 1]                       # листы 1–2 и своя таблица на листе 2
 
 
 def test_join_tables_with_different_grid_stay_separate_even_with_repeated_header():

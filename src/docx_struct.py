@@ -155,6 +155,31 @@ def _fmt(ch):
 
 
 SUP = str.maketrans("0123456789+-oоº°", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻°°°°")
+BREAK = "\ufdd0"          # место переноса после «-» до решения lines.glue (_unbreak); несимвол Юникода: «\x00» бывает в тексте PDF (значок «□»)
+
+
+def _unbreak(runs):
+    """Места BREAK в прогонах абзаца — по общему правилу переноса lines.glue, как строки текста страницы
+    (layout.join_lines): «ELLENŐR-» + «ZÉS HELYE» — «ELLENŐRZÉS HELYE», «meg-» + «kezdhető» — «megkezdhető», «fűtő-» +
+    «és» — «fűtő- és», «ÜFK-» + «nak» — «ÜFK-nak»; не перенос — пробел. Решение — по всему тексту абзаца до и после
+    места (союз и слово прописными видны только целиком). Прежде здесь всегда стоял пробел: «ELLENŐR- ZÉS» не совпадал с
+    текстом страницы, и абзац уходил порталу отдельным переводом (struct_only, E9.7)."""
+    import lines as LN
+    txt = [i for i, r in enumerate(runs) if "t" in r]
+    for n, i in enumerate(txt):
+        while BREAK in runs[i]["t"]:
+            k = runs[i]["t"].index(BREAK)
+            before = "".join(runs[j]["t"] for j in txt[:n]) + runs[i]["t"][:k]
+            after = (runs[i]["t"][k + 1:] + "".join(runs[j]["t"] for j in txt[n + 1:])).replace(BREAK, " ")
+            g = LN.glue(before, after)
+            runs[i]["t"] = runs[i]["t"][:k] + ("" if g is not None else " ") + runs[i]["t"][k + 1:]
+            if g is not None and len(g) < len(before) + len(after):          # дефис переноса — прочь
+                if k:
+                    runs[i]["t"] = runs[i]["t"][:k - 1] + runs[i]["t"][k:]
+                else:
+                    j = next(j for j in reversed(txt[:n]) if runs[j]["t"])
+                    runs[j]["t"] = runs[j]["t"][:-1]
+    return runs
 SUB = str.maketrans("0123456789+-", "₀₁₂₃₄₅₆₇₈₉₊₋")
 
 
@@ -189,7 +214,7 @@ def _runs(items):
             same_line = abs(ch["top"] - prev["top"]) < 0.5 * prev["size"] or min(bot(ch), bot(prev)) - max(
                 float(ch["top"]), float(prev["top"])) > 0.3 * min(bot(ch) - float(ch["top"]), bot(prev) - float(prev["top"]))
             if not same_line and runs and "t" in runs[-1] and not runs[-1]["t"].endswith((" ", "\t")):
-                t = " " + t
+                t = (BREAK if runs[-1]["t"].endswith("-") else " ") + t      # после «-» — решит glue (_unbreak)
             elif same_line and (ch["x0"] - prev["x1"] > 1.8 * prev["size"] or id(ch) in hang) and t != " " \
                     and id(ch) not in just and runs and "t" in runs[-1] and not runs[-1]["t"].endswith("\t"):
                 runs[-1]["t"] = runs[-1]["t"].rstrip(" ") + "\t"
@@ -203,6 +228,7 @@ def _runs(items):
             runs.append(dict(f, t=t, x=float(ch["x0"]), x1=float(ch["x1"]) if t.strip() else None, top=float(ch["top"]),
                              page=ch.get("page_number")))
         prev = ch
+    _unbreak(runs)
     # выключка по ширине даёт широкие пробелы в каждом промежутке строки — это не табуляции («Linux⇥alatt⇥például»):
     # табуляция — один-два разрыва в абзаце
     if sum(r.get("t", "").count("\t") for r in runs) >= 3:
@@ -322,9 +348,12 @@ def _cut_rows(rows):
         for j, c in pairs:
             head, tail = list(last[j]["blocks"]), list(c["blocks"])
             if head and tail and head[-1]["k"] == "p" and tail[0]["k"] == "p":     # абзац, разрезанный листом, — один
-                runs = list(head[-1]["runs"]) + [dict(x) for x in tail[0]["runs"]]
+                runs = [dict(x) for x in head[-1]["runs"]] + [dict(x) for x in tail[0]["runs"]]
                 k = len(head[-1]["runs"])
-                if k < len(runs) and "t" in runs[k] and runs[k - 1].get("t", " ")[-1:] not in (" ", "-"):
+                if k < len(runs) and "t" in runs[k] and runs[k - 1].get("t", " ")[-1:] == "-":
+                    runs[k]["t"] = BREAK + runs[k]["t"]          # перенос слова через лист — по glue (_unbreak)
+                    _unbreak(runs)
+                elif k < len(runs) and "t" in runs[k] and runs[k - 1].get("t", " ")[-1:] != " ":
                     runs[k]["t"] = " " + runs[k]["t"]
                 head[-1] = SIDS.add(dict(head[-1], runs=runs), tail[0].get("sids"))
                 tail = tail[1:]
@@ -465,25 +494,35 @@ def sub_rows(bs):
     return bs
 
 
+def _xs(t):
+    """Рамка столбцов таблицы (frame.xs): линии листа (docx_layout, row_lines), вертикали размеченного PDF (docx_struct),
+    сетка выравнивания (docx_layout._grids); нет — пусто."""
+    return (t.get("frame") or {}).get("xs") or []
+
+
 def _same_cols(a, b, tol=3.0):
-    """Две таблицы по линиям листа (docx_layout: frame.row_lines) — с теми же столбцами (на тех же местах: выравнивание
-    столбцов склеенной таблицы голосует по рамке первой части, docx_build._col_align): лист 2, начатый другой таблицей
-    с тем же числом столбцов, — не продолжение (ред-тим 20.10). Таблицы без линий листа (по разметке) — не
-    проверяются."""
-    fa, fb = a.get("frame") or {}, b.get("frame") or {}
-    if not (fa.get("row_lines") and fb.get("row_lines")):
+    """Две таблицы с рамкой столбцов — с теми же столбцами (на тех же местах: выравнивание столбцов склеенной таблицы
+    голосует по рамке первой части, docx_build._col_align): лист 2, начатый другой таблицей с тем же числом столбцов, —
+    не продолжение (ред-тим 20.10). Таблица без рамки столбцов — не проверяется. До E9.6 сравнивались только таблицы по
+    линиям листа (frame.row_lines): размеченный PDF и сетки выравнивания склеивались и с другой сеткой."""
+    xa, xb = _xs(a), _xs(b)
+    if not (xa and xb):
         return True
-    xa, xb = fa.get("xs") or [], fb.get("xs") or []
     return len(xa) == len(xb) and all(abs(p - q) <= tol for p, q in zip(xa, xb))
 
 
 def _other_grid(a, b):
-    """Таблицы листов по линиям (docx_layout: frame.row_lines) — с разным числом столбцов сетки: это разные таблицы, даже
-    если шапка повторена (30BOXFELTEL: форма на 36 листов — таблицы по 10, 12, 18 столбцов с одной шапкой; склеенные,
-    они делили сетку первой, и ширин не было — столбцы поровну, описание в 40 pt, ячейка с галочкой на весь остаток)."""
-    fa, fb = a.get("frame") or {}, b.get("frame") or {}
-    return bool(fa.get("row_lines") and fb.get("row_lines") and fa.get("xs") and fb.get("xs")
-                and len(fa["xs"]) != len(fb["xs"]))
+    """Таблицы с рамкой столбцов — с разным числом столбцов: это разные таблицы, даже если шапка повторена (30BOXFELTEL:
+    форма на 36 листов — таблицы по 10, 12, 18 столбцов с одной шапкой; склеенные, они делили сетку первой, и ширин не
+    было — столбцы поровну, описание в 40 pt, ячейка с галочкой на весь остаток). До E9.6 — только по линиям листа."""
+    xa, xb = _xs(a), _xs(b)
+    return bool(xa and xb and len(xa) != len(xb))
+
+
+def _last_page(t):
+    """Последний лист таблицы (склеенной из частей) — по листам её ячеек; без них — лист таблицы."""
+    return max((c["geom"]["page"] for r in t["rows"] for c in r if c.get("geom") and c["geom"].get("page")),
+               default=(t.get("geom") or {}).get("page", 0))
 
 
 def join_tables(bs):
@@ -523,7 +562,9 @@ def join_tables(bs):
                 and (rep or max(map(len, b["rows"])) == max(map(len, prev["rows"]))
                      or _tail_pairs(prev["rows"][-1], b["rows"][0])) \
                 and ((rep and not _other_grid(prev, b)) or (not rep and _same_cols(prev, b))) \
-                and (b.get("geom") or {}).get("page", 0) > (prev.get("geom") or {}).get("page", 0):
+                and (b.get("geom") or {}).get("page", 0) > _last_page(prev):
+            # продолжение — на листе после ПОСЛЕДНЕГО листа уже склеенной таблицы (E9.6: по первому листу другая
+            # таблица на листе 2 приклеивалась к таблице листов 1–2)
             # пустые строки в конце части, после строк с текстом, — рамка бланка до низа листа (INFO 3PR10
             # «Hőcserélők»: 7 строк сведений и 9 пустых на каждом листе): в склеенной таблице они вставали посередине, а
             # пустые строки последней части уезжали хвостом на новый лист. Часть без текста в теле — пустой бланк (лист
@@ -923,8 +964,9 @@ def join_pages(bs, cell=False):
     (с отступом первой строки у второй половины, синтетика 16.10). Соседние абзацы на соседних листах — один, если
     первый не кончен знаком конца фразы, а второй начат строчной или без отступа первой строки, который есть у
     первого. Внутри пунктов списков и ячеек — так же. В ячейке слово прописными, перенесённое с дефисом в следующий
-    абзац («ELLENŐR-» / «ZÉS HELYE», шапка таблицы 30YCGT), — один абзац: с текстом страницы («ELLENŐR- ZÉS HELYE») он
-    совпадает, а половинами переводился «МЕСТО» / «КОНТРОЛЯ»."""
+    абзац («ELLENŐR-» / «ZÉS HELYE», шапка таблицы 30YCGT), — один абзац: половинами переводился «МЕСТО» / «КОНТРОЛЯ».
+    Стык половин после «-» — по lines.glue, как строки текста страницы («ELLENŐRZÉS HELYE», «kö-» / «vetelmények» —
+    «követelmények»; E9.7б, прежде «ELLENŐR- ZÉS» и «kö-vetelmények» — не совпадали с текстом страницы)."""
     out = []
     for b in bs:
         if b["k"] == "list":
@@ -937,9 +979,9 @@ def join_pages(bs, cell=False):
                 and "t" in b["runs"][0] and ga.get("page") == gb.get("page"):
             ta, tb = text_of(a["runs"]).rstrip(), text_of(b["runs"]).lstrip()
             if re.search(r"[A-ZÁÉÍÓÖŐÚÜŰ]{3,}-$", ta) and tb[:1].isupper() and len(tb) <= 40:
-                runs = list(a["runs"]) + [dict(r) for r in b["runs"]]
-                runs[len(a["runs"])]["t"] = " " + runs[len(a["runs"])]["t"].lstrip()
-                out[-1] = dict(a, runs=runs, **join_notes(a, b))
+                runs = [dict(r) for r in a["runs"]] + [dict(r) for r in b["runs"]]
+                runs[len(a["runs"])]["t"] = BREAK + runs[len(a["runs"])]["t"].lstrip()
+                out[-1] = dict(a, runs=_unbreak(runs), **join_notes(a, b))
                 continue
         if a and a["k"] == b["k"] == "p" and ga.get("page") and gb.get("page") and gb["page"] == ga["page"] + 1 \
                 and a["runs"] and b["runs"] and "t" in a["runs"][-1] and "t" in b["runs"][0]:
@@ -954,9 +996,12 @@ def join_pages(bs, cell=False):
             label = re.match(r"\(?[a-zа-яё]{1,3}\)|\d+(\.\d+)*[.)]\s|[–•\-]\s", tb)
             if ta and tb and not label and not re.search(r"[.!?:;]$", ta) \
                     and (tb[0].islower() or indent or full and tb[0].isalpha()):
-                runs = list(a["runs"]) + [dict(r) for r in b["runs"]]
+                runs = [dict(r) for r in a["runs"]] + [dict(r) for r in b["runs"]]
                 k = len(a["runs"])
-                if not runs[k - 1]["t"].endswith((" ", "-", "\u00ad")):
+                if runs[k - 1]["t"].endswith("-"):             # перенос слова через лист — по glue (_unbreak)
+                    runs[k]["t"] = BREAK + runs[k]["t"]
+                    _unbreak(runs)
+                elif not runs[k - 1]["t"].endswith((" ", "\u00ad")):
                     runs[k]["t"] = " " + runs[k]["t"].lstrip()
                 out[-1] = dict(a, runs=runs, **join_notes(a, b))
                 continue
