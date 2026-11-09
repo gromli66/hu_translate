@@ -184,3 +184,16 @@ def test_codes_of_nearly_one_width_flush_right_are_right(tmp_path):
     head = [("Reaktor Osztály ellenőrzési terjedelme", 140.0, 359.0), ("Megnevezés", 268.7, 321.1),
             ("A 203/3", 300.0, 321.4), ("A 203/3", 300.0, 321.4)]
     assert 2 not in build(head)
+
+
+def test_bands_have_no_cell_margins_inside_their_grid_row():
+    """R2 ↔ полосы: полоса строки сетки (_table_block) — как подстрока sub_rows: без полей ячейки по сторонам разреза
+    (c["cut"] → tcMar 0 в docx_build, тест выше), зазор до следующей — pad. Поля таблицы (TU: 6,7 + 10,2 pt) у каждой
+    полосы раздували ряды «код ⇥ условие» сверх оригинала."""
+    import docx_layout as DL
+    t = _grid1([60, 110, 400], 90, 200)
+    segs = [_seg("YA-K7", 70, 100, 100), _seg("YA-K8", 70, 130, 100), _seg("YA-K9", 70, 160, 100),
+            _seg("Megengedett a hidegvizes indítás", 120, 100, 390), _seg("Tilos az FKSZ indítása", 120, 130, 390),
+            _seg("Megengedett 20 óra időtartamra", 120, 160, 390)]
+    b = DL._table_block(t, segs, 0, None, "Times New Roman", 10, False)
+    assert [[c.get("cut") for c in r] for r in b["rows"]] == [[["bottom"]] * 2, [["top", "bottom"]] * 2, [["top"]] * 2]

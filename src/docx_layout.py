@@ -847,7 +847,11 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields
                           "first_x0": rect.x0, "size": size, "lines": 1}
                     geom = gs if geom is None else dict(geom, top=min(geom["top"], rect.y0), bottom=max(
                         geom["bottom"], rect.y1), x0=min(geom["x0"], rect.x0), x1=max(geom["x1"], rect.x1))
-            row.append({"blocks": paras, "th": False, "geom": geom, "edges": e, "span": z - a})
+            # строка сетки одна: у полосы нет полей ячейки по сторонам разреза (c["cut"], как подстроки
+            # docx_struct.sub_rows; docx_build — tcMar 0), зазор до следующей — pad ниже
+            cut = [side for side, on in (("top", not first), ("bottom", not last)) if on]
+            row.append({"blocks": paras, "th": False, "geom": geom, "edges": e, "span": z - a,
+                        **({"cut": cut} if cut else {})})
         # отметка («O», «□») против нижней строки многострочного абзаца соседней ячейки (перечень кодов 4.1.1
         # 30TKBSZ36BIGT): полоса абзац не рвёт — ячейка отметки по низу, как в оригинале, а не вверху (аудит 30.10)
         span = [(c["geom"]["top"], c["geom"]["bottom"]) for c in row if c.get("geom")]
