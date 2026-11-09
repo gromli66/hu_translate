@@ -1652,7 +1652,7 @@ class Builder:
                     if k != c and widths[k] - d >= max(need[k], 20):
                         widths[k] -= d
                         widths[c] = need[c]
-            self._fit_words(rows, widths, fit_size)
+            self._fit_words(rows, widths, fit_size, bounds)
             if b.get("grid"):                           # сетка без линеек — свой кегль под ширину и поля 1 pt (3PR42)
                 self._room = {}
             t.autofit = False
@@ -1947,10 +1947,10 @@ class Builder:
             "shd", "noWrap", "tcMar", "textDirection", "tcFitText", "vAlign", "hideMark")}), None)
         nxt.addprevious(el) if nxt is not None else tcpr.append(el)
 
-    def _fit_words(self, rows, widths, size):
+    def _fit_words(self, rows, widths, size, bounds=()):
         """Столбец не уже самого длинного слова перевода с полями ячейки: «Редакция» в узком столбце «Törés / verzió»
         рвалась «Редакци / я» (UTS), метка «A.1.» — «A. / 1.» (ÜFK, 16.10). Недостающее — у столбца с самым большим
-        запасом; ширина таблицы та же."""
+        запасом; ширина таблицы та же. bounds — границы столбцов рамки (как в table())."""
         get = getattr(self.tr, "get", None)
         if get is None:
             return
@@ -1970,9 +1970,12 @@ class Builder:
             else:
                 if all("span" in c for c in row):
                     starts = [sum(c["span"] for c in row[:i]) for i in range(len(row))]
+                    ends = [starts[i + 1] - 1 if i + 1 < len(row) else ncol - 1 for i in range(len(row))]
                 else:
-                    starts = list(range(len(row)))
-                ends = [starts[i + 1] - 1 if i + 1 < len(row) else ncol - 1 for i in range(len(row))]
+                    # ячейки — по тем же столбцам рамки, что в table() (_span_starts), а не по порядку: ячейка
+                    # оглавления на столбцы 0–1 мерила столбец 0, он рос 48 → 105,8 pt, и табуляция «⇥ nyitva» уходила
+                    # за край столбца 1 — «ОТКРЫТО» не печаталось (30RA+SGT TU, 0 из 93)
+                    starts, ends = zip(*_span_starts(row, bounds, ncol)) if row else ((), ())
                 cols = [(a, c) for a, z, c in zip(starts, ends, row) if a == z and a < ncol]
             for ci, cell in cols:
                 for x in cell["blocks"]:
