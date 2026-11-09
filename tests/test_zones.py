@@ -90,3 +90,26 @@ def test_sheet_numbers_only_read_and_monotonic():
     assert no == {1: 2, 2: 3, 3: 4, 6: 7, 7: 8, 8: 9, 9: 10, 10: 11}
     no, _ = ZN.sheet_numbers(zs([2, 3, None, None, 6, None, 8, 9]))
     assert no == {}
+
+
+def test_height_key_takes_header_row_not_registry_sheet_text():
+    """По высоте строки шапки снимается строка той же шапки (склеенная иначе: «Azonosító: 3PR10 Megnevezés: …»;
+    строка-поле «Lapszám: 1»; штамп, что портал пометил колонтитулом), но не текст листа без шапки на той же высоте —
+    «NYILVÁNTARTÓ LAP», «2./ A kiadás oka:» листа регистрации пропадали (30PR132GT л. 1, E9b-Z Z1)."""
+    segs = []
+    _seg(segs, 0, "NYILVÁNTARTÓ LAP", 41, x0=230, x1=360)
+    _seg(segs, 0, "2./ A kiadás oka:", 61)
+    _seg(segs, 0, "Lapszám: 1", 61, x0=430, x1=520)
+    _seg(segs, 0, "ELLENŐRZÖTT PÉLDÁNY", 41, x0=10, x1=90, ocr=True, role="header")
+    for p in range(1, 8):
+        if p == 3:
+            _seg(segs, p, "Azonosító: 3PR10 Megnevezés: Főkeringtető szivattyú", 40, x1=520)
+        else:
+            _seg(segs, p, "Azonosító: 3PR10", 40)
+            _seg(segs, p, "Megnevezés: Főkeringtető szivattyú", 40, x0=320, x1=520)
+        _seg(segs, p, f"Oldalszám: {p}", 60, x0=430, x1=520)
+        _seg(segs, p, f"Szöveg a lapon, sor {p}.", 300)
+    content, why = ZN.decide(segs, H, 8, _rules(8))
+    kept = {s["text"] for s in content}
+    assert {"NYILVÁNTARTÓ LAP", "2./ A kiadás oka:"} <= kept
+    assert not kept & {"Lapszám: 1", "ELLENŐRZÖTT PÉLDÁNY", "Azonosító: 3PR10 Megnevezés: Főkeringtető szivattyú"}

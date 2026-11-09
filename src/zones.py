@@ -26,12 +26,24 @@ def sig(text):
     return re.sub(r"\d+", "#", text.strip())
 
 
+class Keys(set):
+    """Ключи колонтитула документа (running_keys): (зона, подпись) и (зона, высота); words — {зона: слова, что стоят в
+    ней хотя бы на половине листов} (словарь шапки документа); rows — {(зона, высота): листы, где на ней стоит
+    строка-повтор}; labeled — {зона: подписи распознанных строк с меткой портала «колонтитул»}."""
+    words, rows, labeled = {}, {}, {}
+
+
+def _words(text):
+    return set(re.findall(r"\w{3,}", text.lower()))
+
+
 def running_keys(segs, H, pages):
     """Колонтитулы: (зона, текст без цифр) или (зона, высота строки), что повторяется хотя бы на половине листов (и не
-    меньше чем на двух). По высоте — потому что OCR режет шапку по-разному: «Megnevezés … UTASÍTÁSA 72» на одном листе
-    и «Verziószám: 0 Oldalszám:» отдельно — на другом (3PR42, 16.10). Считаются листы, а не куски: строка таблицы из
-    трёх кусков у верха одностраничного документа — не «три повтора» (30RDGT modj: шапка таблицы и первая строка
-    уходили в шапку DOCX, в таблице на их месте — пустые строки, 20.10)."""
+    меньше чем на двух). По высоте — потому что OCR и текстовый слой режут и склеивают строку шапки по-разному:
+    «Megnevezés … UTASÍTÁSA 72» на одном листе и «Verziószám: 0 Oldalszám:» отдельно — на другом (3PR42, 16.10),
+    «Oldalszám:1» рядом с «Megnevezés: …», «Azonosító: 1SZ01 Megnevezés: TURBINA» одной строкой. Считаются листы, а не
+    куски: строка таблицы из трёх кусков у верха одностраничного документа — не «три повтора» (30RDGT modj: шапка
+    таблицы и первая строка уходили в шапку DOCX, в таблице на их месте — пустые строки, 20.10). → Keys."""
     cnt, pos = {}, {}
     for s in segs:
         z = zone(s, H)
@@ -39,15 +51,65 @@ def running_keys(segs, H, pages):
             cnt.setdefault((z, sig(s["text"])), set()).add(s["page"])
             pos.setdefault((z, round(s["loc"]["bbox"][1] / 4)), {}).setdefault(sig(s["text"]), set()).add(s["page"])
     need = max(2, 0.5 * pages)
+    keys = Keys(k for k, ps in cnt.items() if len(ps) >= need)
     # на высоте — и текст в основном тот же (≥ половины листов): название раздела в рамке на той же высоте меняется
     # от раздела к разделу — это текст, а не колонтитул
-    return {k for k, ps in cnt.items() if len(ps) >= need} | \
-        {k for k, c in pos.items() if len(set().union(*c.values())) >= need and max(map(len, c.values())) >= 0.5 * pages}
+    keys |= {k for k, c in pos.items() if len(set().union(*c.values())) >= need and max(map(len, c.values())) >= 0.5 * pages}
+    # словарь шапки — слова, что стоят в зоне хотя бы на половине листов (тот же порог): строка шапки, разрезанная или
+    # склеенная по-разному, состоит из них, текст титула и листа регистрации — нет
+    seen = {}
+    for s in segs:
+        z = zone(s, H)
+        if z:
+            for w in _words(s["text"]):
+                seen.setdefault((z, w), set()).add(s["page"])
+    keys.words = {}
+    for (z, w), ps in seen.items():
+        if len(ps) >= need:
+            keys.words.setdefault(z, set()).add(w)
+    # листы, где на высоте стоит сама строка шапки (строка-повтор по подписи, ±1 шаг высоты)
+    keys.rows = {}
+    for s in segs:
+        z = zone(s, H)
+        if z and (z, sig(s["text"])) in keys:
+            h = round(s["loc"]["bbox"][1] / 4)
+            for k in ((z, h - 1), (z, h), (z, h + 1)):
+                keys.rows.setdefault(k, set()).add(s["page"])
+    # подписи распознанных строк, что портал пометил колонтитулом (штамп листов регистрации)
+    keys.labeled = {}
+    for s in segs:
+        z = zone(s, H)
+        if z and s["loc"].get("ocr") and s["loc"].get("role") == "header":
+            keys.labeled.setdefault(z, set()).add(sig(s["text"]))
+    return keys
 
 
 def is_running(s, keys, H):
+    """Колонтитул: повтор по подписи или строка на высоте строки шапки — если это та же шапка, а не текст листа без неё:
+    на этом листе в той же строке стоит строка-повтор («Old.» рядом с «Azonosító: 30BLFKSZ»), или не меньше половины
+    слов строки — из словаря шапки документа (строка склеена или разрезана иначе), или строка-поле («Lapszám: 1» титула, «Oldal: 3»), или
+    распознанная строка, что портал пометил колонтитулом (штамп «ELEKTRONIKUS / ELLENŐRZÖTT PÉLDÁNY / Törzspéldány
+    tároló: 10135772» листов регистрации; метка портала — младшее свидетельство решателя). На титуле и листе регистрации
+    на той же высоте стоит их текст («2./ A kiadás oka:», «ciklikus felülvizsgálat» 30PR132GT л. 1, «NYILVÁNTARTÓ LAP»),
+    и он снимался «колонтитулом», не сверяясь (E9b-Z, Z1). Слов в строке нет (номер «4», версия «0») — по высоте."""
     z = zone(s, H)
-    return bool(z) and ((z, sig(s["text"])) in keys or (z, round(s["loc"]["bbox"][1] / 4)) in keys)
+    if not z:
+        return False
+    if (z, sig(s["text"])) in keys:
+        return True
+    if (z, round(s["loc"]["bbox"][1] / 4)) not in keys:
+        return False
+    from difflib import SequenceMatcher
+    w = _words(s["text"])
+    voc = getattr(keys, "words", None)
+    h = (z, round(s["loc"]["bbox"][1] / 4))
+    if voc is None or not w or s["page"] in keys.rows.get(h, ()) or len(w & voc.get(z, set())) * 2 >= len(w) or FIELD.match(s["text"]) \
+            or s["loc"].get("ocr") and s["loc"].get("role") == "header":
+        return True
+    # та же строка, что на другом листе портал пометил колонтитулом (OCR-сходство ≥ 0,8, как stable_running): портал
+    # метит штамп непостоянно — «Törzspéldány tároló:» листа 2 без метки, листа 3 с меткой (30RVRWTSBIGT, 3SZ17)
+    k = sig(s["text"])
+    return any(SequenceMatcher(None, k, t).ratio() >= 0.8 for t in getattr(keys, "labeled", {}).get(z, ()))
 
 
 def stable_running(s, pool, keys, H):
