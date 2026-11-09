@@ -1461,11 +1461,9 @@ def test_vector_tree_with_labels_is_figure_text_paragraph_is_not():
     assert len(got) == 1 and got[0][1]["page_number"] == 1 and got[0][0].y1 < 400
 
 
-@pytest.mark.xfail(strict=True, reason="E9.2: scheme_regions (с E7 по умолчанию) берёт в схему строку тела уже 60 % листа, "
-                   "задетую скоплением; прежний _vector_figures её отвергал (строка не внутри и задета краем) — "
-                   "расхождение E7, не E9.2: выход сборки при флаге по умолчанию тот же")
 def test_vector_tree_body_line_crossing_it_is_not_a_figure():
-    """Абзац текста, задетый скоплением, — не рисунок (контрпример прежнего теста _vector_figures)."""
+    """Абзац текста, задетый скоплением, — не рисунок (контрпример прежнего теста _vector_figures): строка уже 60 % листа
+    входила в группу подписью; подпись шире всей остальной группы — строка тела, группа не схема (задание 09.11)."""
     import figures as FIG
     doc, page, seg, segs = _eskom_tree()
     segs.append(seg(4, (100, 140, 400, 160), "A long body line crossing the drawing"))
