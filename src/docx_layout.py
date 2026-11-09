@@ -23,6 +23,7 @@ from statistics import median
 import figures as FIG
 import geom as GM
 import patterns as PT
+import rows as RW
 import sids as SIDS
 import zones as ZN
 
@@ -750,9 +751,14 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields
     # отметки съезжали друг относительно друга (31RDGT л. 1, 20.10), «Tevékenység | Állapot» — столбцами-стопками,
     # значение уезжало от своего кода (3SZ23, 3PR10, аудит 30.10). Полоса с текстом одной ячейки, у которой текст был
     # и в полосе выше, — продолжение той строки (рядом ничего, резать нечего); линий между подстроками нет.
-    # Метка пункта или код оборудования в первом столбце («1.1.», «31UJ21S601») — всегда своя полоса, даже если её
+    # Якорь ряда — метка пункта или код в столбце якорей («1.1.», «31UJ21S601»; rows) — всегда своя полоса, даже если её
     # задел чужой абзац: значения столбца, слитые нарезкой в абзац на пять строк (3SZ23 INFO «-3,6 m … 9,6 m»),
     # склеивали все строки таблицы в одну — коды и места разъезжались; такой абзац — в полосу своей середины
+    # якорь ряда — одно определение с нарезкой (rows.is_anchor, Rows): метка пункта или код в столбце, где такие куски
+    # преобладают, — по кускам строк ячеек всей таблицы (rows.seg_frag)
+    order = lambda s: (round(s["loc"]["bbox"][1] / 3), s["loc"]["bbox"][0])
+    groups = {(r, ci): _lines(sorted(put.get((r, ci), []), key=order)) for r in range(len(grid)) for ci in range(len(grid[r]))}
+    anchors = set(RW.Rows([RW.seg_frag(g) for gs in groups.values() for g in gs], ()).anchors)
     bands = []
     for r, cells in enumerate(grid):
         # края абзаца — по «чернилам»: середина первой (последней) строки ∓ 0,4 кегля, а не рамка: рамка моноширинной
@@ -766,9 +772,7 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields
             mid = (f[1] + f[3]) / 2
             return min(mid - 0.4 * sz, f[1] + 0.5 * sz) if top else max(mid + 0.4 * sz, f[3] - 0.5 * sz)
         spans = sorted((min(ink(g, True) for g in group), max(ink(g, False) for g in group), ci,
-                        ci == 0 and bool(PT.ROW_ANCHOR.fullmatch(" ".join(g["text"] for g in group).strip())))
-                       for ci in range(len(cells)) for group in _lines(sorted(
-                           put.get((r, ci), []), key=lambda s: (round(s["loc"]["bbox"][1] / 3), s["loc"]["bbox"][0]))))
+                        RW.seg_frag(group)["bbox"] in anchors) for ci in range(len(cells)) for group in groups[(r, ci)])
         strips = []                                             # [верх, низ, {ячейки}, метка]
         for a, z, ci, anchor in spans:
             # метка — своя полоса, если чужой абзац начался выше на полстроки метки, а не на 2 pt: по «чернилам»

@@ -37,3 +37,26 @@ def test_short_row_cells_take_their_frame_columns_in_word_fit_too(tmp_path):
     stops = [int(t.get(W + "pos")) / 20 for t in tb._tbl.iter(W + "tab") if t.get(W + "pos")]
     assert stops and max(stops) < widths[1] - 2 * 5.4, (stops, widths)
 
+
+def test_row_anchor_is_one_definition_for_cutting_and_assembly():
+    """Шаг 0: якорь ряда — rows.is_anchor и в сборке (docx_layout._table_block). Прежде в сборке было своё
+    (patterns.ROW_ANCHOR: метка пункта с буквой, код — только один KKS «31UJ21S601»), при нарезке — номер без буквы и
+    любой код до трёх слов. Столбец кодов «YA-K7 / YA-K8 / YA-K9» (3PR10 INFO) против значений, слитых нарезкой в один
+    абзац, — ряды, как при нарезке: сборка не считала «YA-K8» якорем, и три ряда шли одной строкой."""
+    import docx_layout as DL
+    import rows as RW
+    assert RW.is_anchor("a)") and RW.is_anchor("(3)") and RW.is_anchor("1.2.") and RW.is_anchor("YA-K7")
+    assert RW.is_anchor("30BW07 ZÁR") and not RW.is_anchor("nyitva") and not RW.is_anchor("A 30RA01S201 nyitása")
+    gh = [(90, 60, 560), (300, 60, 560)]
+    gv = [(60, 90, 300), (110, 90, 300), (560, 90, 300)]
+    t = (DL._cluster([v[0] for v in gv]), [90, 300], gh, gv)
+
+    def seg(text, x0, y0, y1, x1):
+        n = round((y1 - y0) / 12)
+        return {"id": 0, "page": 0, "text": text, "loc": {"bbox": [x0, y0, x1, y1], "size": 10, "bold": False,
+                "align": "left", "frags": [[x0, y0 + 12 * k, x1, y0 + 12 * (k + 1)] for k in range(n)]}}
+    segs = [seg("YA-K7", 70, 100, 112, 100), seg("YA-K8", 70, 124, 136, 100), seg("YA-K9", 70, 148, 160, 100),
+            seg("126 bar 128 bar 130 bar", 120, 100, 160, 180)]
+    b = DL._table_block(t, segs, 0, None, "Times New Roman", 10, False)
+    text = lambda c: ["".join(r.get("t", "") for r in p["runs"]) for p in c["blocks"]]
+    assert [text(r[0]) for r in b["rows"]] == [["YA-K7"], ["YA-K8"], ["YA-K9"]], [[text(c) for c in r] for r in b["rows"]]
