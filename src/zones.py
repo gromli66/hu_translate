@@ -12,6 +12,10 @@ from collections import Counter
 import geom as GM
 import patterns as PT
 
+# поле шапки листа: подпись из букв (до 40 знаков, без цифр), двоеточие, значение — «Azonosító: 3PR10/INFO»,
+# «Oldalszám:1», «Megnevezés: …»; «Érintett fejezetek:» без значения и «1.16/3. A fővízkör…» — не поле
+FIELD = re.compile(r"\s*[^\W\d_][^:\d]{0,40}:\s*\S")
+
 
 def zone(s, H):
     y0, y1 = s["loc"]["bbox"][1], s["loc"]["bbox"][3]
@@ -159,8 +163,9 @@ def decide(body, H, pages, rules):
             seen.append(k)
     why.update({s["id"]: "название раздела" for s in content if id(s) in drop})
     content = [s for s in content if id(s) not in drop]
-    # бегущее название раздела в рамке сверху листа (3PR42: «1.15. Átfolyás …» на каждом листе раздела) — то же, что
-    # вверху предыдущего листа, — не текст (на всех листах сразу его не найти: у каждого раздела своё)
+    # бегущее название раздела в рамке сверху листа (3PR42: «1.15. Átfolyás …» на каждом листе раздела) и шапка серии
+    # листов (3PR10 «Azonosító: 3PR10/INFO», «verziószám: 0» на листах 20–34) — то же, что в зоне шапки соседнего листа:
+    # повтор на подряд идущих листах (на всех листах сразу его не найти: у каждого раздела и серии своё)
     # название — от 6 знаков с буквами: короткое значение («3», «N/A» титульных сведений Eskom) повторяется само по себе
     # и пропадало (17.10)
     # и не строка, что начинается ниже рамки шапки листа: это тело — «1. Ismérvek:» 3SZ19 стоит под рамкой на одном
@@ -170,26 +175,35 @@ def decide(body, H, pages, rules):
     # «под рамкой» — по середине строки: по верху с допуском 1 pt заголовок сразу под рамкой (верх 91,4 при рамке 92,6,
     # 30RR2126GT стр. 10–12) считался «в рамке», и «A 30RR25S002 ellenőrzése» снималась повтором прошлого листа (цифры —
     # маской) — два заголовка из трёх пропадали (E9_DESIGN §5, F-1)
-    under = lambda s: frames[s["page"]] is not None and \
-        (s["loc"]["bbox"][1] + s["loc"]["bbox"][3]) / 2 >= frames[s["page"]]
-    titled = lambda s: s["id"] not in heads and not under(s) and len(re.sub(r"\W", "", s["text"])) >= 6 \
-        and re.search(r"[^\W\d_]{3}", s["text"])
+    under = lambda s: frames[s["page"]] is not None and         (s["loc"]["bbox"][1] + s["loc"]["bbox"][3]) / 2 >= frames[s["page"]]
+    titled = lambda s: s["id"] not in heads and not under(s) and len(re.sub(r"\W", "", s["text"])) >= 6         and re.search(r"[^\W\d_]{3}", s["text"])
+    band = lambda s: s["loc"]["bbox"][3] < 0.2 * H
     # пробелы — без счёта: OCR читает название то с двойным пробелом после номера, то с одним («1.1.  Turbina …»
     # / «1.1. Turbina …», 3SZ19), и повтор с прошлого листа оставался заголовком посреди раздела (19.10)
     key = lambda t: re.sub(r"\s+", " ", sig(t)).strip()
+    # повтор — со строкой соседнего листа вне таблиц с телом (свидетельство старшего ранга, table_heads): строка тела
+    # листа регистрации «Érintett fejezetek:» 30RL2126GT сверялась с той же подписью в ячейке таблицы изменений на
+    # прошлом листе и пропадала (E9b-Z, Z4)
     top = {}
     for s in content:
-        if s["loc"]["bbox"][3] < 0.2 * H:
+        if band(s) and s["id"] not in heads:
             top.setdefault(s["page"], set()).add(key(s["text"]))
+    # строка-поле шапки — «подпись: значение» («Azonosító: 3PR10/INFO», «Oldalszám:1», «Megnevezés: 30YA12…»): на
+    # первом листе серии она — шапка этого листа, как и на следующих, а не текст и не заголовок раздела: оставалась в
+    # теле первого листа серии (3PR10 л. 20, 3FI18 л. 33, 30GF*51GT л. 15), у 1SZ01 «Oldalszám:1» полужирной — заголовком;
+    # путь А (docx_struct.layout) берёт её в шапку серии из знаков вне тела
+    field = lambda s: FIELD.match(s["text"])
+    run_from = lambda s: band(s) and titled(s) and key(s["text"]) in top.get(s["page"] + 1, ())         and key(s["text"]) not in top.get(s["page"] - 1, ())
     # первое появление бегущего названия (то же — вверху следующего листа) — заголовок раздела, даже без метки портала:
     # «1.8. Turbina csapágyak rezgése …» 3SZ19 шло обычным абзацем, а со следующего листа снималось как повтор (19.10)
     # (название — полужирное или по центру: строка тела вверху листа, повторённая на следующем, — не заголовок)
-    first = {(s["page"], key(s["text"])) for s in content if s["loc"]["bbox"][3] < 0.2 * H and titled(s)
-             and (s["loc"].get("bold") or s["loc"].get("align") == "center")
-             and key(s["text"]) in top.get(s["page"] + 1, ()) and key(s["text"]) not in top.get(s["page"] - 1, ())}
-    prev = lambda s: s["loc"]["bbox"][3] < 0.2 * H and titled(s) and key(s["text"]) in top.get(s["page"] - 1, ())
+    first = {(s["page"], key(s["text"])) for s in content if run_from(s) and not field(s)
+             and (s["loc"].get("bold") or s["loc"].get("align") == "center")}
+    lead = lambda s: run_from(s) and field(s)
+    prev = lambda s: band(s) and titled(s) and key(s["text"]) in top.get(s["page"] - 1, ())
+    why.update({s["id"]: "шапка серии" for s in content if lead(s)})
     why.update({s["id"]: "повтор с прошлого листа" for s in content if prev(s)})
-    content = [s for s in content if not prev(s)]
+    content = [s for s in content if not prev(s) and not lead(s)]
     # (факт листа, старше метки портала — _role: метка «текст» у такой строки заголовок не отменяет)
     content = [dict(s, loc=dict(s["loc"], title=True)) if (s["page"], key(s["text"])) in first else s
                for s in content]
