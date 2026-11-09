@@ -220,9 +220,11 @@ def sheet_numbers(zsegs):
     counter = {k for k, v in vals.items() if len(set(v)) >= max(3, 0.5 * len(v))}
     no = {}
     for p, t in texts.items():
-        n = next((int(m.group()) for k, m in _num_keys(t) if k in counter), None)
-        if n is not None:
-            no[p] = n
+        m = next((m for k, m in _num_keys(t) if k in counter), None)
+        # вставной лист «56/1», «56/2» (3PR42 л. 56–58) — номер не целый, полем PAGE его не выразить: у листа номера нет
+        # (прежнее поведение), и он не портит соседа «56» как повтор
+        if m is not None and not re.match(r"\s*/\s*\d", t[m.end():]):
+            no[p] = int(m.group())
     pairs = [(no[p], no[p + 1]) for p in no if p + 1 in no]
     if not pairs or sum(b == a + 1 for a, b in pairs) < 0.6 * len(pairs):
         return {}, counter

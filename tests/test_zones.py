@@ -90,6 +90,12 @@ def test_sheet_numbers_only_read_and_monotonic():
     assert no == {1: 2, 2: 3, 3: 4, 6: 7, 7: 8, 8: 9, 9: 10, 10: 11}
     no, _ = ZN.sheet_numbers(zs([2, 3, None, None, 6, None, 8, 9]))
     assert no == {}
+    # вставные листы «56/1», «56/2» (3PR42) — без номера, сосед «56» свой номер не теряет
+    z = zs([54, 55, 56, 56, 56, 57, 58, 59])
+    for p in (4, 5):
+        z[p][0]["text"] = f"Oldalszám: 56/{p - 3}"
+    no, _ = ZN.sheet_numbers(z)
+    assert no == {1: 54, 2: 55, 3: 56, 6: 57, 7: 58, 8: 59}
 
 
 def test_height_key_takes_header_row_not_registry_sheet_text():
