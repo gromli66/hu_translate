@@ -14,9 +14,11 @@ import patterns as PT
 from lines import hyphen_break, mid_phrase
 
 ANCHOR = re.compile(rf"^{PT.ITEM_LABEL}$")         # метка пункта: «1.», «1.2.», «(3)», «a)»
-# отметка бланка; значки символьных шрифтов (частная область \uf020–\uf0ff: □ Wingdings у пунктов «30YA62P401ZQ35 p = …,»
-# 30PR132GT л. 5) — тоже
-FORM_MARK = re.compile(r"^[○□△▲◉☒✓✔✗✘■●O\uf020-\uf0ff]$")
+# отметка бланка; значки символьных шрифтов (частная область: □ Wingdings \uf0xx у пунктов «30YA62P401ZQ35 p = …,»
+# 30PR132GT л. 5; \ue279 30BL150FÜT) — тоже; «Ο» греческая (30SZBV*IT TU), «X» и «×» — отметка-крестик (30BL150FÜT
+# 4.2.2). Одно определение и для сборки (valign ячейки отметок, docx_layout._table_block; E9b-R): там было своё — «до
+# двух знаков без букв и цифр», и прочерк «-» (нет значения, 02VE25 л. 41) вставал по низу ячейки
+FORM_MARK = re.compile(r"^[○□△▲◉☒✓✔✗✘■●OΟX×\ue000-\uf8ff]$")
 
 
 def code_line(t):

@@ -94,3 +94,21 @@ def test_form_marks_cell_is_cut_against_its_lines():
     out = D.sub_rows([{"k": "table", "rows": [row]}])[0]["rows"]
     assert [[text(c) for c in r] for r in out] == [
         [["1.15."], ["TO szakterület által:"], []], [[], ["30RR21S201"], ["O"]], [[], ["30RR21S401"], ["O"]]]
+
+
+def test_form_mark_is_one_definition_for_cell_valign():
+    """Шаг 0б: ячейка по низу (отметка против нижней строки многострочного абзаца рядом) — только ячейка из отметок
+    rows.FORM_MARK, как при нарезке. Прежде своё правило «до двух знаков без букв и цифр»: прочерк «-» (нет значения,
+    02VE25 л. 41) вставал по низу ячейки; «X» (крестик 30BL150FÜT 4.2.2) и греческая «Ο» (30SZBV*IT TU) — отметки."""
+    import docx_layout as DL
+    gh = [(90, 60, 560), (400, 60, 560)]
+    gv = [(60, 90, 400), (300, 90, 400), (560, 90, 400)]
+    t = (DL._cluster([v[0] for v in gv]), [90, 400], gh, gv)
+
+    def seg(text, x0, y0, y1):
+        return {"id": 0, "page": 0, "text": text, "loc": {"bbox": [x0, y0, x0 + 200, y1], "frags": [[x0, y0, x0 + 200, y1]],
+                                                          "size": 10, "bold": False, "align": "left"}}
+    for mark, want in (("-", None), ("X", "bottom"), ("Ο", "bottom"), ("O", "bottom")):
+        segs = [seg("YP10T401, YP10T701, YP14T001XQ01, YP24T001XQ01, YP29T001XQ01.", 70, 100, 160), seg(mark, 310, 150, 160)]
+        b = DL._table_block(t, segs, 0, None, "Times New Roman", 10, False)
+        assert [c.get("valign") for c in b["rows"][0]] == [None, want], mark
