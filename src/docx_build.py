@@ -628,8 +628,12 @@ class Memory:
 
     def zone(self, text):
         """Строка колонтитула, которой нет в памяти целиком: перевод известной строки с другим числом (renumbered) или
-        половина «подпись: значение» известного сегмента."""
-        return self.renumbered(text) or self.half.get(KEY(text))
+        половина «подпись: значение» известного сегмента; или подпись и число отдельными сегментами («Verziószám:» и
+        «0» — сетка колонтитула приклеивает столбец чисел к подписи, docx_layout._grid; 3PR42, E9b-Z2) — перевод
+        подписи и число как есть."""
+        m = re.fullmatch(r"\s*(\S.*?)\s+(\d+)\s*", text or "")
+        lab = self.known(m.group(1)) if m else None
+        return self.renumbered(text) or self.half.get(KEY(text)) or (f"{lab} {m.group(2)}" if lab else None)
 
     def renumbered(self, text):
         """Тот же текст с другим числом — перевод известного текста с подставленным числом: «Oldalszám: 2.» по известному
@@ -2402,8 +2406,9 @@ class Builder:
         if mm:
             r = p.add_run(ru[:mm.start()]); r.bold = bold
             cont = getattr(self, "_cont", None)             # продолжение листа-раздела: «N … (прод.)» текстом
-            if cont:
-                r = p.add_run(str(cont)); r.bold = bold
+            no_text = cont or getattr(self, "_no_text", None)   # и номер вставного листа «56/1» (полем не выразить)
+            if no_text:
+                r = p.add_run(str(no_text)); r.bold = bold
             else:
                 f = _field(p, "PAGE", tok); f.bold = bold
             rest = ru[mm.end():]
@@ -2742,7 +2747,9 @@ class Builder:
             # раздел тела, начатый на листе оригинала (серия, альбомный, закрытый лист), — нумерация с номера этого
             # листа в колонтитуле оригинала: PAGE считал листы перевода подряд, и номера уезжали (3PR10 «14» на листе
             # «10», 30PR132GT «41» на «35», аудит 30.10); копия sectPr несла начало прошлого раздела
-            if made is not None and not in_title and not in_front and sheet_no.get(page):
+            if made is not None and not in_title and not in_front and isinstance(sheet_no.get(page), str):
+                self._num_clear(made)       # вставной лист «56/1» (zones.sheet_numbers): номер — текстом в шапке (ниже)
+            elif made is not None and not in_title and not in_front and sheet_no.get(page):
                 self._num_start(made, sheet_no[page])
                 restart = True
             elif made is not None and not own_num:
@@ -2865,12 +2872,18 @@ class Builder:
         for (i, p, ld), n in zip(starts, nxt):
             # и раздел-серия в один лист (своя шапка у листа: 30TKBSZ36BIGT «6, 6», «14, 14»), и альбомный лист со своим
             # номером: его перелив шёл с N+1, а следующий лист повторял N+1 (30HU*75GT, 01-02FMP0BIGT)
-            if ld and n - p == 1 and sheet_no.get(p) and i < len(self.doc.sections):
+            # вставной лист «56/1» — всегда: его номер только текстом, полем PAGE было бы «57»
+            ins = isinstance(sheet_no.get(p), str)
+            if (ld and n - p == 1 or ins) and sheet_no.get(p) and i < len(self.doc.sections):
                 sec = self.doc.sections[i]
                 sec.different_first_page_header_footer = True
                 fp = _first_page(sec)
-                self._header(fp, zl(p))
-                self._footer(fp, zl(p))
+                self._no_text = sheet_no[p] if ins else None
+                try:
+                    self._header(fp, zl(p))
+                    self._footer(fp, zl(p))
+                finally:
+                    self._no_text = None
                 self._cont = sheet_no[p]
                 try:
                     self._header(sec, zl(p))

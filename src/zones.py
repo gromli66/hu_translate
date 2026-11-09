@@ -211,19 +211,23 @@ def sheet_numbers(zsegs):
     docx_struct.layout для текстового слоя): число, у которого по тексту перед ним (10 знаков, по строкам колонтитула —
     OCR рвёт «Oldalszám:» и «41» на куски и ставит число то в первую строку шапки, то во вторую) на листах
     ≥ max(3, ½) разных значений; номер листа — первое такое число на листе; верен, если ≥ 60 % пар соседних листов
-    растут на 1, иначе номеров нет. zsegs — {лист от 1: сегменты колонтитула}. → ({лист: номер}, {ключи счётчика})."""
+    растут на 1, иначе номеров нет. zsegs — {лист от 1: сегменты колонтитула}. → ({лист: номер — число, у вставного
+    листа — строка «56/1»}, {ключи счётчика})."""
     texts = {p: _row_spans(ss)[0] for p, ss in zsegs.items()}
     vals = {}
     for t in texts.values():
         for k, m in _num_keys(t):
             vals.setdefault(k, []).append(m.group())
     counter = {k for k, v in vals.items() if len(set(v)) >= max(3, 0.5 * len(v))}
-    no = {}
+    no, sub = {}, {}
     for p, t in texts.items():
         m = next((m for k, m in _num_keys(t) if k in counter), None)
-        # вставной лист «56/1», «56/2» (3PR42 л. 56–58) — номер не целый, полем PAGE его не выразить: у листа номера нет
-        # (прежнее поведение), и он не портит соседа «56» как повтор
-        if m is not None and not re.match(r"\s*/\s*\d", t[m.end():]):
+        # вставной лист «56/1», «56/2» (3PR42 л. 56–58) — номер не целый, полем PAGE его не выразить: в ряд целых он не
+        # входит (не портит соседа «56» как повтор), номер — строкой (ниже)
+        ins = re.match(r"\s*/\s*(\d+)", t[m.end():]) if m is not None else None
+        if ins:
+            sub[p] = (int(m.group()), int(ins.group(1)))
+        elif m is not None:
             no[p] = int(m.group())
     pairs = [(no[p], no[p + 1]) for p in no if p + 1 in no]
     if not pairs or sum(b == a + 1 for a, b in pairs) < 0.6 * len(pairs):
@@ -234,9 +238,19 @@ def sheet_numbers(zsegs):
     # не растёт — номеров нет у всего документа (решение оркестратора по Z8, 09.11)
     bad = {p for p in no if p - 1 in no and no[p] <= no[p - 1] or p + 1 in no and no[p] >= no[p + 1]}
     no = {p: n for p, n in sorted(no.items()) if p not in bad}
-    if len(no) < 0.75 * len(texts) or any(b <= a for a, b in zip(list(no.values()), list(no.values())[1:])):
+    if len(no) + len(sub) < 0.75 * len(texts) or any(b <= a for a, b in zip(list(no.values()), list(no.values())[1:])):
         return {}, counter
-    return no, counter
+    # номер вставного листа «N/k» — строкой (docx_build: раздел без начала нумерации, номер текстом в шапке), если он
+    # строго между номерами соседних листов по порядку (N, k), а целый N — как (N, 0), и оба соседа с номером:
+    # «56, 56/1, 56/2, 56/3, 57»; иначе — прежнее поведение (листа без номера)
+    ok = dict(sub)
+    while True:
+        key = lambda q: (no[q], 0) if q in no else ok.get(q)
+        drop = {p for p, v in ok.items() if key(p - 1) is None or key(p + 1) is None or not key(p - 1) < v < key(p + 1)}
+        if not drop:
+            break
+        ok = {p: v for p, v in ok.items() if p not in drop}
+    return dict(sorted({**no, **{p: f"{n}/{k}" for p, (n, k) in ok.items()}}.items())), counter
 
 
 def mark_counter(segs, counter, mark):
