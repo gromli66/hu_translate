@@ -153,3 +153,34 @@ def test_code_under_a_phrase_in_phrase_column_is_not_a_band_anchor():
             _seg("A tartály töltése megkezdődik", 70, 124, 290), _seg("Indítás után nyitva", 310, 100, 390, lines=2)]
     b = DL._table_block(t, segs, 0, None, "Times New Roman", 10, False)
     assert len(b["rows"]) == 1
+
+
+def test_codes_of_nearly_one_width_flush_right_are_right(tmp_path):
+    """П. 11 просмотра DOCX 06.11 (EPM 30PR132GT л. 35, 30PR25GT л. 14): перечень кодов столбца «Megnevezés» выключен
+    вправо — правые края 444,7 у всех, левые 390,5…394; середины расходятся меньше 10 pt, и правило «столбец вправо»
+    (середины ≥ 10 pt — против столбца по центру) их не брало: коды шли влево. По центру разошлись бы на ту же величину и
+    правые края; вправо — правые ровно (≤ 0,5 pt), левые — нет (≥ 1,5 pt, три разных начала). Заголовок группы у
+    левого края — как был; шапка по центру и два одинаковых «A 203/3» (30PR132GT л. 25) — не вправо."""
+    def para(t, x0, x1, top):
+        g = {"page": 1, "top": top, "bottom": top + 12, "x0": x0, "x1": x1, "first_x0": x0, "size": 10, "lines": 1,
+             "last_x1": x1}
+        return {"k": "p", "runs": [{"t": t, "font": "Times New Roman", "size": 10, "b": False, "i": False,
+                                    "color": "000000"}], "geom": g, "seg": True, "align": "left"}
+    edges = {"top": True, "bottom": True, "left": True, "right": True}
+    cell = lambda ps: {"blocks": ps, "th": False, "span": 1, "edges": edges, "geom": dict(ps[0]["geom"]) if ps else None}
+
+    def build(body):
+        rows = [[cell([]), cell([para(t, a, z, 160 + 20 * k)]), cell([para("O", 507, 515, 160 + 20 * k)])]
+                for k, (t, a, z) in enumerate(body)]
+        tab = {"k": "table", "rows": rows, "borders": True, "frame": {"xs": [71, 137, 463, 530], "ys": [
+            150 + 20 * k for k in range(len(body) + 1)]}, "geom": {"page": 1, "top": 150, "bottom": 150 + 20 * len(body),
+                                                                    "x0": 71, "x1": 530, "first_x0": 71, "size": 10}}
+        out = tmp_path / "e.docx"
+        B.Builder(B.Memory([]), lambda img: png(), PROFILE).build([tab], str(out), dict(LAYOUT, first_is_body=True))
+        return [p.alignment for c in Document(str(out)).tables[0].columns[1].cells for p in c.paragraphs if p.text]
+    epm = [("30YA53D001", 167.6, 220.9), ("30TK65S201", 394.0, 444.7), ("30TK65N001", 392.4, 444.7),
+           ("30TK65W001", 390.5, 444.7), ("30TK65T101", 393.5, 444.7), ("30TK65P001", 394.0, 444.7)]
+    assert build(epm) == [None, 2, 2, 2, 2, 2]
+    head = [("Reaktor Osztály ellenőrzési terjedelme", 140.0, 359.0), ("Megnevezés", 268.7, 321.1),
+            ("A 203/3", 300.0, 321.4), ("A 203/3", 300.0, 321.4)]
+    assert 2 not in build(head)

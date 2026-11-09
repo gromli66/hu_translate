@@ -1728,9 +1728,14 @@ class Builder:
             for g in ends:
                 grp = [q for q in ends if abs(q["x1"] - g["x1"]) <= 1.5]
                 mids = [(q["x0"] + q["x1"]) / 2 for q in grp]
+                x0s, x1s = [q["x0"] for q in grp], [q["x1"] for q in grp]
+                # коды почти одной ширины (EPM 30PR132GT л. 35: правые края — 444,7 у всех, левые — 390,5…394) середины
+                # разводят меньше чем на 10 pt; по центру разошлись бы на ту же величину и правые края, вправо — только
+                # левые (п. 11 просмотра DOCX 06.11; E9b-R)
+                right = max(x1s) - min(x1s) <= 0.5 and max(x0s) - min(x0s) >= 1.5 and len({round(x) for x in x0s}) >= 3
                 # и не меньше трёх разных начал: шапка «Megnevezés» по центру и два «A 203/3» одной ширины сходились
                 # правым краем в 1 pt (30PR132GT л. 25, 30)
-                if len(grp) >= 3 and max(mids) - min(mids) >= 10 and len({round(q["x0"] / 3) for q in grp}) >= 3:
+                if len(grp) >= 3 and (right or max(mids) - min(mids) >= 10 and len({round(x / 3) for x in x0s}) >= 3):
                     flush.update(id(q) for q in grp)
         for ri, row in enumerate(rows):
             if all("span" in c for c in row):               # ячейки по сетке линий (docx_layout) — места известны
