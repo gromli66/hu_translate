@@ -471,7 +471,7 @@ def test_title_box_in_head_zone_is_not_table_head_but_short_continuation_is(tmp_
     d = fitz.open(str(src))
     H = d[0].rect.height
     keys = ZN.running_keys(segs, H, len(d))
-    heads = DL._head_rows(DL._page_rules(d, True), segs, keys, H)
+    heads = ZN.table_heads(DL._page_rules(d, True), segs, keys, H)
     got = {(s["page"], s["text"]) for s in segs if s["id"] in heads}
     assert not any("KKS" in t for _, t in got)
     assert (1, "Megnevezés") in got and (0, "Megnevezés") in got and (2, "Sor 8") in got

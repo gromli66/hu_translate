@@ -4,9 +4,10 @@
 Решение «эта строка — колонтитул или бегущее название раздела, не тело» жило россыпью в docx_layout.load (повтор по
 тексту и по высоте, метка портала, меняющееся название в рамке, повтор с прошлого листа, название над заголовком) и
 частью — в пути А (docx_struct.layout, только текстовый слой). Здесь — одна функция decide: вход — сегменты тела по
-листам, линии листов (рамка шапки), шапки таблиц (_head_rows), метки портала; выход — тело и причина по каждому снятому
+листам, линии листов (таблицы листа — table_heads, рамка шапки), метки портала; выход — тело и причина по каждому снятому
 сегменту. Шаг 0 — перенос без смены выхода; правила Z1, Z7, Z4, Z2, Z5, Z8, Z11 — по одному поверх (E9B_Z_REPORT.md)."""
 import re
+from collections import Counter
 
 import geom as GM
 import patterns as PT
@@ -63,19 +64,68 @@ def stable_running(s, pool, keys, H):
     return len(hit) >= 0.8 * len(have)
 
 
+def table_heads(rules, body, keys, H):
+    """Содержимое таблиц, в которых под первой строкой сетки от двух столбцов есть текст тела (не повтор колонтитула), —
+    тело, не колонтитул и не бегущее название. Шапка такой таблицы повторяется на каждом листе (Word печатает её на
+    каждом листе) — и снималась как колонтитул или бегущее название: у 30RDGT шапка таблицы уходила в шапку DOCX
+    узкой сеткой, 15 листов → 68; у 31RDGT заголовки столбцов пропадали со второго листа (20.10). Не только первая
+    строка: подписи строк («Berendezés alfanumerika», «Beépítés helye» вверху каждого листа 3PR10, «Alfanumerika»,
+    «Állapot» в 3SZ17, 3SZ23, 3FI18) стоят в верхней части листа и повторяются на следующем — их снимало правило
+    «название раздела вверху листа повторяет прошлый лист»: в переводе оставались на одном листе из девяти (29.10).
+    Свидетельство решателя старшего ранга (E9b-Z, Z7): что внутри таблицы с телом — не колонтитул ни одним правилом
+    ниже (повтор, метка портала, название раздела, повтор с прошлого листа). Таблицы листа — docx_layout._tables по
+    линиям rules[1]. → {id сегмента}."""
+    import fitz
+    from docx_layout import _center, _tables
+    per = rules[1]
+    by_page = {}
+    for s in body:
+        by_page.setdefault(s["page"], []).append(s)
+    sure, maybe = set(), []
+    inside = set()
+    for pno, (hs, vs) in enumerate(per):
+        segs = by_page.get(pno, [])
+        for xs, ys, _, _ in _tables(hs, vs):
+            if len(xs) < 3 or len(ys) < 3:
+                continue
+            whole = fitz.Rect(xs[0], ys[0], xs[-1], ys[-1])
+            head = fitz.Rect(xs[0], ys[0], xs[-1], ys[1])
+            rest = fitz.Rect(xs[0], ys[1], xs[-1], ys[-1])
+            body_ = [s for s in segs if rest.contains(fitz.Point(*_center(s))) and not is_running(s, keys, H)]
+            if not body_:
+                continue                                    # штамп: вся таблица повторяется на листах — колонтитул
+            ids = [s for s in segs if head.contains(fitz.Point(*_center(s)))]
+            # тело таблицы — и вне зон колонтитулов; таблица целиком в зоне шапки или подвала — штамп листа (ниже первой
+            # строки меняется текст: номер, раздел, мусор слоя «���» разной длины), если её первая строка стоит на том
+            # же месте и на других листах; тогда шапка таблицы — только если та же строка — шапка таблицы с телом на
+            # другом листе. Иначе штамп шёл в тело один раз, у остальных листов шапки не было (ред-тим 20.10);
+            # продолжение таблицы в одну-две строки вверху листа — по-прежнему таблица
+            if any(not zone(s, H) for s in body_):
+                sure |= {s["id"] for s in ids}
+                inside |= {s["id"] for s in segs if whole.contains(fitz.Point(*_center(s)))}
+            else:
+                maybe.append(ids)
+    place = lambda s: (sig(s["text"]), round(s["loc"]["bbox"][0] / 6), round(s["loc"]["bbox"][1] / 6))
+    seen = Counter(place(s) for p in by_page.values() for s in p)
+    sigs = {sig(s["text"]) for p in by_page.values() for s in p if s["id"] in sure}
+    return inside | {s["id"] for ids in maybe if ids and (all(sig(s["text"]) in sigs for s in ids)
+                                                         or not any(seen[place(s)] > 1 for s in ids)) for s in ids}
+
+
 class Why(dict):
-    """{id сегмента: причина снятия — правило решателя} + heads — id шапок таблиц (свидетельство «тело» высшего ранга, _head_rows)."""
+    """{id сегмента: причина снятия — правило решателя} + heads — id содержимого таблиц с телом (свидетельство «тело»
+    старшего ранга, table_heads)."""
     heads = frozenset()
 
 
-def decide(body, H, pages, rules, head_rows):
+def decide(body, H, pages, rules):
     """Тело листа и снятое (колонтитул, бегущее название раздела). body — сегменты листа с текстом и рамкой; pages —
-    листов в документе; rules — _page_rules (rules[4] — низ рамки шапки по листам); head_rows(keys) — id шапок таблиц
-    (docx_layout._head_rows: тело, даже если повторяется). → (content, Why)."""
+    листов в документе; rules — docx_layout._page_rules (rules[1] — линии листов: таблицы, свидетельство «тело»
+    старшего ранга, table_heads; rules[4] — низ рамки шапки по листам). → (content, Why)."""
     from docx_layout import _role
     run_keys = running_keys(body, H, pages)
     # шапка таблицы (строка заголовков столбцов) повторяется на каждом листе, но это не колонтитул и не бегущее название
-    heads = head_rows(run_keys)
+    heads = table_heads(rules, body, run_keys, H)
     # распознанная строка с меткой портала «колонтитул» (roles.py) — свидетельство колонтитула второго ранга (_role, п. 1):
     # OCR читает шапку по-разному на разных листах («T0.7. sz. útmutató» / «3.7. sz. útmutató»), и повтор по тексту её
     # не узнаёт (замер на сканах 18.10: колонтитулы правилами 0,27); колонтитул — если стоит так же почти на всех листах

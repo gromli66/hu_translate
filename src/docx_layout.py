@@ -1090,51 +1090,6 @@ def _page_rules(doc, text=False):
     return draw, lines, scans, marks, frames
 
 
-def _head_rows(rules, body, keys, H):
-    """Содержимое таблиц, в которых под первой строкой сетки от двух столбцов есть текст тела (не повтор колонтитула), —
-    тело, не колонтитул и не бегущее название. Шапка такой таблицы повторяется на каждом листе (Word печатает её на
-    каждом листе) — и снималась как колонтитул или бегущее название: у 30RDGT шапка таблицы уходила в шапку DOCX
-    узкой сеткой, 15 листов → 68; у 31RDGT заголовки столбцов пропадали со второго листа (20.10). Не только первая
-    строка: подписи строк («Berendezés alfanumerika», «Beépítés helye» вверху каждого листа 3PR10, «Alfanumerika»,
-    «Állapot» в 3SZ17, 3SZ23, 3FI18) стоят в верхней части листа и повторяются на следующем — их снимало правило
-    «название раздела вверху листа повторяет прошлый лист»: в переводе оставались на одном листе из девяти (29.10).
-    → {id сегмента}."""
-    import fitz
-    per = rules[1]
-    by_page = {}
-    for s in body:
-        by_page.setdefault(s["page"], []).append(s)
-    sure, maybe = set(), []
-    inside = set()
-    for pno, (hs, vs) in enumerate(per):
-        segs = by_page.get(pno, [])
-        for xs, ys, _, _ in _tables(hs, vs):
-            if len(xs) < 3 or len(ys) < 3:
-                continue
-            whole = fitz.Rect(xs[0], ys[0], xs[-1], ys[-1])
-            head = fitz.Rect(xs[0], ys[0], xs[-1], ys[1])
-            rest = fitz.Rect(xs[0], ys[1], xs[-1], ys[-1])
-            body_ = [s for s in segs if rest.contains(fitz.Point(*_center(s))) and not ZN.is_running(s, keys, H)]
-            if not body_:
-                continue                                    # штамп: вся таблица повторяется на листах — колонтитул
-            ids = [s for s in segs if head.contains(fitz.Point(*_center(s)))]
-            # тело таблицы — и вне зон колонтитулов; таблица целиком в зоне шапки или подвала — штамп листа (ниже первой
-            # строки меняется текст: номер, раздел, мусор слоя «���» разной длины), если её первая строка стоит на том
-            # же месте и на других листах; тогда шапка таблицы — только если та же строка — шапка таблицы с телом на
-            # другом листе. Иначе штамп шёл в тело один раз, у остальных листов шапки не было (ред-тим 20.10);
-            # продолжение таблицы в одну-две строки вверху листа — по-прежнему таблица
-            if any(not ZN.zone(s, H) for s in body_):
-                sure |= {s["id"] for s in ids}
-                inside |= {s["id"] for s in segs if whole.contains(fitz.Point(*_center(s)))}
-            else:
-                maybe.append(ids)
-    place = lambda s: (ZN.sig(s["text"]), round(s["loc"]["bbox"][0] / 6), round(s["loc"]["bbox"][1] / 6))
-    seen = Counter(place(s) for p in by_page.values() for s in p)
-    sigs = {ZN.sig(s["text"]) for p in by_page.values() for s in p if s["id"] in sure}
-    return inside | {s["id"] for ids in maybe if ids and (all(ZN.sig(s["text"]) in sigs for s in ids)
-                                                         or not any(seen[place(s)] > 1 for s in ids)) for s in ids}
-
-
 def _textless(doc, pno, boxes):
     """Копия листа pno, где снят текст в рамках boxes (сегменты), — картинки и графика целы: рисунок текстового слоя
     вырезается без текста, перевод которого идёт абзацами (22.10)."""
@@ -1376,7 +1331,7 @@ def load(src, segs, text=False):
     body = [s for s in segs if "shot" not in s["loc"] and s["loc"].get("bbox") and s["text"].strip()]
     rules = _page_rules(doc, text)
     # колонтитул листа и бегущее название раздела — решатель zones.decide (E9b-Z): content — тело, why — {id: причина}
-    content, why = ZN.decide(body, H, len(doc), rules, lambda keys: _head_rows(rules, body, keys, H))
+    content, why = ZN.decide(body, H, len(doc), rules)
     if not content:
         return [], {"width": W, "height": H, "pages": len(doc), "artifacts": {"chars": [], "imgs": []}}
     if text:
