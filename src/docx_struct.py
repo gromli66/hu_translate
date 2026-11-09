@@ -22,6 +22,7 @@ from collections import Counter
 import geom as GM
 import patterns as PT
 import sids as SIDS
+from lines import hyphen_break, mid_phrase
 from rows import FORM_MARK
 
 HEAD = {"H1": 1, "H2": 2, "H3": 3, "H4": 4, "H5": 5, "H6": 6}
@@ -318,14 +319,19 @@ def _tail_pairs(last, r):
     # продолжение списка: ячейка выше кончается списком, хвост начат списком («– MOD …» | «– ADD …», JPDS табл. 15)
     lists = lambda d, c: bool(d.get("blocks") and c.get("blocks")) and d["blocks"][-1]["k"] == "list" \
         and c["blocks"][0]["k"] == "list"
+    # конец текста ячейки выше — последний её абзац
+    end = lambda d: next((text_of(x["runs"]).strip() for x in reversed(d.get("blocks") or []) if x["k"] == "p"
+                          and text_of(x["runs"]).strip()), "")
     pairs = []
     for c in r:
         g = c.get("geom")
         j = next((j for j, d in enumerate(last) if g and d.get("geom") and abs(d["geom"]["x0"] - g["x0"]) < 3), None)
         t = cell_t(c)
         # продолжение фразы — со строчной: «ячейка выше без точки» не годится — у шапок точек нет, и строка «1 | …»
-        # нового листа уходила в шапку (синтетика, 16.10)
-        if j is None or t and not t[0].islower() and not lists(last[j], c):
+        # нового листа уходила в шапку (синтетика, 16.10); и как строки фразы при нарезке (lines: перенос слова «KI-» /
+        # «KAPCSOLVA», код после служебного слова или запятой «…szelepet a» / «30UJ97B001 felé NYITNI.»; E9b-R R3)
+        if j is None or t and not (t[0].islower() or mid_phrase(end(last[j]), t) or hyphen_break(end(last[j]), t)
+                                   or lists(last[j], c)):
             return []
         pairs.append((j, c))
     return pairs if any(cell_t(c) or lists(last[j], c) for j, c in pairs) else []

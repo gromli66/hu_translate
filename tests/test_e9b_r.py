@@ -197,3 +197,19 @@ def test_bands_have_no_cell_margins_inside_their_grid_row():
             _seg("Megengedett 20 óra időtartamra", 120, 160, 390)]
     b = DL._table_block(t, segs, 0, None, "Times New Roman", 10, False)
     assert [[c.get("cut") for c in r] for r in b["rows"]] == [[["bottom"]] * 2, [["top", "bottom"]] * 2, [["top"]] * 2]
+
+
+def test_row_tail_on_next_sheet_continues_a_phrase_as_in_segmentation():
+    """R3: хвост ряда на новом листе (docx_struct._cut_rows) — продолжение фразы не только «со строчной», но и как строки
+    фразы при нарезке (lines.mid_phrase, hyphen_break): код после служебного слова («…szelepet a» / «30UJ97B001 felé
+    NYITNI.», 3SZ17 л. 9) и перенос слова прописными («KI-» / «KAPCSOLVA»). Новый пункт с прописной — свой ряд."""
+    import docx_struct as D
+
+    def cell(t, page, x0):
+        g = {"page": page, "top": 100.0, "bottom": 110.0, "x0": x0, "x1": x0 + 90, "first_x0": x0, "size": 10, "lines": 1}
+        return {"blocks": [_p(t, 100.0, x0) | {"geom": g}], "th": False, "geom": g, "attrs": {}}
+    for up, down, glued in (("Kinyitni a háromutú szelepet a", "30UJ97B001 felé NYITNI.", True),
+                            ("A szivattyút KI-", "KAPCSOLVA állapotba kell hozni", True),
+                            ("Kinyitni a háromutú szelepet.", "Szivattyú indítása", False)):
+        got = D._cut_rows([[cell("1.", 1, 57), cell(up, 1, 177)], [cell(down, 2, 177)]])
+        assert (len(got) == 1) is glued, (up, down)
