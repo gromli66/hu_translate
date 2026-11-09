@@ -80,6 +80,33 @@ def test_ocr_sheets_numbered_from_header_counter(tmp_path):
     assert all("PAGE" in sec.first_page_header._element.xml for sec in doc.sections)
 
 
+def test_inserted_ocr_sheet_numbered_as_text(tmp_path):
+    """Вставной лист «5/1» (3PR42 «56/1–56/3»): номер не целый, полем PAGE не выразить — раздел листа без начала
+    нумерации, номер текстом в шапке (первая страница — «5/1», перелив — «5/1 (прод.)»); следующий лист — своё «7»."""
+    from docx import Document
+    from docx.oxml.ns import qn
+    import docx_build as B
+    from test_struct_docx import LAYOUT, PROFILE, ocr_doc, png
+    src, segs = ocr_doc(tmp_path)
+    for s in segs:
+        if s["page"] == 4 and s["text"].startswith("Oldalszám"):
+            s["text"] = "Oldalszám: 5/1"
+    blocks, L = B.blocks_layout(src, segs, "layout")
+    assert L["sheet_no"][5] == "5/1" and L["sheet_no"][6] == 7
+    out = tmp_path / "ocr.docx"
+    B.Builder(B.Memory([(s["text"], s["text"]) for s in segs]), lambda img: png(), PROFILE).build(
+        blocks, str(out), dict(LAYOUT, **L))
+    doc = Document(str(out))
+    starts = [(s._sectPr.find(qn("w:pgNumType")).get(qn("w:start")) if s._sectPr.find(qn("w:pgNumType")) is not None
+               else None) for s in doc.sections]
+    assert starts == ["2", "3", "4", "5", None, "7", "8", "9"]
+    ins = doc.sections[4]
+    assert "5/1" in ins.first_page_header._element.xml and " PAGE " not in ins.first_page_header._element.xml
+    assert "5/1 (прод.)" in "".join(p.text for p in ins.header.paragraphs) + "".join(
+        c.text for t in ins.header.tables for r in t.rows for c in r.cells)
+    assert " PAGE " in doc.sections[5].first_page_header._element.xml
+
+
 def test_sheet_numbers_only_read_and_monotonic():
     """Номер листа OCR — только прочитанный и в монотонном ряду: повтор/скачок назад — лист без номера; сбоев много —
     номеров нет у документа (прежнее поведение)."""
@@ -90,12 +117,18 @@ def test_sheet_numbers_only_read_and_monotonic():
     assert no == {1: 2, 2: 3, 3: 4, 6: 7, 7: 8, 8: 9, 9: 10, 10: 11}
     no, _ = ZN.sheet_numbers(zs([2, 3, None, None, 6, None, 8, 9]))
     assert no == {}
-    # вставные листы «56/1», «56/2» (3PR42) — без номера, сосед «56» свой номер не теряет
+    # вставные листы «56/1», «56/2» (3PR42) — номер строкой, если строго между соседями; сосед «56» свой номер не теряет
     z = zs([54, 55, 56, 56, 56, 57, 58, 59])
     for p in (4, 5):
         z[p][0]["text"] = f"Oldalszám: 56/{p - 3}"
     no, _ = ZN.sheet_numbers(z)
-    assert no == {1: 54, 2: 55, 3: 56, 6: 57, 7: 58, 8: 59}
+    assert no == {1: 54, 2: 55, 3: 56, 4: "56/1", 5: "56/2", 6: 57, 7: 58, 8: 59}
+    # OCR прочёл «56/7» вместо «56/2»: ряд «56/1, 56/7, 56/3» не растёт по порядку — у «56/7» и «56/3» номера нет, без
+    # угадывания; и у «56/1»: сосед без номера продолжил бы его раздел под «56/1 (прод.)»
+    z[5][0]["text"] = "Oldalszám: 56/7"
+    z[6][0]["text"] = "Oldalszám: 56/3"
+    no, _ = ZN.sheet_numbers(z)
+    assert no == {1: 54, 2: 55, 3: 56, 7: 58, 8: 59}
 
 
 def test_height_key_takes_header_row_not_registry_sheet_text():

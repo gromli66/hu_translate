@@ -1739,7 +1739,9 @@ def layout(src, blocks, segs, info):
         from docx_struct import PAGE_MARK
         # образец — ближайший к середине лист с тем же числом строк колонтитула, где счётчик прочитан (3PR42 л. 5:
         # «Verziószám: 0 6» — номер OCR приклеил к версии)
-        for p in sorted((p for p in pages if len(by_page[p]) == common), key=lambda p: (abs(p - rep), p)):
+        # (и не вставной «56/1»: его «/1» вышло бы в шапку всех листов)
+        for p in sorted((p for p in pages if len(by_page[p]) == common and isinstance(sheet_no.get(p + 1), int)),
+                        key=lambda p: (abs(p - rep), p)):
             zs, tok = ZN.mark_counter(zone_of("head", p) + zone_of("foot", p), counter, PAGE_MARK)
             if tok:
                 headz, footz = [s for s in zs if ZN.zone(s, H) == "head"], [s for s in zs if ZN.zone(s, H) == "foot"]
@@ -1747,8 +1749,9 @@ def layout(src, blocks, segs, info):
                 break
         if marked:                          # первый лист тела — с его номера (у 3PR42 прежний расчёт давал −1)
             first = 1 if any(s["page"] == 0 for s in runs) else 2
-            m = min(sheet_no)
-            num_start = {"page": first, "value": sheet_no.get(first, sheet_no[m] - (m - first))}
+            ints = {p: n for p, n in sheet_no.items() if isinstance(n, int)}     # вставной «56/1» — строкой
+            m = min(ints)
+            num_start = {"page": first, "value": ints.get(first, ints[m] - (m - first))}
     head = _grid(headz, bold) if headz else None
     foot = _grid(footz, bold) if footz else {"rows": [], "widths": [], "aligns": [], "inner": False, "box": False}
     if head:                                # шапка — шрифтом документа (стиль шапки по умолчанию — Tahoma, 3SZ19 — Courier)
