@@ -628,8 +628,12 @@ class Memory:
 
     def zone(self, text):
         """Строка колонтитула, которой нет в памяти целиком: перевод известной строки с другим числом (renumbered) или
-        половина «подпись: значение» известного сегмента."""
-        return self.renumbered(text) or self.half.get(KEY(text))
+        половина «подпись: значение» известного сегмента; или подпись и число отдельными сегментами («Verziószám:» и
+        «0» — сетка колонтитула приклеивает столбец чисел к подписи, docx_layout._grid; 3PR42, E9b-Z2) — перевод
+        подписи и число как есть."""
+        m = re.fullmatch(r"\s*(\S.*?)\s+(\d+)\s*", text or "")
+        lab = self.known(m.group(1)) if m else None
+        return self.renumbered(text) or self.half.get(KEY(text)) or (f"{lab} {m.group(2)}" if lab else None)
 
     def renumbered(self, text):
         """Тот же текст с другим числом — перевод известного текста с подставленным числом: «Oldalszám: 2.» по известному

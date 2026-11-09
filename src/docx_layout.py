@@ -1698,9 +1698,15 @@ def layout(src, blocks, segs, info):
     for s in runs:
         by_page.setdefault(s["page"], []).append(s)
     pages = sorted(by_page)
-    # образец — лист с самым частым числом сегментов колонтитулов (полный набор, а не случайно слитый OCR)
-    common = Counter(len(by_page[p]) for p in pages).most_common(1)[0][0] if pages else 0
-    same = [p for p in pages if len(by_page[p]) == common]
+    # образец — лист с самым частым числом сегментов колонтитулов (полный набор, а не случайно слитый OCR); и без
+    # сегмента в две строки, если такие листы есть: OCR склеил строки шапки («Verziószám: 0» над «Oldalszám:» — один
+    # сегмент на 58 листах 3PR42), и в шапке перевода «Номер версии: 0 Номер страницы:» шло одной строкой, а номер —
+    # строкой ниже (E9b-Z2)
+    two = lambda s: len(s["loc"].get("frags") or []) > 1 and \
+        max(f[1] for f in s["loc"]["frags"]) - min(f[1] for f in s["loc"]["frags"]) > 4
+    cand = [p for p in pages if not any(two(s) for s in by_page[p])] or pages
+    common = Counter(len(by_page[p]) for p in cand).most_common(1)[0][0] if cand else 0
+    same = [p for p in cand if len(by_page[p]) == common]
     rep = same[len(same) // 2] if same else None
     page_tok, num_start = None, None
     if rep is not None:
@@ -1740,7 +1746,7 @@ def layout(src, blocks, segs, info):
         # образец — ближайший к середине лист с тем же числом строк колонтитула, где счётчик прочитан (3PR42 л. 5:
         # «Verziószám: 0 6» — номер OCR приклеил к версии)
         # (и не вставной «56/1»: его «/1» вышло бы в шапку всех листов)
-        for p in sorted((p for p in pages if len(by_page[p]) == common and isinstance(sheet_no.get(p + 1), int)),
+        for p in sorted((p for p in cand if len(by_page[p]) == common and isinstance(sheet_no.get(p + 1), int)),
                         key=lambda p: (abs(p - rep), p)):
             zs, tok = ZN.mark_counter(zone_of("head", p) + zone_of("foot", p), counter, PAGE_MARK)
             if tok:

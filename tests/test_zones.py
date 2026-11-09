@@ -107,6 +107,48 @@ def test_inserted_ocr_sheet_numbered_as_text(tmp_path):
     assert " PAGE " in doc.sections[5].first_page_header._element.xml
 
 
+def test_ocr_header_sample_without_merged_lines(tmp_path):
+    """Образец шапки OCR — лист без сегмента в две строки, если такие листы есть: OCR склеил «Verziószám: 0» над
+    «Oldalszám: N» в один сегмент на большинстве листов (3PR42: 58 из 146), и шапка перевода шла «Номер версии: 0 Номер
+    страницы:» одной строкой, а номер — строкой ниже; на листах, где строки прочитаны по отдельности, — как в оригинале."""
+    import docx_build as B
+    import docx_struct as D
+    from test_struct_docx import ocr_doc
+    src, segs = ocr_doc(tmp_path)
+    sid = max(s["id"] for s in segs) + 1
+    out = []
+    for s in segs:
+        if s["text"].startswith("Azonosító"):     # вторая строка шапки слева — на всех листах (как «Megnevezés» 3PR42)
+            out.append(dict(s, id=sid, text="Megnevezés: TURBINA",
+                            loc=dict(s["loc"], bbox=[77, 48, 300, 57], frags=[[77, 48, 300, 57]])))
+            sid += 1
+        if s["text"].startswith("Oldalszám"):
+            n = s["text"].split()[-1]
+            if s["page"] < 5:                       # склейка двух строк шапки (два фрагмента — две строки)
+                s = dict(s, text=f"Verziószám: 0 Oldalszám: {n}",
+                         loc=dict(s["loc"], bbox=[460, 35, 530, 57], frags=[[460, 35, 530, 44], [460, 48, 530, 57]]))
+            else:
+                out.append(dict(s, id=sid, text="Verziószám: 0",
+                                loc=dict(s["loc"], bbox=[460, 35, 530, 44], frags=[[460, 35, 530, 44]])))
+                sid += 1
+        out.append(s)
+    blocks, L = B.blocks_layout(src, out, "layout")
+    rows = [" ".join(c if isinstance(c, str) else " ".join(t for t, _ in c["lines"]) for c in r["cells"])
+            for r in L["head_grid"]["rows"]]
+    assert any("Verziószám: 0" in r and "Oldalszám" not in r for r in rows), rows
+    assert any("Oldalszám:" in r and D.PAGE_MARK in r for r in rows), rows
+
+
+def test_header_cell_label_and_number_translated():
+    """Ячейка шапки «подпись + число» из двух сегментов («Verziószám:» и «0»: сетка колонтитула приклеивает столбец
+    чисел к подписи) — перевод подписи и число; в памяти целиком её нет, и она шла по-венгерски (3PR42)."""
+    import docx_build as B
+    mem = B.Memory([("Verziószám:", "Номер версии:"), ("0", "0"), ("Azonosító: 3PR42", "Идентификатор: 3PR42")])
+    assert mem("Verziószám: 0") is None
+    assert mem.zone("Verziószám: 0") == "Номер версии: 0"
+    assert mem.zone("Megnevezés 7") is None                  # подпись не из памяти — как было
+
+
 def test_sheet_numbers_only_read_and_monotonic():
     """Номер листа OCR — только прочитанный и в монотонном ряду: повтор/скачок назад — лист без номера; сбоев много —
     номеров нет у документа (прежнее поведение)."""
