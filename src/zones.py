@@ -64,7 +64,7 @@ def stable_running(s, pool, keys, H):
 
 
 class Why(dict):
-    """{id сегмента: причина снятия} + heads — id шапок таблиц (свидетельство «тело» высшего ранга, _head_rows)."""
+    """{id сегмента: причина снятия — правило решателя} + heads — id шапок таблиц (свидетельство «тело» высшего ранга, _head_rows)."""
     heads = frozenset()
 
 
@@ -85,6 +85,12 @@ def decide(body, H, pages, rules, head_rows):
         "table_head": s["id"] in heads, "repeat": is_running(s, run_keys, H), "ocr": bool(s["loc"].get("ocr")),
         "label": s["loc"].get("role"), "stable": s["id"] in hdr and stable_running(s, pool, run_keys, H)})
         != "running"]
+    why = Why()
+    kept = {s["id"] for s in content}
+    for s in body:
+        if s["id"] not in kept:
+            why[s["id"]] = "повтор" if (zone(s, H), sig(s["text"])) in run_keys else \
+                "повтор по высоте" if is_running(s, run_keys, H) else "метка портала"
     # меняющееся название раздела в рамке (метка портала, но не на всех листах одинаково) — один раз, первым появлением:
     # OCR читает его на каждом листе чуть по-разному, и точное сравнение с предыдущим листом ниже оставляло копии
     # посреди раздела (3SZ19, 19.10); похожие строки верхней зоны — одна группа
@@ -101,6 +107,7 @@ def decide(body, H, pages, rules, head_rows):
             drop.add(id(s))
         else:
             seen.append(k)
+    why.update({s["id"]: "название раздела" for s in content if id(s) in drop})
     content = [s for s in content if id(s) not in drop]
     # бегущее название раздела в рамке сверху листа (3PR42: «1.15. Átfolyás …» на каждом листе раздела) — то же, что
     # вверху предыдущего листа, — не текст (на всех листах сразу его не найти: у каждого раздела своё)
@@ -130,8 +137,9 @@ def decide(body, H, pages, rules, head_rows):
     first = {(s["page"], key(s["text"])) for s in content if s["loc"]["bbox"][3] < 0.2 * H and titled(s)
              and (s["loc"].get("bold") or s["loc"].get("align") == "center")
              and key(s["text"]) in top.get(s["page"] + 1, ()) and key(s["text"]) not in top.get(s["page"] - 1, ())}
-    content = [s for s in content if not (s["loc"]["bbox"][3] < 0.2 * H and titled(s)
-                                          and key(s["text"]) in top.get(s["page"] - 1, ()))]
+    prev = lambda s: s["loc"]["bbox"][3] < 0.2 * H and titled(s) and key(s["text"]) in top.get(s["page"] - 1, ())
+    why.update({s["id"]: "повтор с прошлого листа" for s in content if prev(s)})
+    content = [s for s in content if not prev(s)]
     # (факт листа, старше метки портала — _role: метка «текст» у такой строки заголовок не отменяет)
     content = [dict(s, loc=dict(s["loc"], title=True)) if (s["page"], key(s["text"])) in first else s
                for s in content]
@@ -147,8 +155,9 @@ def decide(body, H, pages, rules, head_rows):
         if s["loc"].get("role") == "heading" or s["loc"].get("bold") and (
                 s["loc"].get("align") == "center" or re.match(rf"\s*{PT.ITEM_LABEL}\s", s["text"])):
             lower.setdefault(s["page"], []).append((s["loc"]["bbox"][1], norm(s["text"])))
-    content = [s for s in content if not (s["loc"]["bbox"][3] < 0.2 * H and titled(s) and any(
-        y > s["loc"]["bbox"][3] and t == norm(s["text"]) for y, t in lower.get(s["page"], ())))]
-    why = Why({s["id"]: "колонтитул" for s in body if s["id"] not in {x["id"] for x in content}})
+    over = lambda s: s["loc"]["bbox"][3] < 0.2 * H and titled(s) and any(
+        y > s["loc"]["bbox"][3] and t == norm(s["text"]) for y, t in lower.get(s["page"], ()))
+    why.update({s["id"]: "над заголовком" for s in content if over(s)})
+    content = [s for s in content if not over(s)]
     why.heads = frozenset(heads)
     return content, why
