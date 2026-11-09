@@ -113,3 +113,22 @@ def test_height_key_takes_header_row_not_registry_sheet_text():
     kept = {s["text"] for s in content}
     assert {"NYILVÁNTARTÓ LAP", "2./ A kiadás oka:"} <= kept
     assert not kept & {"Lapszám: 1", "ELLENŐRZÖTT PÉLDÁNY", "Azonosító: 3PR10 Megnevezés: Főkeringtető szivattyú"}
+
+
+def test_portal_header_field_leaves_body_text_layer_title_stays():
+    """Строка-поле шапки, что портал пометил колонтитулом на скане первого листа тела («Verziószám: 2.», «Oldalszám:
+    1.» 30HU*75GT), — колонтитул, не «название раздела» (первое появление оставалось в тексте заголовком); строка
+    текстового слоя, похожая на метку OCR-листа, — не название раздела («10/6. Melléklet» 1SZ01 под рамкой), E9b-Z Z2."""
+    segs = []
+    _seg(segs, 0, "Verziószám: 2.", 66, x0=430, x1=505, ocr=True, role="header")
+    _seg(segs, 0, "Oldalszám: 1.", 80, x0=430, x1=500, ocr=True, role="header")
+    _seg(segs, 0, "10/6. Melléklet", 30, x0=250, x1=360, ocr=True, role="header")
+    for p in range(1, 6):
+        _seg(segs, p, "Azonosító: 30HU375GT", 40)
+        _seg(segs, p, f"Oldalszám: {p + 1}.", 40, x0=430, x1=520)
+        _seg(segs, p, f"Szöveg a lapon, sor {p}.", 300)
+    _seg(segs, 4, "10/6. Melléklet", 90, x0=250, x1=360, bold=True, align="center")
+    content, why = ZN.decide(segs, H, 6, _rules(6))
+    kept = {(s["page"], s["text"]) for s in content}
+    assert (0, "Verziószám: 2.") not in kept and (0, "Oldalszám: 1.") not in kept
+    assert (4, "10/6. Melléklet") in kept

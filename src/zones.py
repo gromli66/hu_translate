@@ -273,10 +273,20 @@ def decide(body, H, pages, rules):
     # не узнаёт (замер на сканах 18.10: колонтитулы правилами 0,27); колонтитул — если стоит так же почти на всех листах
     hdr = {s["id"] for s in body if s["loc"].get("ocr") and s["loc"].get("role") == "header"}
     pool = [s for s in body if s["id"] not in heads and (is_running(s, run_keys, H) or s["id"] in hdr)]
+    # колонтитул по метке — строка, что стоит так же почти на всех листах (stable_running), или строка-поле шапки
+    # («Oldalszám: 1.», «Verziószám: 2.» скана первого листа тела 30HU*75GT): поле — не название раздела, его первое
+    # появление оставалось в тексте заголовком (E9b-Z, Z2)
+    fixed = {s["id"] for s in body if s["id"] in hdr and zone(s, H) and (FIELD.match(s["text"])
+                                                                         or stable_running(s, pool, run_keys, H))}
+    # и та же строка-поле, прочитанная без значения («Törzspéldány tároló:» листа 3 при «Törzspéldány tároló: 10135772»
+    # листа 2 — штамп): сходство подписи ≥ 0,8 с полем по метке
+    from difflib import SequenceMatcher
+    fields = {sig(s["text"]) for s in body if s["id"] in fixed and FIELD.match(s["text"])}
+    fixed |= {s["id"] for s in body if s["id"] in hdr and zone(s, H) and s["id"] not in fixed and any(
+        SequenceMatcher(None, sig(s["text"]), f).ratio() >= 0.8 for f in fields)}
     content = [s for s in body if _role({
         "table_head": s["id"] in heads, "repeat": is_running(s, run_keys, H), "ocr": bool(s["loc"].get("ocr")),
-        "label": s["loc"].get("role"), "stable": s["id"] in hdr and stable_running(s, pool, run_keys, H)})
-        != "running"]
+        "label": s["loc"].get("role"), "stable": s["id"] in fixed}) != "running"]
     why = Why()
     kept = {s["id"] for s in content}
     for s in body:
@@ -287,13 +297,15 @@ def decide(body, H, pages, rules):
     # OCR читает его на каждом листе чуть по-разному, и точное сравнение с предыдущим листом ниже оставляло копии
     # посреди раздела (3SZ19, 19.10); похожие строки верхней зоны — одна группа
     from difflib import SequenceMatcher
-    titles = {sig(s["text"]) for s in pool if s["id"] in hdr and not stable_running(s, pool, run_keys, H)}
+    titles = {sig(s["text"]) for s in pool if s["id"] in hdr and s["id"] not in fixed}
     titles = [k for k in titles if len(k) >= 6]
     like = lambda k, q: SequenceMatcher(None, k, q).ratio() >= 0.8
     seen, drop = [], set()
     for s in sorted(content, key=lambda s: (s["page"], s["loc"]["bbox"][1])):
         k = sig(s["text"])
-        if zone(s, H) != "head" or s["id"] in heads or not any(like(k, t) for t in titles):
+        # (только распознанная строка: сходство — допуск шума OCR; строка текстового слоя, похожая на метку OCR-листа,
+        # — не название раздела: так снимались строки-поля шапки и названия приложений 1SZ01 под рамкой, E9b-Z Z2)
+        if zone(s, H) != "head" or s["id"] in heads or not s["loc"].get("ocr") or not any(like(k, t) for t in titles):
             continue
         if any(like(k, q) for q in seen):
             drop.add(id(s))
@@ -320,12 +332,15 @@ def decide(body, H, pages, rules):
     band = lambda s: s["loc"]["bbox"][3] < 0.2 * H
     # пробелы — без счёта: OCR читает название то с двойным пробелом после номера, то с одним («1.1.  Turbina …»
     # / «1.1. Turbina …», 3SZ19), и повтор с прошлого листа оставался заголовком посреди раздела (19.10)
-    key = lambda t: re.sub(r"\s+", " ", sig(t)).strip()
+    # (и у двоеточия: «Verziószám : 0» и «Verziószám: 1» 30BLFKSZ — одна строка шапки)
+    key = lambda t: re.sub(r"\s+", "", sig(t))
     # повтор — со строкой соседнего листа вне таблиц с телом (свидетельство старшего ранга, table_heads): строка тела
     # листа регистрации «Érintett fejezetek:» 30RL2126GT сверялась с той же подписью в ячейке таблицы изменений на
     # прошлом листе и пропадала (E9b-Z, Z4)
+    # соседний лист — со всеми его строками полосы, и снятыми выше повтором: «Oldalszám: 2.» листа 4 снята повтором по
+    # подписи, а «Oldalszám: 1.» листа 3 — первый лист серии (E9b-Z, Z2)
     top = {}
-    for s in content:
+    for s in body:
         if band(s) and s["id"] not in heads:
             top.setdefault(s["page"], set()).add(key(s["text"]))
     # строка-поле шапки — «подпись: значение» («Azonosító: 3PR10/INFO», «Oldalszám:1», «Megnevezés: 30YA12…»): на
