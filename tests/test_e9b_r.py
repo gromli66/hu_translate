@@ -280,9 +280,11 @@ def test_row_asked_as_one_line_before_r1_is_not_lost_when_cells_are_taken():
     («Ellenőrzés» без перевода до добора), — потерян."""
     import assemble as A
     seg = lambda i, t, extra=None: {"id": i, "text": t, "src": t, "page": 2, "loc": extra or {"bbox": [100, 100 + i, 150, 110 + i]}}
-    segs = [seg(1, "30XL11S201"), seg(2, "ZÁRVA"), seg(3, "30XL53S201"), seg(4, "ZÁRVA"), seg(5, "Megnevezés"),
-            seg(6, "Ellenőrzés ROP"), seg(9, "30XL11S201 ZÁRVA  30XL53S201 ZÁRVA", {"struct_only": True}),
+    # отметки «□» на листе — после обоих кодов, в строке разметки — после своего «ZÁRVA»
+    segs = [seg(1, "30XL11S201"), seg(2, "ZÁRVA"), seg(3, "30XL53S201"), seg(4, "ZÁRVA"), seg(7, ""),
+            seg(8, ""), seg(5, "Megnevezés"), seg(6, "Ellenőrzés ROP"),
+            seg(9, "30XL11S201 ZÁRVA  30XL53S201 ZÁRVA ", {"struct_only": True}),
             seg(10, "Megnevezés Ellenőrzés", {"struct_only": True})]
     res = {str(s["id"]): {"ru": s["text"]} for s in segs}
-    lost = A.lost_ids(segs, res, used={1, 2, 3, 4, 5}, exempt={}, tree=True)
+    lost = A.lost_ids(segs, res, used={1, 2, 3, 4, 5, 7, 8}, exempt={}, tree=True)
     assert [s["id"] for s, _ in lost] == [10]
