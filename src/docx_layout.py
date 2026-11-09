@@ -465,14 +465,7 @@ def _rules(drawings):
     return _merge(hs), _merge(vs)
 
 
-def _cluster(vals, tol=2.0):
-    out = []
-    for v in sorted(vals):
-        if out and v - out[-1][-1] <= tol:
-            out[-1].append(v)
-        else:
-            out.append([v])
-    return [sum(g) / len(g) for g in out]
+_cluster = RW.cluster                                      # одно определение (rows, E9b-R R7)
 
 
 def _tables(hs, vs):
@@ -898,8 +891,8 @@ def _grids(items, bold, font, size, mono, sign=None):
     """Сетка без линеек — таблицей без рамок: подряд от трёх строк из нескольких коротких кусков, куски которых встают в
     общие столбцы (перечень кодов 3PR42 л. 112: «04.TH10D001 ⇥ KM1/1 ⇥ 02.TK42D001 ⇥ …» в шесть столбцов). Строкой с
     табуляцией по месту оригинала последний столбец не влезал и переносился (кегль сборки крупнее), 17.10. Строка
-    оглавления (в конце — номер листа) — не сетка. sign(строка) — знак маркера пункта (тот же факт, что у роли строки)."""
-    from layout import code_line
+    оглавления (в конце — номер листа) — не сетка. sign(строка) — знак маркера пункта (тот же факт, что у роли строки).
+    Столбцы сетки — rows.grid_columns (E9b-R R7); здесь — таблица из них."""
 
     def row_ok(it):
         g = it[2]
@@ -916,14 +909,9 @@ def _grids(items, bold, font, size, mono, sign=None):
         while j < len(items) and row_ok(items[j]) and items[j][2][0]["page"] == items[i][2][0]["page"]:
             j += 1
         run = items[i:j] if j - i >= 3 else []
-        # столбец — края в пределах 20 pt (код «30BY07» под «04.TH10D001» сдвинут на 15 pt — тот же столбец)
-        cols = _cluster([x["loc"]["bbox"][0] for it in run for x in it[2]], 20) if run else []
-        col = lambda x: min(range(len(cols)), key=lambda k: abs(cols[k] - x["loc"]["bbox"][0]))
-        good = run and 2 <= len(cols) <= 8 and all(
-            len({col(x) for x in it[2]}) == len(it[2]) and all(abs(cols[col(x)] - x["loc"]["bbox"][0]) <= 20 for x in it[2])
-            for it in run) and all(sum(any(col(x) == k for x in it[2]) for it in run) >= 2 for k in range(len(cols))) \
-            and (len(cols) >= 3 or all(code_line(x["text"]) for it in run for x in it[2]))   # «подпись ⇥ текст» — не сетка
-        if not good:
+        cols = RW.grid_columns([[(x["loc"]["bbox"][0], x["text"]) for x in it[2]] for it in run]) if run else []
+        col = lambda x: RW.column_of(cols, x["loc"]["bbox"][0])
+        if not cols:
             out.append(items[i])
             i += 1
             continue

@@ -321,7 +321,9 @@ def header_repeat(prev, b, text):
     cell_t = lambda c: " ".join(text(x["runs"]) for x in c.get("blocks", []) if x["k"] == "p").strip()
     row_t = lambda r: [cell_t(c) for c in r]
     n = head_rows(b)
-    if n and n < len(b["rows"]) and n <= head_rows(prev)             and [row_t(r) for r in b["rows"][:n]] == [row_t(r) for r in prev["rows"][:n]]             and any(any(row_t(r)) for r in b["rows"][:n]):
+    if n and n < len(b["rows"]) and n <= head_rows(prev) \
+            and [row_t(r) for r in b["rows"][:n]] == [row_t(r) for r in prev["rows"][:n]] \
+            and any(any(row_t(r)) for r in b["rows"][:n]):
         return n                                            # повтор шапки на новом листе
     if len(b["rows"]) > 1 and row_t(b["rows"][0]) == row_t(prev["rows"][0]) and all(row_t(b["rows"][0])):
         return 1                                            # шапка без TH (JPDS), дословный повтор первой строки
@@ -334,5 +336,42 @@ def continues(prev, b, rep, text):
     шапки — то же число столбцов, без — те же столбцы); на листе после ПОСЛЕДНЕГО листа prev (E9.6: по первому листу другая
     таблица на листе 2 приклеивалась к таблице листов 1–2)."""
     tail = lambda: tail_pairs(prev["rows"][-1], b["rows"][0], text)
-    return bool(prev["rows"] and b["rows"])         and bool(rep or not all(c["th"] for c in b["rows"][0]) or tail())         and bool(rep or max(map(len, b["rows"])) == max(map(len, prev["rows"])) or tail())         and ((rep and not other_grid(prev, b)) or (not rep and same_cols(prev, b)))         and (b.get("geom") or {}).get("page", 0) > last_page(prev)
+    return bool(prev["rows"] and b["rows"]) \
+        and bool(rep or not all(c["th"] for c in b["rows"][0]) or tail()) \
+        and bool(rep or max(map(len, b["rows"])) == max(map(len, prev["rows"])) or tail()) \
+        and ((rep and not other_grid(prev, b)) or (not rep and same_cols(prev, b))) \
+        and (b.get("geom") or {}).get("page", 0) > last_page(prev)
+
+
+# ------------------------------------------------------------------ столбец (UNIFIED_DESIGN §3.6, П2; E9b-R R7)
+def cluster(vals, tol=2.0):
+    """Значения по возрастанию — группами, где соседние ближе tol; итог — середины групп."""
+    out = []
+    for v in sorted(vals):
+        if out and v - out[-1][-1] <= tol:
+            out[-1].append(v)
+        else:
+            out.append([v])
+    return [sum(g) / len(g) for g in out]
+
+
+def column_of(cols, x):
+    """Столбец (номер в cols), ближайший к краю x."""
+    return min(range(len(cols)), key=lambda k: abs(cols[k] - x))
+
+
+def grid_columns(rows, tol=20.0):
+    """Столбцы сетки без линеек (П2: столбец — кластер начал кусков, не меньше двух рядов; docx_layout._grids): rows —
+    ряды [(x0, текст)] коротких кусков. Сетка — если куски встают в общие столбцы: начало в пределах tol (код «30BY07» под
+    «04.TH10D001» сдвинут на 15 pt — тот же столбец, 3PR42 л. 112), в ряду каждый кусок в своём столбце, каждый столбец —
+    хотя бы в двух рядах, столбцов 2–8, и при двух — все куски из кодов («подпись ⇥ текст» — не сетка). Возвращает x
+    столбцов или []. Столбец якорей Rows (тот же край или середина ±3 pt, якоря преобладают) — другой вопрос: якорь ряда,
+    а не сетка перечня."""
+    cols = cluster([x for r in rows for x, _ in r], tol)
+    col = lambda x: column_of(cols, x)
+    good = 2 <= len(cols) <= 8 and all(len({col(x) for x, _ in r}) == len(r)
+                                       and all(abs(cols[col(x)] - x) <= tol for x, _ in r) for r in rows) \
+        and all(sum(any(col(x) == k for x, _ in r) for r in rows) >= 2 for k in range(len(cols))) \
+        and (len(cols) >= 3 or all(code_line(t) for r in rows for _, t in r))
+    return cols if good else []
 
