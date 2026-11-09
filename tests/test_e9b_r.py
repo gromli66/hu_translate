@@ -241,3 +241,17 @@ def test_nested_table_over_many_rows_keeps_its_columns(tmp_path):
     tab = next(b for b in blocks if b["k"] == "table")
     assert len(tab["frame"]["xs"]) == 6, tab["frame"]["xs"]
     assert [len(r) for r in tab["rows"]][2:6] == [4, 4, 4, 4]                            # не свёрнуты в две
+
+
+def test_band_without_text_is_not_a_row():
+    """R6: якорь ниже начала абзаца соседней ячейки («@0YATBEATL» против «Átlagos zóna belépő hőmérséklet» в две строки,
+    01-02FMP0BIGT л. 24) резал полосу над собой, абзац уходил в полосу своей середины — над рядом вставал пустой ряд.
+    Полоса без текста — не ряд."""
+    import docx_layout as DL
+    t = _grid1([60, 110, 400], 90, 200)
+    segs = [_seg("QA1121", 70, 112, 100), _seg("QA1122", 70, 150, 100),
+            _seg("Átlagos zóna belépő hőmérséklet", 120, 100, 390, lines=2), _seg("Bórsavkonc. (kézi)", 120, 150, 390)]
+    b = DL._table_block(t, segs, 0, None, "Times New Roman", 10, False)
+    text = lambda c: ["".join(r.get("t", "") for r in p["runs"]) for p in c["blocks"]]
+    assert [[text(c) for c in r] for r in b["rows"]] == [
+        [["QA1121"], ["Átlagos zóna belépő hőmérséklet"]], [["QA1122"], ["Bórsavkonc. (kézi)"]]]

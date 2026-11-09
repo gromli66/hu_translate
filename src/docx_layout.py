@@ -718,14 +718,14 @@ def _seg_frags(segs, size):
 
 
 def _band_anchors(groups, size, rw):
-    """Якорь полосы (_table_block) для каждой строки ячейки groups = [(столбец, сегменты строки)] — тот же, что при
-    нарезке (rows.Rows по кускам строк таблицы, rw; E9b-R R6): номер пункта или код (rows.is_anchor) в столбце, где такие
-    куски преобладают, и на его уровне справа строка другой ячейки (якорь делит строки справа от себя, Rows._own).
-    Прежде своё правило — patterns.ROW_ANCHOR в первом столбце: «YA-K7 ⇥ …» (3PR10), «30UY01/1 ⇥ сигнал» (3SZ23) не
-    якоря — условия и сигналы шли стопкой мимо своих кодов."""
+    """Якорь полосы (_table_block) для каждой строки ячейки groups = [(столбец, сегменты строки)] — якорь rows.Rows (по
+    кускам строк таблицы, rw; E9b-R R6): номер пункта или код (rows.is_anchor) в столбце, где такие куски преобладают, — и
+    в первом столбце: якорь Rows делит строки справа от себя, а полоса режет всю строку сетки, и ячейки левее якоря тоже
+    (код «30UJ57S201» в третьем столбце 3FI18 отрывал от ряда его «Tüzivíz gömbcsap hajtás» слева, пустые ряды).
+    Прежде своё правило — patterns.ROW_ANCHOR: «YA-K7 ⇥ …» (3PR10) не якоря — условия шли стопкой мимо своих кодов; «0.»
+    под шапкой «Módosítás sorszáma» (листы изменений) — якорь: полоса резалась на 2 pt выше даты рядом, пустой ряд."""
     own = set(rw.anchors)
-    return [(f0 := tuple((group[0]["loc"].get("frags") or [group[0]["loc"]["bbox"]])[0][:4])) in own
-            and any(rw._own(f["bbox"]) == f0 for c, g in groups if c != ci for f in _seg_frags(g, size))
+    return [ci == 0 and tuple((group[0]["loc"].get("frags") or [group[0]["loc"]["bbox"]])[0][:4]) in own
             for ci, group in groups]
 
 
@@ -805,6 +805,16 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields
             # наименьшей высотой не делилась на листы LibreOffice — уходила на следующий, полстраницы пусто (3SZ23)
             end = min(ys[r + 1], max(s[1] for s in strips) + 4) if r == len(grid) - 1 else ys[r + 1]
             cuts = [ys[r]] + [s[0] - 2 for s in strips[1:] if s[0] - 2 > ys[r] + 1] + [end]
+            # полоса без текста — не ряд: якорь ниже начала абзаца соседней ячейки, абзац уходит в полосу своей
+            # середины, а над якорем вставал пустой ряд («@0YATBEATL», 01-02FMP0BIGT л. 24; «0.» листов изменений)
+            mids = [(s["loc"]["bbox"][1] + s["loc"]["bbox"][3]) / 2 for ci in range(len(cells))
+                    for s in put.get((r, ci), [])] + [rect.y0 for ci in range(len(cells)) for rect, _ in inner.get((r, ci), [])]
+            k = 0
+            while len(cuts) > 2 and k < len(cuts) - 1:
+                if any(cuts[k] <= m < cuts[k + 1] or k == len(cuts) - 2 and m >= cuts[k + 1] for m in mids):
+                    k += 1
+                else:
+                    del cuts[k + 1 if k < len(cuts) - 2 else k]
             for k in range(len(cuts) - 1):
                 bands.append((r, cuts[k], cuts[k + 1], k == 0, k == len(cuts) - 2))
         else:
