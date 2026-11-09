@@ -1680,8 +1680,7 @@ def _grid(zsegs, bold=None):
 
 def layout(src, blocks, segs, info):
     """Раскладка листа (как docx_struct.layout): поля — по тексту тела, колонтитулы — сеткой по повторяющимся
-    сегментам типичного листа, номер листа оригинала по листам — счётчик в колонтитуле (zones.sheet_numbers), в шапке
-    — меткой поля PAGE."""
+    сегментам типичного листа, номер листа — число, растущее с листом."""
     import fitz
     doc = fitz.open(str(src))
     W, H = doc[0].rect.width, doc[0].rect.height
@@ -1703,10 +1702,23 @@ def layout(src, blocks, segs, info):
     common = Counter(len(by_page[p]) for p in pages).most_common(1)[0][0] if pages else 0
     same = [p for p in pages if len(by_page[p]) == common]
     rep = same[len(same) // 2] if same else None
-    # номер листа и начало нумерации — только по метке решателя (zones.sheet_numbers/mark_counter, ниже): прежний
-    # поиск «числа, растущего с листом» на образце и «нумерация с 1 или 2» (E9b-Z, Z11) давали у 3PR42 начало −1, а
-    # поле PAGE ставилось на первое такое число перевода
     page_tok, num_start = None, None
+    if rep is not None:
+        for s in by_page[rep]:                               # число, растущее с листом: «Oldalszám: 7»
+            m = re.search(r"\d+", s["text"])
+            if not m:
+                continue
+            same = [t for p in pages for t in by_page[p] if ZN.sig(t["text"]) == ZN.sig(s["text"])
+                    and abs(t["loc"]["bbox"][1] - s["loc"]["bbox"][1]) < 4]       # то же место на листе
+            vals = Counter(int(re.search(r"\d+", t["text"]).group()) - t["page"] for t in same if re.search(r"\d+", t["text"]))
+            # смещение номера от листа — одно у большинства (3PR42: нумерация сдвигается посреди документа)
+            if len(same) >= 3 and vals and vals.most_common(1)[0][1] >= 0.6 * len(same):
+                page_tok = m.group()
+                # нумерация — с числа оригинала: у 3SZ19 первый лист PDF — «Oldalszám: 2» (титул не в файле); с титулом
+                # тело начинается со 2-го листа — и число его (раньше выходило на единицу меньше)
+                first = 1 if any(s["page"] == 0 for s in runs) else 2
+                num_start = {"page": first, "value": vals.most_common(1)[0][0] + first - 1}
+                break
     bold = info.get("style")
     # в сетку колонтитула — только строки, одинаковые почти на всех листах (zones.stable_running)
     stable = {s["id"] for s in runs if ZN.stable_running(s, runs, run_keys, H)}
