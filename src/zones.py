@@ -164,12 +164,15 @@ def sheet_numbers(zsegs):
     pairs = [(no[p], no[p + 1]) for p in no if p + 1 in no]
     if not pairs or sum(b == a + 1 for a, b in pairs) < 0.6 * len(pairs):
         return {}, counter
-    # лист, где OCR номера не прочёл (3PR42 л. 5, 42, 98), между соседями через один — их середина: без номера лист
-    # шёл продолжением прошлого раздела («N (прод.)»)
-    for p in [p for p in range(min(no) + 1, max(no)) if p not in no]:
-        if p - 1 in no and p + 1 in no and no[p + 1] == no[p - 1] + 2:
-            no[p] = no[p - 1] + 1
-    return dict(sorted(no.items())), counter
+    # номер — только прочитанный и в монотонном ряду: число не больше соседа слева или не меньше соседа справа (OCR
+    # прочёл не ту цифру, повтор) — листа без номера, без угадывания; лист без номера — прежним порядком (продолжает
+    # раздел прошлого листа, номер — счётом страниц); сбоев много (номер есть меньше чем у ¾ листов) или ряд всё равно
+    # не растёт — номеров нет у всего документа (решение оркестратора по Z8, 09.11)
+    bad = {p for p in no if p - 1 in no and no[p] <= no[p - 1] or p + 1 in no and no[p] >= no[p + 1]}
+    no = {p: n for p, n in sorted(no.items()) if p not in bad}
+    if len(no) < 0.75 * len(texts) or any(b <= a for a, b in zip(list(no.values()), list(no.values())[1:])):
+        return {}, counter
+    return no, counter
 
 
 def mark_counter(segs, counter, mark):

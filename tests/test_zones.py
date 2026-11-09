@@ -55,7 +55,8 @@ def test_repeat_from_previous_sheet_is_not_a_table_cell():
 def test_ocr_sheets_numbered_from_header_counter(tmp_path):
     """Путь А и для распознанного документа (E9b-Z, Z8): номер листа оригинала — счётчик шапки («Oldalszám: N»; первый
     лист PDF — «2», титула в файле нет), лист — свой раздел со своим номером, номер в шапке — поле PAGE на месте
-    счётчика (метка), а не первое число перевода; лист, где OCR номера не прочёл, — между соседями."""
+    счётчика (метка), а не первое число перевода; лист, где OCR номера не прочёл, — без номера (не угадывается): он
+    продолжает раздел прошлого листа."""
     from docx import Document
     from docx.oxml.ns import qn
     import docx_build as B
@@ -66,7 +67,7 @@ def test_ocr_sheets_numbered_from_header_counter(tmp_path):
         if s["page"] == 4 and s["text"].startswith("Oldalszám"):
             s["text"] = "Oldalszám:"
     blocks, L = B.blocks_layout(src, segs, "layout")
-    assert L["sheet_no"] == {p: p + 1 for p in range(1, 9)} and L["page_marked"]
+    assert L["sheet_no"] == {p: p + 1 for p in range(1, 9) if p != 5} and L["page_marked"]
     assert any(D.PAGE_MARK in c for r in L["head_grid"]["rows"] for c in r["cells"])
     out = tmp_path / "ocr.docx"
     B.Builder(B.Memory([(s["text"], s["text"]) for s in segs]), lambda img: png(), PROFILE).build(
@@ -74,6 +75,18 @@ def test_ocr_sheets_numbered_from_header_counter(tmp_path):
     doc = Document(str(out))
     starts = [(s._sectPr.find(qn("w:pgNumType")).get(qn("w:start")) if s._sectPr.find(qn("w:pgNumType")) is not None
                else None) for s in doc.sections]
-    assert starts == [str(n) for n in range(2, 10)]
+    assert starts == ["2", "3", "4", "5", "7", "8", "9"]
     # номер — полем на первой странице раздела-листа; его перелив — «N … (прод.)» текстом (путь А)
     assert all("PAGE" in sec.first_page_header._element.xml for sec in doc.sections)
+
+
+def test_sheet_numbers_only_read_and_monotonic():
+    """Номер листа OCR — только прочитанный и в монотонном ряду: повтор/скачок назад — лист без номера; сбоев много —
+    номеров нет у документа (прежнее поведение)."""
+    def zs(nums):
+        return {p: [{"page": p - 1, "text": f"Oldalszám: {n}" if n is not None else "Oldalszám:",
+                     "loc": {"bbox": [400, 40, 500, 50]}}] for p, n in enumerate(nums, 1)}
+    no, _ = ZN.sheet_numbers(zs([2, 3, 4, 5, 5, 7, 8, 9, 10, 11]))
+    assert no == {1: 2, 2: 3, 3: 4, 6: 7, 7: 8, 8: 9, 9: 10, 10: 11}
+    no, _ = ZN.sheet_numbers(zs([2, 3, None, None, 6, None, 8, 9]))
+    assert no == {}
