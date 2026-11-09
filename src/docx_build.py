@@ -256,6 +256,20 @@ def _text_w(text, size, caps=False):
                for ch in text)
 
 
+_PRINT_FONTS = {}
+
+
+def _print_w(text, size, kind=None, bold=False):
+    """Ширина строки в печати, pt: LibreOffice печатает шрифтами Liberation — метрики Times New Roman, Arial, Courier
+    New; у встроенных шрифтов PyMuPDF (tiro, helv, cour) те же метрики и кириллица. kind — класс шрифта (font_table:
+    modern — моноширинный, swiss — рубленый, иначе с засечками)."""
+    import fitz
+    name = {"modern": ("cour", "cobo"), "swiss": ("helv", "hebo")}.get(kind, ("tiro", "tibo"))[bool(bold)]
+    if name not in _PRINT_FONTS:
+        _PRINT_FONTS[name] = fitz.Font(name)
+    return _PRINT_FONTS[name].text_length(text, fontsize=size)
+
+
 from docx.exceptions import InvalidSpanError
 
 
@@ -2921,6 +2935,7 @@ class Builder:
                     self._header(sec, zl(first_of[j]))
                 if sec.different_first_page_header_footer and sec.first_page_header.is_linked_to_previous:
                     self._header(_first_page(sec), zl(first_of[j]))
+        self._tab_fit((L or {}).get("font_class") or {})
         self.doc.save(out)
         font_table(out, (L or {}).get("font_class") or {})
         return self.used_ids
@@ -2996,6 +3011,167 @@ class Builder:
                     p.paragraph_format.tab_stops.clear_all()
                     p.paragraph_format.tab_stops.add_tab_stop(Pt(round(need)))
             i = j
+
+    def _tab_fit(self, classes):
+        """Значение после последней табуляции абзаца («Наименование: … ⇥ Номер страницы: 3.», «… ⇥ 1 чел.», «… ⇥ ..
+        ………бар»): позиция табуляции — по оригиналу, а русский текст после неё длиннее, и он не помещался до правого края
+        ячейки или поля — число уходило строкой ниже к левому краю, отдельно от подписи (30RA+SGT TU — шапка на всех
+        листах, 30THHAGT, шапки 30BL150FÜT и 30GF(246)51GT; E9b-Z3). Табуляция — левее, на «край − текст после неё»,
+        если текст до неё на этой строке там уже кончился; абзацы одной ячейки (колонтитула) с той же табуляцией —
+        вместе (столбец «Номер версии» / «Номер страницы»). Иначе — подпись и значение после табуляции неразрывно
+        (переносятся вместе). Только короткое значение (до половины строки) после табуляции с позицией; ширина —
+        метрикой шрифта печати (_print_w), классы шрифтов — как у font_table."""
+        from docx.shared import Pt
+        styles = {}
+        for s in self.doc.styles.element.iter(W + "style"):
+            rpr, ppr = s.find(W + "rPr"), s.find(W + "pPr")
+            b = s.find(W + "basedOn")
+            styles[s.get(W + "styleId")] = (rpr, ppr, b.get(W + "val") if b is not None else None)
+        dflt = self.doc.styles.element.find(f"{W}docDefaults/{W}rPrDefault/{W}rPr")
+
+        def prop(sid, find, rpr=True):
+            """Свойство стиля по цепочке basedOn (rPr или pPr), затем умолчания документа."""
+            for _ in range(12):
+                if sid not in styles:
+                    break
+                r, p, base = styles[sid]
+                v = find(r if rpr else p) if (r if rpr else p) is not None else None
+                if v is not None:
+                    return v
+                sid = base
+            return find(dflt) if rpr and dflt is not None else None
+        tw = lambda e, *names: next((int(e.get(W + n)) / 20 for n in names if e is not None and e.get(W + n)), None)
+        dt = self.doc.settings.element.find(W + "defaultTabStop")
+        deftab = tw(dt, "val") or 35.4
+
+        def layout(p, lim):
+            """Табуляции абзаца по строкам: [(позиция стопа или None, конец текста до неё на строке)], ширина текста
+            после последней, на строке ли он со своей табуляцией, прогоны с ним."""
+            ppr = p.find(W + "pPr")
+            st = ppr.find(W + "pStyle") if ppr is not None else None
+            sid = st.get(W + "val") if st is not None else "Normal"
+            ind = ppr.find(W + "ind") if ppr is not None else None
+            ind = ind if ind is not None else prop(sid, lambda e: e.find(W + "ind"), rpr=False)
+            left = tw(ind, "left", "start") or 0.0
+            lim -= tw(ind, "right", "end") or 0.0
+            x = left + (tw(ind, "firstLine") or 0.0) - (tw(ind, "hanging") or 0.0)
+            tabs = ppr.find(W + "tabs") if ppr is not None else None
+            stops = sorted((tw(t, "pos"), t.get(W + "val")) for t in tabs if t.get(W + "val") != "clear")
+            used, after, runs, ok = [], 0.0, [], True
+            for r in p.iter(W + "r"):
+                rpr = r.find(W + "rPr")
+                sz = rpr.find(W + "sz") if rpr is not None else None
+                size = int(sz.get(W + "val")) / 2 if sz is not None else \
+                    prop(sid, lambda e: (lambda z: int(z.get(W + "val")) / 2 if z is not None else None)(e.find(W + "sz"))) or 10
+                f = rpr.find(W + "rFonts") if rpr is not None else None
+                font = (f.get(W + "ascii") if f is not None else None) or \
+                    prop(sid, lambda e: (lambda z: z.get(W + "ascii") if z is not None else None)(e.find(W + "rFonts"))) or ""
+                kind = classes.get(font) or next((c for rx, c in FONT_GUESS if re.search(rx, font, re.I)), None)
+                b = rpr.find(W + "b") if rpr is not None else None
+                bold = b.get(W + "val") not in ("0", "false") if b is not None else \
+                    bool(prop(sid, lambda e: (lambda z: z.get(W + "val") not in ("0", "false") if z is not None else None)(e.find(W + "b"))))
+                for c in r:
+                    if c.tag == W + "tab":
+                        nxt = next((s for s in stops if s[0] > x + 0.5), None)
+                        used.append((nxt if nxt and nxt[0] <= lim else None, x))
+                        x = nxt[0] if nxt and nxt[0] <= lim else (int(x / deftab) + 1) * deftab
+                        if x > lim:
+                            x = left
+                        after, runs, ok = 0.0, [], True
+                    elif c.tag == W + "br":
+                        x, after, runs = left, 0.0, []
+                    elif c.tag == W + "t" and c.text:
+                        # знаки нулевой ширины (соединитель слов после поля-рамки, мягкий перенос) — без ширины
+                        for w in re.split(r"(?<= )", re.sub("[\u00ad\u200b-\u200d\u2060\ufeff]", "", c.text)):
+                            wd = _print_w(w, size, kind, bold)
+                            if w.strip() and x + _print_w(w.rstrip(), size, kind, bold) > lim + 0.5 and x > left + 1:
+                                x, ok = left, False                    # перенос: слово — на следующую строку
+                            x += wd
+                            after += wd
+                        runs.append(c)
+            return used, after, ok, runs, lim, left
+
+        def bind(runs):
+            """Текст после табуляции — неразрывно: подпись и значение переносятся вместе, и значение не рвётся на
+            «300.» и «0s» (бланки UTS 30RL2126GT, 30RR0102ÁTJGT) — неразрывный пробел и соединитель слов."""
+            for c in runs:
+                c.text = re.sub(r"(?<=[./-])(?=\S)", "\u2060", c.text.replace(" ", "\u00a0"))
+        containers = []                                 # (абзацы контейнера, ширина текста)
+        secs = self.doc.sections
+        sec_w = [(s.page_width - s.left_margin - s.right_margin) / 12700 for s in secs]
+
+        def cell_w(tc):
+            w = tc.find(f"{W}tcPr/{W}tcW")
+            if w is None or w.get(W + "type") not in (None, "dxa"):
+                return None
+            tbl = next(tc.iterancestors(W + "tbl"))
+            pad = [5.4, 5.4]
+            for m in (tbl.find(f"{W}tblPr/{W}tblCellMar"), tc.find(f"{W}tcPr/{W}tcMar")):
+                for k, names in enumerate((("left", "start"), ("right", "end"))):
+                    e = next((m.find(W + n) for n in names if m is not None and m.find(W + n) is not None), None)
+                    if e is not None:
+                        pad[k] = tw(e, "w") or 0.0
+            return int(w.get(W + "w")) / 20 - pad[0] - pad[1]
+
+        def collect(root, width):
+            groups = {}
+            for p in root.iter(W + "p"):
+                tc = next(p.iterancestors(W + "tc"), None)
+                key = tc if tc is not None else root    # сам элемент: id() прокси lxml повторяется у другой ячейки
+                if key not in groups:
+                    groups[key] = ([], cell_w(tc) if tc is not None else width)
+                groups[key][0].append(p)
+            containers.extend(groups.values())
+        k = 0
+        for el in self.doc.element.body:                # абзацы тела по разделам (sectPr в абзаце закрывает раздел)
+            collect(el, sec_w[min(k, len(sec_w) - 1)])
+            if el.tag == W + "p" and el.find(f"{W}pPr/{W}sectPr") is not None:
+                k += 1
+        seen = set()
+        for i, s in enumerate(secs):
+            for part in (s.header, s.footer, s.first_page_header, s.first_page_footer):
+                if not part.is_linked_to_previous and part._element not in seen:
+                    seen.add(part._element)
+                    collect(part._element, sec_w[i])
+        for pars, width in containers:
+            if not width:
+                continue
+            info = {}
+            for p in pars:
+                if p.find(f"{W}pPr/{W}tabs") is None or p.find(f".//{W}tab") is None:
+                    continue
+                info[p] = layout(p, width)
+            # стоп левой табуляции → новая позиция: у абзаца, чей короткий текст после последней табуляции не помещается
+            need, bad = {}, {}
+            for p, (used, after, ok, runs, lim, left) in info.items():
+                stop = used[-1][0] if used else None
+                if not used or after > 0.5 * (lim - left):
+                    continue
+                to = int(lim - after - 6)              # запас: рамки полей, округления печати
+                if stop and stop[1] in (None, "left", "start") and (not ok or stop[0] + after > lim + 0.5):
+                    need[stop[0]] = min(need.get(stop[0], to), to)
+                    bad.setdefault(stop[0], []).append(runs)
+                elif stop is None and not ok:
+                    # своего стопа нет (текст до табуляции длиннее столбца — табуляция по умолчанию): свой стоп абзацу,
+                    # если прежние его табуляции — по стопам (новый их не перехватит) и текст до неё там уже кончился
+                    # («машинист-обходчик второго контура ⇥ 1 чел.» 30RVRWTSBIGT)
+                    if all(s for s, _ in used[:-1]) and used[-1][1] + 4 <= to:
+                        tabs = p.find(f"{W}pPr/{W}tabs")
+                        tabs.append(_el("w:tab", w__val="left", w__pos=str(int(to * 20))))
+                        tabs[:] = sorted(tabs, key=lambda t: int(t.get(W + "pos") or 0))
+                    else:
+                        bind(runs)
+            for pos, to in need.items():
+                # все табуляции контейнера на этом стопе: текст до каждой кончается левее новой позиции
+                members = [(p, x) for p, (used, *_r) in info.items() for s, x in used if s and s[0] == pos]
+                if to < pos and all(x + 4 <= to for _, x in members):
+                    for p in {id(p): p for p, _ in members}.values():
+                        for t in p.find(f"{W}pPr/{W}tabs"):
+                            if t.get(W + "pos") and abs(int(t.get(W + "pos")) / 20 - pos) < 0.05:
+                                t.set(W + "pos", str(int(to * 20)))
+                else:
+                    for runs in bad[pos]:
+                        bind(runs)
 
 
 # ---------------------------------------------------------------- в конвейере (pipeline.extract, struct_fill; assemble)
