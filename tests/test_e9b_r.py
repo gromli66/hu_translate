@@ -38,40 +38,6 @@ def test_short_row_cells_take_their_frame_columns_in_word_fit_too(tmp_path):
     assert stops and max(stops) < widths[1] - 2 * 5.4, (stops, widths)
 
 
-def _p(text, top, x0=80.0):
-    g = {"page": 1, "top": top, "bottom": top + 10, "x0": x0, "x1": x0 + 60, "first_x0": x0, "size": 10, "lines": 1}
-    return {"k": "p", "runs": [{"t": text, "font": "Tahoma", "size": 10, "b": False, "i": False, "color": "000000"}],
-            "geom": g}
-
-
-def _blank():
-    return {"k": "p", "runs": [{"t": "", "font": "Tahoma", "size": 10, "b": False, "i": False, "color": "000000"}]}
-
-
-def test_form_marks_cell_is_cut_against_its_lines():
-    """П. 11 просмотра DOCX 06.11 (TU «Пакш», 30RVRXTSBIGT_TU л. 1–4): столбец отметок «O» в Word — одна ячейка на весь
-    ряд, «O» выровнены пустыми абзацами против строк пункта. sub_rows резал ряд по меткам «1.1.», «1.2.» и паре, а
-    ячейка отметок была «прочей» — все «O» стопкой в первой подстроке. Отметка на высоте абзаца пары — своя подстрока."""
-    import docx_struct as D
-    cell = lambda *bl: {"blocks": list(bl), "th": False, "geom": {"page": 1, "top": 100, "bottom": 160, "x0": 70,
-                                                                  "x1": 100}}
-    row = [cell(_p("1.1.", 100, 70), _blank(), _blank(), _p("1.2.", 140, 70)),
-           cell(_p("Az alábbi armatúrák zárva:", 100, 120), _p("30TK30S201", 120, 120), _p("A 31RD31P702 kör", 140, 120)),
-           cell(_blank(), _p("O", 120, 480), _blank(), _p("O", 140, 480))]
-    out = D.sub_rows([{"k": "table", "rows": [row]}])[0]["rows"]
-    text = lambda c: [D.text_of(x["runs"]) for x in c["blocks"]]
-    assert [[text(c) for c in r] for r in out] == [
-        [["1.1."], ["Az alábbi armatúrák zárva:"], []], [[], ["30TK30S201"], ["O"]], [["1.2."], ["A 31RD31P702 kör"], ["O"]]]
-    assert not any(c.get("vcont") for r in out for c in r)
-    # без меток (номер пункта один, «1.15.»): пара — ячейка слева, с абзацами на высотах отметок; текст выше — своя подстрока
-    row = [cell(_p("1.15.", 100, 70)),
-           cell(_p("TO szakterület által:", 100, 120), _p("30RR21S201", 110, 120), _p("30RR21S401", 120, 120)),
-           cell(_blank(), _p("O", 110, 480), _p("O", 120, 480))]
-    out = D.sub_rows([{"k": "table", "rows": [row]}])[0]["rows"]
-    assert [[text(c) for c in r] for r in out] == [
-        [["1.15."], ["TO szakterület által:"], []], [[], ["30RR21S201"], ["O"]], [[], ["30RR21S401"], ["O"]]]
-
-
 def test_form_mark_is_one_definition_for_cell_valign():
     """Шаг 0б: ячейка по низу (отметка против нижней строки многострочного абзаца рядом) — только ячейка из отметок
     rows.FORM_MARK, как при нарезке. Прежде своё правило «до двух знаков без букв и цифр»: прочерк «-» (нет значения,

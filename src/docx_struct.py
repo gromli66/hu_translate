@@ -22,7 +22,6 @@ from collections import Counter
 import geom as GM
 import patterns as PT
 import sids as SIDS
-from rows import FORM_MARK
 
 HEAD = {"H1": 1, "H2": 2, "H3": 3, "H4": 4, "H5": 5, "H6": 6}
 SKIP = {"Artifact"}
@@ -432,14 +431,9 @@ def sub_rows(bs):
     метки вставали стопкой вверху ячейки и уезжали от своих пунктов (а в переводе длина пунктов другая — отбивкой не
     выровнять, 19.10). Режутся ячейки-метки (короткие абзацы с пустыми между ними) и ячейка-пара, у которой абзацы
     начинаются на тех же высотах; прочие ячейки строки — одной ячейкой на все подстроки (c["vcont"] — продолжение
-    сверху). Линий между подстроками нет.
-    Отметки бланка (rows.FORM_MARK: «O», «□») — справа от своих строк: ячейка отметок в Word одна на весь ряд, «O»
-    выровнены пустыми абзацами против строк пункта. Она была «прочей» — все «O» вставали стопкой в первую подстроку
-    (TU «Пакш»: п. 11 просмотра DOCX 06.11, SEG_QUALITY п. 3). Отметка на высоте абзаца пары — своя подстрока, ячейка
-    отметок режется вместе с парой; пара без меток — ячейка слева от отметок, чьи абзацы начаты на их высотах."""
+    сверху). Линий между подстроками нет."""
     blank = lambda x: x["k"] == "p" and not text_of(x.get("runs") or []).strip()
     top = lambda x: (x.get("geom") or {}).get("top")
-    near = lambda t, ts: any(abs(t - u) < 2 for u in ts)
     for b in bs:
         for it in b.get("items") or []:
             sub_rows(it)
@@ -447,15 +441,13 @@ def sub_rows(bs):
             continue
         rows = []
         for r in b["rows"]:
-            full = [[x for x in c.get("blocks") or [] if not blank(x)] for c in r]
-            marks = [ci for ci, f in enumerate(full) if len(f) >= 2 and all(
-                x["k"] == "p" and top(x) is not None and FORM_MARK.match(text_of(x["runs"]).strip()) for x in f)]
             labels, tops = [], None
             for ci, c in enumerate(r):
                 bl = c.get("blocks") or []
-                if ci not in marks and len(full[ci]) >= 2 and len(full[ci]) < len(bl) and all(
-                        x["k"] == "p" and top(x) is not None and len(text_of(x["runs"]).strip()) <= 20 for x in full[ci]):
-                    ts = [top(x) for x in full[ci]]
+                full = [x for x in bl if not blank(x)]
+                if len(full) >= 2 and len(full) < len(bl) and all(x["k"] == "p" and top(x) is not None
+                                                                  and len(text_of(x["runs"]).strip()) <= 20 for x in full):
+                    ts = [top(x) for x in full]
                     if tops is None or len(ts) == len(tops) and all(abs(a - z) < 2 for a, z in zip(ts, tops)):
                         labels.append(ci)
                         tops = tops or ts
@@ -464,24 +456,10 @@ def sub_rows(bs):
             pair = [ci for ci, c in enumerate(r) if labels and ci == labels[0] + 1 and ci not in labels
                     and all(any(top(x) is not None and abs(top(x) - t) < 2 for x in c.get("blocks") or [] if not blank(x))
                             for t in tops)]
-            if not labels and marks:                    # пара отметок — ближайшая (слева, потом справа) ячейка с абзацами
-                pair = [next((ci for ci in sorted(range(len(r)), key=lambda k: (abs(k - marks[0]), k > marks[0]))
-                              if ci not in marks and any(
-                    x["k"] == "p" and top(x) is not None and near(top(x), [top(m) for m in full[marks[0]]])
-                    for x in full[ci])), None)]                         # на их высотах
-                pair, tops = ([], None) if pair[0] is None else (pair, [])
-            if marks and pair:
-                at = [top(x) for x in full[pair[0]] if x["k"] == "p" and top(x) is not None]
-                hit = sorted({top(m) for ci in marks for m in full[ci] if near(top(m), at)})
-                if not labels and hit and at and min(at) < hit[0] - 2:
-                    hit = [min(at)] + hit               # текст пары выше первой отметки — своя первая подстрока
-                for t in hit:
-                    if not near(t, tops):
-                        tops = sorted(tops + [t])
-            if not pair or len(tops or []) < 2:
+            if not labels or not pair:
                 rows.append(r)
                 continue
-            cut = labels + pair + [ci for ci in marks if ci not in labels + pair]
+            cut = labels + pair
             n = len(tops)
 
             def share(c):
