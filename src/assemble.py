@@ -905,7 +905,22 @@ def lost_ids(segs, res, used, exempt=None, dropped=(), skip_pages=(), H=842, tre
                 continue
             if taken is None:
                 taken = {key(t["text"]) for t in segs if t["id"] in used and "struct_only" not in t["loc"]}
-            if key(_reglued(s["text"])) in taken:
+                # ряд вложенной таблицы, что сборка спрашивала одной строкой (fit_rows сворачивал его в ячейку), а теперь
+                # берёт по ячейкам (E9b-R R1: «30XL11S201 ZÁRVA □ 30XL53S201 ZÁRVA □» 30BOXVILGT_TU) — его текст ровно
+                # склеивается из подряд идущих взятых сегментов своего листа: этот struct_only устарел, а не потерян
+                runs, page = set(), {}
+                for t in segs:
+                    if "struct_only" not in t["loc"]:
+                        page.setdefault(t["page"], []).append(key(t["text"]) if t["id"] in used else None)
+                for pn, ks in page.items():
+                    for i in range(len(ks)):
+                        acc = ks[i]
+                        for k in ks[i + 1:i + 16]:
+                            if acc is None or k is None:
+                                break
+                            acc += k
+                            runs.add((pn, acc))
+            if key(_reglued(s["text"])) in taken or (s["page"], key(s["text"])) in runs:
                 continue
         elif _out_of_body(s, skip_pages):
             continue
