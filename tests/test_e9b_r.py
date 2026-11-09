@@ -227,3 +227,21 @@ def test_band_without_text_is_not_a_row():
     text = lambda c: ["".join(r.get("t", "") for r in p["runs"]) for p in c["blocks"]]
     assert [[text(c) for c in r] for r in b["rows"]] == [
         [["QA1121"], ["Átlagos zóna belépő hőmérséklet"]], [["QA1122"], ["Bórsavkonc. (kézi)"]]]
+
+
+def test_sub_rows_cut_like_bands_and_split_lists_by_item():
+    """R2: места разреза подстрок sub_rows — rows.bands, как полосы _table_block (якоря — метки и отметки): «O» против
+    пунктов списка «− 30EV …» (30RVRXTSBIGT_TU 1.15) — каждая в подстроке своего пункта, список делится по пунктам;
+    прежде список был одним блоком в одной подстроке, «O» — стопкой или в пустых подстроках под ним."""
+    import docx_struct as D
+    cell = lambda *bl: {"blocks": list(bl), "th": False, "geom": {"page": 1, "top": 100, "bottom": 160, "x0": 70,
+                                                                  "x1": 100}}
+    lst = {"k": "list", "kind": "bullet", "items": [[_p("− 30EV felől táplálás", 120, 120)],
+                                                    [_p("− be kell kapcsolni", 130, 120)]]}
+    row = [cell(_p("1.15.", 100, 70)), cell(_p("Megjegyzés:", 110, 120), lst),
+           cell(_blank(), _p("O", 120, 480), _p("O", 130, 480))]
+    out = D.sub_rows([{"k": "table", "rows": [row]}])[0]["rows"]
+    text = lambda c: [D.text_of(x["runs"]) if x["k"] == "p" else [D.text_of(i[0]["runs"]) for i in x["items"]]
+                      for x in c["blocks"]]
+    assert [[text(c) for c in r] for r in out] == [
+        [["1.15."], ["Megjegyzés:"], []], [[], [["− 30EV felől táplálás"]], ["O"]], [[], [["− be kell kapcsolni"]], ["O"]]]

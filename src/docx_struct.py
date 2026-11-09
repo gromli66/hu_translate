@@ -23,7 +23,7 @@ import geom as GM
 import patterns as PT
 import sids as SIDS
 from lines import hyphen_break, mid_phrase
-from rows import FORM_MARK
+from rows import FORM_MARK, bands
 
 HEAD = {"H1": 1, "H2": 2, "H3": 3, "H4": 4, "H5": 5, "H6": 6}
 SKIP = {"Artifact"}
@@ -473,11 +473,11 @@ def sub_rows(bs):
             if not labels and marks:                    # пара отметок — ближайшая (слева, потом справа) ячейка с абзацами
                 pair = [next((ci for ci in sorted(range(len(r)), key=lambda k: (abs(k - marks[0]), k > marks[0]))
                               if ci not in marks and any(
-                    x["k"] == "p" and top(x) is not None and near(top(x), [top(m) for m in full[marks[0]]])
-                    for x in full[ci])), None)]                         # на их высотах
+                    y["k"] == "p" and top(y) is not None and near(top(y), [top(m) for m in full[marks[0]]])
+                    for x in full[ci] for y in _flat_paras(x))), None)]  # на их высотах (и пункты списков)
                 pair, tops = ([], None) if pair[0] is None else (pair, [])
             if marks and pair:
-                at = [top(x) for x in full[pair[0]] if x["k"] == "p" and top(x) is not None]
+                at = [top(y) for x in full[pair[0]] for y in _flat_paras(x) if y["k"] == "p" and top(y) is not None]
                 hit = sorted({top(m) for ci in marks for m in full[ci] if near(top(m), at)})
                 if not labels and hit and at and min(at) < hit[0] - 2:
                     hit = [min(at)] + hit               # текст пары выше первой отметки — своя первая подстрока
@@ -488,6 +488,17 @@ def sub_rows(bs):
                 rows.append(r)
                 continue
             cut = labels + pair + [ci for ci in marks if ci not in labels + pair]
+            # места разреза — полосы, как у _table_block (rows.bands, E9b-R R2): якоря — метки и отметки. Прежде — верхи
+            # меток и отметок с допуском 2 pt: «□» на 2,2 pt выше своей строки оставалась в подстроке выше (30RA+SGT TU),
+            # отметка на 2,4 pt ниже метки давала подстроку в 2,4 pt (31SDTÖMGT TU); текст ячейки-пары над первой меткой
+            # (заголовок раздела) стоял в одной подстроке с ней
+            # абзацы ячеек — и пункты списков: «O» против пунктов «− 30EV …» (30RVRXTSBIGT_TU 1.15) — свои подстроки
+            spans = sorted((top(y), (y.get("geom") or {}).get("bottom") or top(y) + 10, ci, ci not in pair)
+                           for ci in cut for x in full[ci] for y in _flat_paras(x) if y["k"] == "p" and top(y) is not None)
+            tops = [q[0] for q in bands(spans)]
+            if len(tops) < 2:
+                rows.append(r)
+                continue
             n = len(tops)
 
             def share(c):
@@ -495,12 +506,22 @@ def sub_rows(bs):
                 предыдущим. Список («− 30YP15S101 zárva …» ячейки пп. 1.16–1.17 TU) своего верха не имеет, и отбор по
                 верху его выбрасывал: текст пропадал из DOCX (30RVRXTSBIGT_TU и ещё 3 документа, 30.10)."""
                 got, k = [[] for _ in range(n)], 0
+                at = lambda t: max(i for i in range(n) if i == 0 or t >= tops[i] - 2)
                 for x in c["blocks"]:
                     if blank(x):
                         continue
+                    if x["k"] == "list":                # список — по пунктам: пункт в подстроке своего верха
+                        parts = {}
+                        for it in x["items"]:
+                            t = next((q[1] for q in (_pos(y) for y in it) if q), None)
+                            k = at(t) if t is not None else k
+                            parts.setdefault(k, []).append(it)
+                        for kk, its in parts.items():
+                            got[kk].append(dict(x, items=its))
+                        continue
                     t = top(x) if x["k"] == "p" else (_pos(x) or (None, None))[1]
                     if t is not None:
-                        k = max(i for i in range(n) if i == 0 or t >= tops[i] - 2)
+                        k = at(t)
                     got[k].append(x)
                 return got
             parts = {ci: share(r[ci]) for ci in cut}

@@ -789,17 +789,7 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields
             put.get((r, ci), []), key=lambda s: (round(s["loc"]["bbox"][1] / 3), s["loc"]["bbox"][0])))]
         spans = sorted((min(ink(g, True) for g in group), max(ink(g, False) for g in group), ci, anchor)
                        for (ci, group), anchor in zip(groups, _band_anchors(groups, size, rw)))
-        strips = []                                             # [верх, низ, {ячейки}, метка]
-        for a, z, ci, anchor in spans:
-            # метка — своя полоса, если чужой абзац начался выше на полстроки метки, а не на 2 pt: по «чернилам»
-            # значок «□» кеглем 18 в той же строке начинается на 2,15 pt выше кода кеглем 12, и каждая строка
-            # сетки резалась на пустую полосу и строку с текстом (30KBFSZBIGT: 26 строк → 48, листы 9 → 11)
-            if strips and a < strips[-1][1] - 2 and not (anchor and a > strips[-1][0] + max(2.0, 0.5 * (z - a))):
-                strips[-1][1] = max(strips[-1][1], z)
-                strips[-1][2].add(ci)
-            else:
-                strips.append([a, z, {ci}, anchor])
-        strips = [s for k, s in enumerate(strips) if s[3] or not (k and len(s[2]) == 1 and s[2] <= strips[k - 1][2])]
+        strips = RW.bands(spans)                                # [верх, низ, {ячейки}, якорь] (rows.bands)
         if len(cells) >= 2 and len(strips) >= 2:
             # низ последней строки сетки — по тексту: рамка листа тянет её до низа листа, и подстрока с такой
             # наименьшей высотой не делилась на листы LibreOffice — уходила на следующий, полстраницы пусто (3SZ23)
