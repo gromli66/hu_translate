@@ -240,3 +240,99 @@ def bands(spans):
         else:
             out.append([a, z, {ci}, anchor])
     return [s for k, s in enumerate(out) if s[3] or not (k and len(s[2]) == 1 and s[2] <= out[k - 1][2])]
+
+
+# ------------------------------------------------------------------ таблица через лист (UNIFIED_DESIGN §3.6; E9b-R R4b)
+# Решения склейки таблицы, разрезанной листом (docx_struct.join_tables, _cut_rows — применение): шапка и её повтор, та же
+# сетка, последний лист, хвост ряда. Таблица — {"rows": [[ячейка]], "frame": {"xs"}, "geom"}; ячейка — {"blocks", "th",
+# "geom", "attrs"}; text(runs) — текст абзаца ячейки.
+
+def frame_xs(t):
+    """Рамка столбцов таблицы (frame.xs): линии листа (docx_layout, row_lines), вертикали размеченного PDF (docx_struct),
+    сетка выравнивания (docx_layout._grids); нет — пусто."""
+    return (t.get("frame") or {}).get("xs") or []
+
+
+def same_cols(a, b, tol=3.0):
+    """Две таблицы с рамкой столбцов — с теми же столбцами (на тех же местах: выравнивание столбцов склеенной таблицы
+    голосует по рамке первой части, docx_build._col_align): лист 2, начатый другой таблицей с тем же числом столбцов, —
+    не продолжение (ред-тим 20.10). Таблица без рамки столбцов — не проверяется. До E9.6 сравнивались только таблицы по
+    линиям листа (frame.row_lines): размеченный PDF и сетки выравнивания склеивались и с другой сеткой."""
+    xa, xb = frame_xs(a), frame_xs(b)
+    if not (xa and xb):
+        return True
+    return len(xa) == len(xb) and all(abs(p - q) <= tol for p, q in zip(xa, xb))
+
+
+def other_grid(a, b):
+    """Таблицы с рамкой столбцов — с разным числом столбцов: это разные таблицы, даже если шапка повторена (30BOXFELTEL:
+    форма на 36 листов — таблицы по 10, 12, 18 столбцов с одной шапкой; склеенные, они делили сетку первой, и ширин не
+    было — столбцы поровну, описание в 40 pt, ячейка с галочкой на весь остаток). До E9.6 — только по линиям листа."""
+    xa, xb = frame_xs(a), frame_xs(b)
+    return bool(xa and xb and len(xa) != len(xb))
+
+
+def last_page(t):
+    """Последний лист таблицы (склеенной из частей) — по листам её ячеек; без них — лист таблицы."""
+    return max((c["geom"]["page"] for r in t["rows"] for c in r if c.get("geom") and c["geom"].get("page")),
+               default=(t.get("geom") or {}).get("page", 0))
+
+
+def tail_pairs(last, r, text):
+    """Хвост ряда last на новом листе (docx_struct._cut_rows) → [(столбец в last, ячейка хвоста)] или []; text(runs) —
+    текст абзаца."""
+    cell_t = lambda c: " ".join(text(x["runs"]) for x in c.get("blocks", []) if x["k"] == "p").strip()
+    page = lambda row: next((c["geom"]["page"] for c in row if c.get("geom")), None)
+    if not (last and r and len(r) <= len(last) and (page(r) or 0) > (page(last) or 0)) \
+            or any((c.get("attrs") or {}).get("ColSpan") for c in r):
+        return []
+    # продолжение списка: ячейка выше кончается списком, хвост начат списком («– MOD …» | «– ADD …», JPDS табл. 15)
+    lists = lambda d, c: bool(d.get("blocks") and c.get("blocks")) and d["blocks"][-1]["k"] == "list" \
+        and c["blocks"][0]["k"] == "list"
+    # конец текста ячейки выше — последний её абзац
+    end = lambda d: next((text(x["runs"]).strip() for x in reversed(d.get("blocks") or []) if x["k"] == "p"
+                          and text(x["runs"]).strip()), "")
+    pairs = []
+    for c in r:
+        g = c.get("geom")
+        j = next((j for j, d in enumerate(last) if g and d.get("geom") and abs(d["geom"]["x0"] - g["x0"]) < 3), None)
+        t = cell_t(c)
+        # продолжение фразы — со строчной: «ячейка выше без точки» не годится — у шапок точек нет, и строка «1 | …»
+        # нового листа уходила в шапку (синтетика, 16.10); и как строки фразы при нарезке (lines: перенос слова «KI-» /
+        # «KAPCSOLVA», код после служебного слова или запятой «…szelepet a» / «30UJ97B001 felé NYITNI.»; E9b-R R3)
+        if j is None or t and not (t[0].islower() or mid_phrase(end(last[j]), t) or hyphen_break(end(last[j]), t)
+                                   or lists(last[j], c)):
+            return []
+        pairs.append((j, c))
+    return pairs if any(cell_t(c) or lists(last[j], c) for j, c in pairs) else []
+
+def head_rows(t):
+    """Число строк-шапок (TH) в начале таблицы."""
+    n = 0
+    while n < len(t["rows"]) and all(c["th"] for c in t["rows"][n]):
+        n += 1
+    return n
+
+
+def header_repeat(prev, b, text):
+    """Сколько первых строк таблицы b — повтор шапки таблицы prev на новом листе (строки «Повторять как заголовок» Word
+    печатает на каждом листе; синтетика 16.10): строки TH с тем же текстом, или дословный повтор первой строки без TH
+    (JPDS); нет — 0. text(runs) — текст абзаца."""
+    cell_t = lambda c: " ".join(text(x["runs"]) for x in c.get("blocks", []) if x["k"] == "p").strip()
+    row_t = lambda r: [cell_t(c) for c in r]
+    n = head_rows(b)
+    if n and n < len(b["rows"]) and n <= head_rows(prev)             and [row_t(r) for r in b["rows"][:n]] == [row_t(r) for r in prev["rows"][:n]]             and any(any(row_t(r)) for r in b["rows"][:n]):
+        return n                                            # повтор шапки на новом листе
+    if len(b["rows"]) > 1 and row_t(b["rows"][0]) == row_t(prev["rows"][0]) and all(row_t(b["rows"][0])):
+        return 1                                            # шапка без TH (JPDS), дословный повтор первой строки
+    return 0
+
+
+def continues(prev, b, rep, text):
+    """Таблица b — продолжение таблицы prev, разрезанной листом (docx_struct.join_tables): начата повтором шапки (rep —
+    header_repeat), или не шапкой, или хвостом ряда (tail_pairs); столько же ячеек (или хвост); та же сетка (с повтором
+    шапки — то же число столбцов, без — те же столбцы); на листе после ПОСЛЕДНЕГО листа prev (E9.6: по первому листу другая
+    таблица на листе 2 приклеивалась к таблице листов 1–2)."""
+    tail = lambda: tail_pairs(prev["rows"][-1], b["rows"][0], text)
+    return bool(prev["rows"] and b["rows"])         and bool(rep or not all(c["th"] for c in b["rows"][0]) or tail())         and bool(rep or max(map(len, b["rows"])) == max(map(len, prev["rows"])) or tail())         and ((rep and not other_grid(prev, b)) or (not rep and same_cols(prev, b)))         and (b.get("geom") or {}).get("page", 0) > last_page(prev)
+

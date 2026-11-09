@@ -22,7 +22,7 @@ from collections import Counter
 import geom as GM
 import patterns as PT
 import sids as SIDS
-from lines import hyphen_break, mid_phrase
+import rows as RW
 from rows import FORM_MARK, bands
 
 HEAD = {"H1": 1, "H2": 2, "H3": 3, "H4": 4, "H5": 5, "H6": 6}
@@ -309,34 +309,6 @@ def _hanging_tab(chars):
             if abs(float(b["x0"]) - x) < 1.5 and float(b["x0"]) - float(a["x1"]) > 0.5 * float(a["size"])}
 
 
-def _tail_pairs(last, r):
-    """Хвост строки last на новом листе (см. _cut_rows) → [(столбец в last, ячейка хвоста)] или []."""
-    cell_t = lambda c: " ".join(text_of(x["runs"]) for x in c.get("blocks", []) if x["k"] == "p").strip()
-    page = lambda row: next((c["geom"]["page"] for c in row if c.get("geom")), None)
-    if not (last and r and len(r) <= len(last) and (page(r) or 0) > (page(last) or 0)) \
-            or any((c.get("attrs") or {}).get("ColSpan") for c in r):
-        return []
-    # продолжение списка: ячейка выше кончается списком, хвост начат списком («– MOD …» | «– ADD …», JPDS табл. 15)
-    lists = lambda d, c: bool(d.get("blocks") and c.get("blocks")) and d["blocks"][-1]["k"] == "list" \
-        and c["blocks"][0]["k"] == "list"
-    # конец текста ячейки выше — последний её абзац
-    end = lambda d: next((text_of(x["runs"]).strip() for x in reversed(d.get("blocks") or []) if x["k"] == "p"
-                          and text_of(x["runs"]).strip()), "")
-    pairs = []
-    for c in r:
-        g = c.get("geom")
-        j = next((j for j, d in enumerate(last) if g and d.get("geom") and abs(d["geom"]["x0"] - g["x0"]) < 3), None)
-        t = cell_t(c)
-        # продолжение фразы — со строчной: «ячейка выше без точки» не годится — у шапок точек нет, и строка «1 | …»
-        # нового листа уходила в шапку (синтетика, 16.10); и как строки фразы при нарезке (lines: перенос слова «KI-» /
-        # «KAPCSOLVA», код после служебного слова или запятой «…szelepet a» / «30UJ97B001 felé NYITNI.»; E9b-R R3)
-        if j is None or t and not (t[0].islower() or mid_phrase(end(last[j]), t) or hyphen_break(end(last[j]), t)
-                                   or lists(last[j], c)):
-            return []
-        pairs.append((j, c))
-    return pairs if any(cell_t(c) or lists(last[j], c) for j, c in pairs) else []
-
-
 def _cut_rows(rows):
     """Строка, разрезанная листом: Word переносит её хвост на следующий лист отдельной строкой — только с теми
     ячейками, где текст продолжается (шапка таблицы, начатая внизу листа: «…уровень» | «необходимо контроль» на
@@ -346,7 +318,7 @@ def _cut_rows(rows):
     out, glued = [], -1
     for r in rows:
         last = out[-1] if out else None
-        pairs = _tail_pairs(last, r) if last and glued != len(out) - 1 else []
+        pairs = RW.tail_pairs(last, r, text_of) if last and glued != len(out) - 1 else []
         if not pairs:
             out.append(r)
             continue
@@ -553,50 +525,12 @@ def sub_rows(bs):
     return bs
 
 
-def _xs(t):
-    """Рамка столбцов таблицы (frame.xs): линии листа (docx_layout, row_lines), вертикали размеченного PDF (docx_struct),
-    сетка выравнивания (docx_layout._grids); нет — пусто."""
-    return (t.get("frame") or {}).get("xs") or []
-
-
-def _same_cols(a, b, tol=3.0):
-    """Две таблицы с рамкой столбцов — с теми же столбцами (на тех же местах: выравнивание столбцов склеенной таблицы
-    голосует по рамке первой части, docx_build._col_align): лист 2, начатый другой таблицей с тем же числом столбцов, —
-    не продолжение (ред-тим 20.10). Таблица без рамки столбцов — не проверяется. До E9.6 сравнивались только таблицы по
-    линиям листа (frame.row_lines): размеченный PDF и сетки выравнивания склеивались и с другой сеткой."""
-    xa, xb = _xs(a), _xs(b)
-    if not (xa and xb):
-        return True
-    return len(xa) == len(xb) and all(abs(p - q) <= tol for p, q in zip(xa, xb))
-
-
-def _other_grid(a, b):
-    """Таблицы с рамкой столбцов — с разным числом столбцов: это разные таблицы, даже если шапка повторена (30BOXFELTEL:
-    форма на 36 листов — таблицы по 10, 12, 18 столбцов с одной шапкой; склеенные, они делили сетку первой, и ширин не
-    было — столбцы поровну, описание в 40 pt, ячейка с галочкой на весь остаток). До E9.6 — только по линиям листа."""
-    xa, xb = _xs(a), _xs(b)
-    return bool(xa and xb and len(xa) != len(xb))
-
-
-def _last_page(t):
-    """Последний лист таблицы (склеенной из частей) — по листам её ячеек; без них — лист таблицы."""
-    return max((c["geom"]["page"] for r in t["rows"] for c in r if c.get("geom") and c["geom"].get("page")),
-               default=(t.get("geom") or {}).get("page", 0))
-
-
 def join_tables(bs):
     """Таблица, которую Word при экспорте разрезал по листам (продолжение — отдельная таблица сразу за ней, без шапки,
     с тем же числом столбцов, на следующем листе), — снова одна: в DOCX она переносится сама и повторяет шапку
     (UTS стр. 75–78: разрыв с пустой строкой и без шапки, 16.10). Продолжение, начатое повтором шапки (строки
     «Повторять как заголовок» Word печатает на каждом листе), — тоже она: повтор прочь (синтетика, 16.10)."""
     cell_t = lambda c: " ".join(text_of(x["runs"]) for x in c.get("blocks", []) if x["k"] == "p").strip()
-    row_t = lambda r: [cell_t(c) for c in r]
-
-    def head_n(t):                          # число строк-шапок в начале таблицы
-        n = 0
-        while n < len(t["rows"]) and all(c["th"] for c in t["rows"][n]):
-            n += 1
-        return n
     out = []
     for b in bs:
         if b["k"] == "list":
@@ -608,22 +542,9 @@ def join_tables(bs):
         if b["k"] == "p" and PT.CONT_MARK.fullmatch(text_of(b.get("runs") or [])):
             continue
         prev = out[-1] if out else None
-        rep = 0
-        if prev is not None and prev["k"] == "table" and b["k"] == "table" and prev["rows"] and b["rows"]:
-            n = head_n(b)
-            if n and n < len(b["rows"]) and n <= head_n(prev) \
-                    and [row_t(r) for r in b["rows"][:n]] == [row_t(r) for r in prev["rows"][:n]]                     and any(any(row_t(r)) for r in b["rows"][:n]):
-                rep = n                     # повтор шапки на новом листе
-            elif len(b["rows"]) > 1 and row_t(b["rows"][0]) == row_t(prev["rows"][0]) and all(row_t(b["rows"][0])):
-                rep = 1                     # шапка без TH (JPDS), дословный повтор первой строки
-        if prev is not None and prev["k"] == "table" and b["k"] == "table" and prev["rows"] and b["rows"] \
-                and (rep or not all(c["th"] for c in b["rows"][0]) or _tail_pairs(prev["rows"][-1], b["rows"][0])) \
-                and (rep or max(map(len, b["rows"])) == max(map(len, prev["rows"]))
-                     or _tail_pairs(prev["rows"][-1], b["rows"][0])) \
-                and ((rep and not _other_grid(prev, b)) or (not rep and _same_cols(prev, b))) \
-                and (b.get("geom") or {}).get("page", 0) > _last_page(prev):
-            # продолжение — на листе после ПОСЛЕДНЕГО листа уже склеенной таблицы (E9.6: по первому листу другая
-            # таблица на листе 2 приклеивалась к таблице листов 1–2)
+        tables = prev is not None and prev["k"] == "table" and b["k"] == "table" and prev["rows"] and b["rows"]
+        rep = RW.header_repeat(prev, b, text_of) if tables else 0
+        if tables and RW.continues(prev, b, rep, text_of):
             # пустые строки в конце части, после строк с текстом, — рамка бланка до низа листа (INFO 3PR10
             # «Hőcserélők»: 7 строк сведений и 9 пустых на каждом листе): в склеенной таблице они вставали посередине, а
             # пустые строки последней части уезжали хвостом на новый лист. Часть без текста в теле — пустой бланк (лист
@@ -633,7 +554,7 @@ def join_tables(bs):
             rows0, k = prev["rows"], len(prev["rows"])
             while k and blank(rows0[k - 1]):
                 k -= 1
-            if max(head_n(prev), prev.get("repeat_rows", 0), 1) < k < len(rows0):
+            if max(RW.head_rows(prev), prev.get("repeat_rows", 0), 1) < k < len(rows0):
                 fr = prev.get("frame") or {}
                 ys0 = fr.get("ys") or []
                 prev = dict(prev, rows=rows0[:k], **({"frame": dict(fr, ys=ys0[:k + 1])} if len(ys0) == len(rows0) + 1
