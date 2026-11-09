@@ -3020,7 +3020,7 @@ class Builder:
         если текст до неё на этой строке там уже кончился; абзацы одной ячейки (колонтитула) с той же табуляцией —
         вместе (столбец «Номер версии» / «Номер страницы»). Иначе — подпись и значение после табуляции неразрывно
         (переносятся вместе). Только короткое значение (до половины строки) после табуляции с позицией; ширина —
-        метрикой шрифта печати (_print_w), классы шрифтов — как у font_table."""
+        метрикой шрифта печати (_print_w), класс шрифта — по имени (FONT_GUESS), незнакомое — из PDF (font_class)."""
         from docx.shared import Pt
         styles = {}
         for s in self.doc.styles.element.iter(W + "style"):
@@ -3066,7 +3066,10 @@ class Builder:
                 f = rpr.find(W + "rFonts") if rpr is not None else None
                 font = (f.get(W + "ascii") if f is not None else None) or \
                     prop(sid, lambda e: (lambda z: z.get(W + "ascii") if z is not None else None)(e.find(W + "rFonts"))) or ""
-                kind = classes.get(font) or next((c for rx, c in FONT_GUESS if re.search(rx, font, re.I)), None)
+                # класс — по имени, если оно известно: LibreOffice подбирает замену по имени («Courier New» →
+                # Liberation Mono), а класс из PDF / таблицы шрифтов бывает другим («Courier New» — roman у 1SZ01, и
+                # ширина считалась по Times: «Весь срок службы» рвалось); незнакомое имя — по классу из PDF
+                kind = next((c for rx, c in FONT_GUESS if re.search(rx, font, re.I)), None) or classes.get(font)
                 b = rpr.find(W + "b") if rpr is not None else None
                 bold = b.get(W + "val") not in ("0", "false") if b is not None else \
                     bool(prop(sid, lambda e: (lambda z: z.get(W + "val") not in ("0", "false") if z is not None else None)(e.find(W + "b"))))
