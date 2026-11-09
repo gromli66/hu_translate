@@ -132,3 +132,43 @@ def test_portal_header_field_leaves_body_text_layer_title_stays():
     kept = {(s["page"], s["text"]) for s in content}
     assert (0, "Verziószám: 2.") not in kept and (0, "Oldalszám: 1.") not in kept
     assert (4, "10/6. Melléklet") in kept
+
+
+def test_series_header_in_frame_below_body_top_is_header(tmp_path):
+    """Шапка серии листов — рамкой ниже верха тела документа, выше неё знаков нет (3FI18 л. 31, 33–39: рамка 57–83 pt
+    при верхе тела 53): путь А берёт в шапку серии знаки внутри рамки — прежде шапка была пустой, а её строки после Z4
+    сняты из тела и пропадали."""
+    import fitz
+    import docx_layout as DL
+    import docx_struct as D
+    from test_text_forms import _segs
+    src = tmp_path / "frame.pdf"
+    doc = fitz.open()
+    words = ("elsődleges tömítettség szivattyú indítás szelep zárás nyomás hőmérséklet teljesítmény áramlás szint "
+             "vezérlés védelem mérés kapcsoló betáplálás hűtés fűtés csővezeték").split()
+    for pno in range(6):
+        pg = doc.new_page(width=595, height=842)
+        put = lambda x, y, t: pg.insert_text((x, y), t, fontsize=9, fontname="tiro")
+        top = 70
+        if pno < 4:
+            put(62, 40, "Azonosító: 30XYZ")
+            put(400, 40, f"Oldalszám: {pno + 1}")
+        else:                                               # серия: шапка в рамке ниже верха тела, тело — ниже
+            sh = pg.new_shape()
+            sh.draw_line((60, 78), (540, 78))
+            sh.draw_line((60, 104), (540, 104))
+            sh.finish(color=(0, 0, 0), width=0.6)
+            sh.commit()
+            put(62, 88, "Azonosító: 30XYZ/IB")
+            put(400, 88, "Verziószám: 0")
+            put(400, 100, f"Oldalszám: {pno - 3}")
+            top = 130
+        for k in range(12):
+            put(64, top + 22 * k, f"A {words[(pno * 5 + k) % len(words)]} és a {words[(pno * 3 + k * 7 + 2) % len(words)]}"
+                                  f" ellenőrzése megtörtént ({words[(pno + k * 11) % len(words)]}).")
+    doc.save(str(src))
+    segs = _segs(src)
+    blocks, info = DL.load(str(src), segs, text=True)
+    L = D.layout(str(src), blocks, content=info.get("content_boxes"))
+    v = [z for z in L.get("variants") or [] if z["from"] == 5]
+    assert v and "30XYZ/IB" in str(v[0].get("head_grid")) + str(v[0].get("head_lines"))
