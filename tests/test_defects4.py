@@ -1,4 +1,94 @@
 # Четыре дефекта вне сборки (задание 09.11, DEFECTS4_REPORT.md): один дефект — один тест.
+import importlib
+import sys
+import types
+
+
+def _fake_uno(monkeypatch, calls):
+    """uno и com.sun.star без LibreOffice: Desktop пишет в calls, что открыто и куда сохранено каким фильтром."""
+    class Doc:
+        def __init__(self, url):
+            self.url = url
+
+        def storeToURL(self, url, props):
+            calls.append(("store", self.url, url, dict((p.Name, p.Value) for p in props)["FilterName"]))
+
+        def getDocumentIndexes(self):
+            return types.SimpleNamespace(getCount=lambda: 0)
+
+        def getTextFields(self):
+            return types.SimpleNamespace(refresh=lambda: calls.append(("refresh",)))
+
+        def close(self, _):
+            calls.append(("close", self.url))
+
+    class Desktop:
+        def loadComponentFromURL(self, url, *_):
+            calls.append(("load", url))
+            return Doc(url)
+
+        def terminate(self):
+            pass
+
+    sm = types.SimpleNamespace(createInstanceWithContext=lambda name, ctx: (
+        Desktop() if name.endswith("Desktop") else types.SimpleNamespace(resolve=lambda u: ctx)))
+    ctx = types.SimpleNamespace(ServiceManager=sm)
+    uno = types.ModuleType("uno")
+    uno.getComponentContext = lambda: ctx
+    uno.systemPathToFileUrl = lambda p: "file://" + p.replace("\\", "/")
+    mods = {"uno": uno}
+    for name in ("com", "com.sun", "com.sun.star", "com.sun.star.beans", "com.sun.star.connection",
+                 "com.sun.star.lang"):
+        mods[name] = types.ModuleType(name)
+    mods["com.sun.star.beans"].PropertyValue = type("PropertyValue", (), {})
+    mods["com.sun.star.connection"].NoConnectException = type("NoConnectException", (Exception,), {})
+    mods["com.sun.star.lang"].DisposedException = type("DisposedException", (Exception,), {})
+    for name, mod in mods.items():
+        monkeypatch.setitem(sys.modules, name, mod)
+    monkeypatch.delitem(sys.modules, "lo_pdf", raising=False)
+    lo = importlib.import_module("lo_pdf")
+    monkeypatch.setattr(lo.subprocess, "Popen", lambda *a, **k: types.SimpleNamespace(wait=lambda t: 0, kill=lambda: 0))
+    return lo
+
+
+def _docx(path, body):
+    import zipfile
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("word/document.xml", '<w:document xmlns:w="w"><w:body>' + body + "</w:body></w:document>")
+    return str(path)
+
+
+def test_n2_pdf_printed_like_convert_to(monkeypatch, tmp_path):
+    """N2 (01-02FMP0BIGT стр. 25 «22 (прод.)»): открытый через UNO DOCX LibreOffice раскладывает по частям, и первый
+    лист раздела с titlePg оставался с шапкой продолжения прежнего раздела; «--convert-to» печатал верно. PDF — как
+    «--convert-to»; через UNO — только DOCX с оглавлением/указателем (их пересчитывает только UNO) и .doc → DOCX."""
+    import os
+    calls = []
+    lo = _fake_uno(monkeypatch, calls)
+
+    def run(cmd, **kw):
+        calls.append(("run", cmd))
+        out = cmd[cmd.index("--outdir") + 1]
+        os.makedirs(out, exist_ok=True)
+        open(os.path.join(out, os.path.splitext(os.path.basename(cmd[-1]))[0] + ".pdf"), "wb").write(b"%PDF")
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+    monkeypatch.setattr(lo.subprocess, "run", run)
+
+    plain = _docx(tmp_path / "a.docx", "<w:p><w:r><w:t>Номер страницы</w:t></w:r></w:p>")
+    lo.convert(plain, str(tmp_path / "a.pdf"))
+    assert [c[0] for c in calls] == ["run"] and "--convert-to" in calls[0][1], calls
+    assert (tmp_path / "a.pdf").read_bytes() == b"%PDF"
+
+    calls.clear()
+    toc = _docx(tmp_path / "b.docx", r'<w:p><w:r><w:instrText xml:space="preserve"> TOC \o "1-3" \h </w:instrText></w:r></w:p>')
+    lo.convert(toc, str(tmp_path / "b.pdf"))
+    stores = [c for c in calls if c[0] == "store"]
+    assert "run" not in [c[0] for c in calls] and calls[0] == ("load", stores[0][1]), calls
+    assert stores[0][1].endswith("b.docx") and stores[0][3] == "writer_pdf_Export", calls
+
+    calls.clear()
+    lo.convert(str(tmp_path / "c.doc"), str(tmp_path / "c.docx"))
+    assert [c[0] for c in calls] == ["load", "store", "close"] and calls[1][3] == "MS Word 2007 XML", calls
 
 
 def _stamp_page(angle=8.0):
