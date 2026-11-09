@@ -389,6 +389,7 @@ def ocr_words(words, portal_text, pix=None):
     не отличает: портал переписывает и рукописные фамилии с датами (титул 30RDGT, 06.10).
     Зона рукописи — рамки рукописных слов; неуверенное (< 90) бледное слово внутри зоны тоже рукописное.
     Возвращает (слова, слов портала без места на странице)."""
+    import pagefit as PF
     # обрывки пунктира («sss», «see» высотой 0,5–1 pt) — не слова
     ws = [dict(w, t=_denoise(w["t"]), raw=w["t"]) for w in _split_glued(words) if w["h"] >= 2.0]
     # рукопись по геометрии строки: неуверенное слово вдвое выше соседей — рукописная дата/подпись поверх формы
@@ -404,6 +405,8 @@ def ocr_words(words, portal_text, pix=None):
         # рукописные цифры Tesseract читает и с уверенностью 67–75 («242.» вместо «2017.»), но краски в них
         # как у рукописи (0,04–0,075): очень бледное — рукопись всегда, бледное — при уверенности ниже 80
         w["hand"] = (ink < 0.05 or (cf < 80 and ink < INK_HAND) or (cf < 60 and tall)) and not LABEL.match(w["raw"])
+        # блок, повёрнутый к строкам листа (резиновый штамп, подпись наискось), — как рукопись: пиксели (PF.tilted)
+        w["hand"] = w["hand"] or PF.tilted(w)
         w["box_like"] = _boxlike(w, hs_[(len(hs_) - 1) // 2])
         # буллет • читается как «e»: одиночный знак ниже строки и почти сплошная краска (0,66 против 0,2–0,45
         # у букв) — картинка, как флажок; иначе «e» переводилось в «е», а сам буллет закрывался плашкой (32RDGT)
@@ -857,9 +860,9 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
             if isinstance(cached, dict):            # старый кэш (список слов без уверенности) — пересчитать
                 for w in cached["words"]:           # из JSON номера строк приходят списками — ключи словаря
                     w["line"], w["key"] = tuple(w["line"]), tuple(w["key"])
-                if all("stroke" in w and "ink_c" in w for w in cached["words"]):
+                if all("stroke" in w and "ink_c" in w and "tilt" in w for w in cached["words"]):
                     return cached
-                # кэш без толщины штриха или красной краски: досчитать по картинке, Tesseract не перезапускать
+                # кэш без толщины штриха, красной краски или наклона блоков: досчитать по картинке, Tesseract не перезапускать
                 page_ = fitz.open(path)[pno]
                 pix = page_.get_pixmap(dpi=dpi_tess, colorspace=fitz.csGRAY)
                 gray = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width)
@@ -868,6 +871,7 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
                 for w in cached["words"]:
                     w["stroke"] = _stroke(gray, w["box"], dpi_tess)
                     PF.mark_red_ink(w, rgb, dpi_tess)
+                PF.mark_tilt(cached["words"], gray, dpi_tess)
                 f.write_text(json.dumps(cached, ensure_ascii=False), encoding="utf-8")
                 return cached
         png = work / f"p{pno:04d}.png"
@@ -882,6 +886,7 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
             w["ink"] = round(_ink(gray, w["box"], dpi_tess), 3)
             PF.mark_red_ink(w, rgb, dpi_tess)
             w["stroke"] = _stroke(gray, w["box"], dpi_tess)
+        PF.mark_tilt(ws, gray, dpi_tess)            # штамп наискось — блок, повёрнутый к строкам листа
         ih, iv = rules_from_image(gray, dpi_tess)
         out = {"words": ws, "hs": ih, "vs": iv}
         f.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")

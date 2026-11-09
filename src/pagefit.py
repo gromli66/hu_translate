@@ -7,7 +7,8 @@
    (не вылезает за блок, на стрелки и соседние блоки); надписи одного блока — одним текстом (blocks_by_container).
 3. Скан формы — pixels_only: абзац из фамилий, сокращений из заглавных, чисел и дат не перерисовывается — остаётся
    пикселями оригинала (рукопись, штамп, подпись и печатная фамилия рядом; перевод фамилии и расшифровка «ÜBO» — не
-   задача формы)."""
+   задача формы).
+4. Скан — mark_tilt / tilted: блок слов, повёрнутый к строкам листа (резиновый штамп наискось), — пиксели оригинала."""
 import re
 
 import fitz
@@ -261,6 +262,75 @@ def mark_red_ink(w, rgb, dpi):
     w["ink_c"] = red
     if red >= INK_RED:
         w["ink"] = max(w.get("ink", 0), red)
+
+
+TILT_DEG = 5.0      # блок слов скана, повёрнутый к строкам листа на столько градусов и больше, — штамп или рукопись наискось
+TILT_GAIN = 1.2     # ... если строки блока при его угле и вправду резче, чем при угле листа (у штампа 30RYBSZGT 8° и 1,76 раза)
+TILT_MAX_PTS = 20000  # точек краски блока на замер не больше (через одну-две — угол тот же, считается быстрее)
+
+
+def _tilt(ys, xs):
+    """Углы −12…12° через 0,25° и резкость проекции точек краски на вертикаль при каждом (сумма квадратов столбцов
+    гистограммы: строки, повёрнутые на этот угол, дают узкие высокие пики)."""
+    import numpy as np
+    step = max(1, len(ys) // TILT_MAX_PTS)
+    ys, xs = ys[::step].astype(float), xs[::step].astype(float)
+    x = xs - xs.mean()
+    angs = np.arange(-12, 12.01, 0.25)
+    sharp = []
+    for a in angs:
+        b = np.round(ys - x * np.tan(np.radians(a))).astype(int)
+        sharp.append(float((np.bincount(b - b.min()).astype(float) ** 2).sum()))
+    return angs, np.array(sharp)
+
+
+def mark_tilt(words, gray, dpi):
+    """Словам скана — наклон их блока Tesseract (key: блок, абзац) к строкам листа: tilt = [разница углов, °; во сколько
+    раз проекция краски блока при его угле резче, чем при угле листа] или None (краски на замер мало). Угол — тот, при
+    котором проекция печатных слов блока на вертикаль резче всего; угол листа — медиана углов блоков по количеству краски
+    (скан листа целиком бывает скошен на 1–2°). Резиновый штамп ставят наискось («Paksi Atomerőmű Zrt. Minőségfelügyeleti
+    Osztály 1.», 30RYBSZGT PG-144760: 8°): Tesseract читает его мусором («ömű Zrt. Minőségfelügyeleti 97», «pakol Atomer
+    tégy»), и два перевода ложились на стёртый штамп друг на друга (tilted)."""
+    import numpy as np
+    k = dpi / 72
+    blocks = {}
+    for w in words:
+        w["tilt"] = None
+        if len(re.sub(r"\W", "", w["t"])) >= 2 and w.get("ink", 0) >= 0.1 and w["h"] >= 2:
+            blocks.setdefault(tuple(w["key"]), []).append(w)
+    meas = {}
+    for key, ws in blocks.items():
+        ys, xs = [], []
+        for w in ws:
+            x0, y0, x1, y1 = (max(int(v * k), 0) for v in w["box"])
+            yy, xx = np.nonzero(gray[y0:max(y1, y0 + 1), x0:max(x1, x0 + 1)] < 128)
+            ys.append(yy + y0); xs.append(xx + x0)
+        ys, xs = np.concatenate(ys), np.concatenate(xs)
+        if len(ys) >= 200 * (dpi / 300) ** 2:
+            angs, sharp = _tilt(ys, xs)
+            meas[key] = (angs, sharp, len(ys))
+    if not meas:
+        return
+    best = sorted((m[0][int(np.argmax(m[1]))], m[2]) for m in meas.values())
+    acc, page = 0, best[-1][0]
+    for a, n in best:                                   # медиана углов по количеству краски
+        acc += n
+        if acc >= sum(n for _, n in best) / 2:
+            page = a
+            break
+    for w in words:
+        m = meas.get(tuple(w["key"]))
+        if m:
+            angs, sharp, _ = m
+            i = int(np.argmax(sharp))
+            w["tilt"] = [round(float(angs[i] - page), 2), round(float(sharp[i] / max(sharp[int(np.argmin(abs(angs - page)))], 1.0)), 3)]
+
+
+def tilted(w):
+    """Слово из блока, повёрнутого к строкам листа (mark_tilt), — штамп или рукопись наискось: пиксели оригинала, не
+    переводится и не закрывается плашкой (segments.ocr_words — как рукопись)."""
+    t = w.get("tilt")
+    return bool(t) and abs(t[0]) >= TILT_DEG and t[1] >= TILT_GAIN
 
 
 CELL_WORD = re.compile(r"[A-ZÁÉÍÓÖŐÚÜŰ][a-záéíóöőúüű]{2,}")
