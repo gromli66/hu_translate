@@ -1914,11 +1914,14 @@ class Builder:
                     dc._tc.get_or_add_tcPr().append(_el("w:vAlign", w__val=cell["valign"]))
                 if cell.get("pad") and dc.paragraphs:               # зазор до следующей полосы (docx_layout)
                     dc.paragraphs[-1].paragraph_format.space_after = Pt(cell["pad"])
-                if tight is not None:                               # узкие поля ячейки — слово влезло целиком (см. выше)
-                    tcpr = dc._tc.get_or_add_tcPr()
-                    mar_el = _el("w:tcMar")
-                    for side_name in ("left", "right"):
-                        mar_el.append(_el(f"w:{side_name}", w__w=round(tight * 20), w__type="dxa"))
+                if tight is not None or cell.get("cut"):            # узкие поля ячейки — слово влезло целиком (см. выше);
+                    tcpr = dc._tc.get_or_add_tcPr()                 # подстрока ряда — без полей по сторонам разреза
+                    mar_el = _el("w:tcMar")                         # (docx_struct.sub_rows)
+                    for side_name in ("top", "left", "bottom", "right"):
+                        if side_name in (cell.get("cut") or ()):
+                            mar_el.append(_el(f"w:{side_name}", w__w=0, w__type="dxa"))
+                        elif tight is not None and side_name in ("left", "right"):
+                            mar_el.append(_el(f"w:{side_name}", w__w=round(tight * 20), w__type="dxa"))
                     after = next((c for c in tcpr if c.tag in {W + n for n in ("textDirection", "tcFitText", "vAlign", "hideMark")}), None)
                     after.addprevious(mar_el) if after is not None else tcpr.append(mar_el)
             for ci, cell in enumerate(row):
