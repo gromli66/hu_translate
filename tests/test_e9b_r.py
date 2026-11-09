@@ -215,34 +215,6 @@ def test_row_tail_on_next_sheet_continues_a_phrase_as_in_segmentation():
         assert (len(got) == 1) is glued, (up, down)
 
 
-def test_nested_table_over_many_rows_keeps_its_columns(tmp_path):
-    """R1: граница столбца рамки — вертикаль на половину высоты таблицы на листе (против вложенной таблички в одну строку,
-    JPDS табл. 15) или через три ряда и больше: вложенная таблица «Megnevezés | Állapot» ×2 на много рядов в ячейке
-    «Megnevezés» (30BOXVILGT_TU л. 3) короче половины листа — рамка была в два столбца, fit_rows сворачивал ряд в одну
-    ячейку «30XL11S201 ZÁRVA 30XL53S201 ZÁRVA», отметки пропадали."""
-    import docx_struct as D
-    from test_cloud_sidefixes import _tagged_pdf, _tj
-    line = lambda x0, y0, x1, y1: f"0.5 w {x0} {y0} m {x1} {y1} l S "
-    c = "".join(line(70, y, 520, y) for y in (760, 740, 720, 300))                       # линии внешней таблицы
-    c += "".join(line(130, y, 520, y) for y in (700, 680, 660, 640))                    # ряды вложенной
-    c += "".join(line(x, 760, x, 300) for x in (70, 130, 520))
-    c += "".join(line(x, 720, x, 640) for x in (230, 330, 430))                         # её столбцы — 4 ряда из 6
-    texts = [(75, 745, "Sorszam"), (140, 745, "Megnevezes"), (75, 725, "6.1"), (140, 725, "GB12")]
-    for k, y in enumerate((705, 685, 665, 645)):
-        texts += [(140, y, f"30XL1{k}S201"), (240, y, "ZARVA"), (340, y, f"30XL5{k}S201"), (440, y, "ZARVA")]
-    texts += [(140, 310, "A lapot kitoltotte")]
-    c += "".join(f"/P <</MCID {m}>> BDC " + _tj(x, y, t) + "EMC " for m, (x, y, t) in enumerate(texts))
-    td = lambda m: ("TD", [("P", [m])])
-    tree = [("Table", [("TR", [td(0), td(1)]), ("TR", [td(2), td(3)])]
-             + [("TR", [("TD", [])] + [td(4 + 4 * k + j) for j in range(4)]) for k in range(4)]
-             + [("TR", [("TD", []), td(20)])])]
-    _tagged_pdf(tmp_path / "t.pdf", c, tree)
-    blocks, _ = D.load(str(tmp_path / "t.pdf"))
-    tab = next(b for b in blocks if b["k"] == "table")
-    assert len(tab["frame"]["xs"]) == 6, tab["frame"]["xs"]
-    assert [len(r) for r in tab["rows"]][2:6] == [4, 4, 4, 4]                            # не свёрнуты в две
-
-
 def test_band_without_text_is_not_a_row():
     """R6: якорь ниже начала абзаца соседней ячейки («@0YATBEATL» против «Átlagos zóna belépő hőmérséklet» в две строки,
     01-02FMP0BIGT л. 24) резал полосу над собой, абзац уходил в полосу своей середины — над рядом вставал пустой ряд.

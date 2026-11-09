@@ -1558,19 +1558,13 @@ def load(path):
         # граница столбца — вертикаль хотя бы на половину высоты таблицы на листе: линия вложенной таблички в одной
         # строке («⚠ + текст» в «Описании» JPDS табл. 15) давала таблице лишний столбец, текст сжимался (19.10)
         span = max(1.0, min(float(g.get("bottom") or 0), bot) - max(float(g["top"]), top))
-        at = lambda x: [o for o in vert if abs((float(o["x0"]) + float(o["x1"])) / 2 - x) <= 3]
-        cover = lambda x: sum(float(o["height"]) for o in at(x))
+        cover = lambda x: sum(float(o["height"]) for o in vert if abs((float(o["x0"]) + float(o["x1"])) / 2 - x) <= 3)
+        if len(xs) > 2:
+            xs = [x for i, x in enumerate(xs) if i in (0, len(xs) - 1) or cover(x) >= 0.5 * span]
         ys = []
         for y in sorted((float(o["top"]) + float(o["bottom"])) / 2 for o in horiz):
             if not ys or y - ys[-1] > 2:
                 ys.append(y)
-        # …или через три ряда и больше (E9b-R R1): вложенная таблица на много рядов — столбцы, хоть и короче половины
-        # (30BOXVILGT_TU л. 3: «Megnevezés | Állapot | Ellenőrzés» ×2 в ячейке «Megnevezés» на 16 рядов — рамка в два
-        # столбца, fit_rows сворачивал ряд в одну ячейку «30XL11S201 ЗАКРЫТО 30XL53S201 ЗАКРЫТО», отметки «□» пропадали)
-        rows_at = lambda x: sum(1 for y in ys if min(float(o["top"]) for o in at(x)) - 1 <= y
-                                <= max(float(o["bottom"]) for o in at(x)) + 1) - 1
-        if len(xs) > 2:
-            xs = [x for i, x in enumerate(xs) if i in (0, len(xs) - 1) or cover(x) >= 0.5 * span or rows_at(x) >= 3]
         hexcol = lambda col: GM.hex_rgb(_rgb(col)) if _rgb(col) else None
         out = {"xs": [round(x, 1) for x in xs], "ys": [round(y, 1) for y in ys]}   # линии строк — высота пустых строк
         if vert:
