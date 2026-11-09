@@ -831,6 +831,60 @@ def _flat_paras(b):
     return [y for it in b["items"] for x in it for y in _flat_paras(x)]
 
 
+def _text_grid(rows):
+    """Сетка таблицы разметки по тексту ячеек — одна для adopt и _cell_pictures (E9b-R R5: «точка листа → ячейка» была
+    написана дважды, с разными источниками). span[i] — (лист, верх, низ) текста ряда i на первом его листе: значки — не в
+    счёт (Word кладёт значки нескольких строк в первую ячейку продолжения таблицы, и они растягивали её строку на соседние,
+    JPDS табл. 65, 18.10); cols — {число ячеек ряда: {столбец: (лево, право)}} мест блоков ячеек."""
+    icon = lambda y: y["k"] == "p" and not text_of(y.get("runs") or []).strip() and any(
+        "img" in q for q in y.get("runs") or [])
+
+    def places(bs_, text=False):
+        for y in bs_:
+            if y["k"] == "list":
+                for it in y["items"]:
+                    yield from places(it, text)
+            elif not (text and icon(y)) and (y.get("geom") or {}).get("bottom") and y["geom"].get("x1") is not None:
+                yield y["geom"]
+    span = []
+    for r in rows:
+        gs = [g for c in r for g in places(c.get("blocks", []), True)]
+        pn = min((g["page"] for g in gs), default=None)
+        gs = [g for g in gs if g["page"] == pn]
+        span.append((pn, min(g["top"] for g in gs), max(g["bottom"] for g in gs)) if gs else None)
+    cols = {}
+    for r in rows:
+        for k, c in enumerate(r):
+            gc = list(places(c.get("blocks", [])))
+            if gc:
+                lo, hi = cols.setdefault(len(r), {}).get(k, (gc[0]["x0"], gc[0]["x1"]))
+                cols[len(r)][k] = (min([lo] + [g["x0"] for g in gc]), max([hi] + [g["x1"] for g in gc]))
+    return span, cols
+
+
+def _row_band(span, i, edge):
+    """Полоса ряда i по высоте (_text_grid): от середин зазоров с соседними рядами того же листа; у крайнего ряда листа —
+    edge(span[i]) → (верх, низ)."""
+    s = span[i]
+    prev = next((span[j] for j in range(i - 1, -1, -1) if span[j]), None)
+    nxt = next((span[j] for j in range(i + 1, len(span)) if span[j]), None)
+    e0, e1 = edge(s)
+    return ((prev[2] + s[1]) / 2 if prev and prev[0] == s[0] else e0,
+            (s[2] + nxt[1]) / 2 if nxt and nxt[0] == s[0] else e1)
+
+
+def _col_bounds(cols, n, lo, hi):
+    """Границы столбцов ряда из n ячеек (_text_grid) — середины промежутков; столбец без текста ни в одном ряду —
+    между соседями (lo, hi — края крайних)."""
+    cs = dict(cols.get(n, {}))
+    for k in range(n):
+        if k not in cs:
+            a = cs[k - 1][1] + 1 if k - 1 in cs else lo
+            z = next((cs[q][0] for q in range(k + 1, n) if q in cs), hi) - 1
+            cs[k] = (a, max(a, z))
+    return [(cs[k][1] + cs[k + 1][0]) / 2 for k in range(n - 1)]
+
+
 def adopt(bs):
     """Абзац вне таблицы, что на листе лежит внутри её строки: Word разметил надписи и подложки ячеек (образцы «Текст
     строки» в таблице 16 ТЭ357) отдельными абзацами до таблицы — печатались строкой над рисунком, ячейки пустые
@@ -854,43 +908,14 @@ def adopt(bs):
                     out += far
     for t in [b for b in out if b["k"] == "table"]:
         rows = t["rows"]
-
-        def places(bs_):                                    # места блоков ячейки (геометрия ячейки — до evict)
-            for y in bs_:
-                if y["k"] == "list":
-                    for it in y["items"]:
-                        yield from places(it)
-                elif (y.get("geom") or {}).get("bottom") and y["geom"].get("x1") is not None:
-                    yield y["geom"]
-        cg = [[list(places(c["blocks"])) for c in r] for r in rows]
-        # (лист, верх, низ) текста строки на первом её листе: значки — не в счёт (Word кладёт значки нескольких строк
-        # в первую ячейку продолжения таблицы, и они растягивали её строку на соседние, JPDS табл. 65, 18.10)
-        icon = lambda y: y["k"] == "p" and not text_of(y.get("runs") or []).strip() and any(
-            "img" in q for q in y.get("runs") or [])
-
-        def texts(bs_):
-            for y in bs_:
-                if y["k"] == "list":
-                    for it in y["items"]:
-                        yield from texts(it)
-                elif not icon(y) and (y.get("geom") or {}).get("bottom") and y["geom"].get("x1") is not None:
-                    yield y["geom"]
-        span = []
-        for r in rows:
-            gs = [g for c in r for g in texts(c["blocks"])]
-            pn = min((g["page"] for g in gs), default=None)
-            gs = [g for g in gs if g["page"] == pn]
-            span.append((pn, min(g["top"] for g in gs), max(g["bottom"] for g in gs)) if gs else None)
-        cols = {}                                           # число ячеек строки → {столбец: (лево, право)}
-        for r, gr in zip(rows, cg):
-            for k, gc in enumerate(gr):
-                if gc:
-                    lo, hi = cols.setdefault(len(r), {}).get(k, (gc[0]["x0"], gc[0]["x1"]))
-                    cols[len(r)][k] = (min([lo] + [g["x0"] for g in gc]), max([hi] + [g["x1"] for g in gc]))
+        span, cols = _text_grid(rows)
         if not cols:
             continue
         X0 = min(v[0] for cs in cols.values() for v in cs.values())
         X1 = max(v[1] for cs in cols.values() for v in cs.values())
+        icon = lambda y: y["k"] == "p" and not text_of(y.get("runs") or []).strip() and any(
+            "img" in q for q in y.get("runs") or [])
+
         def place(x):
             """(строка, столбец) таблицы, в которой лежит на листе блок x, или None."""
             g = x.get("geom") or {}
@@ -899,28 +924,11 @@ def adopt(bs):
             cx, cy = (g["x0"] + g["x1"]) / 2, (g["top"] + g["bottom"]) / 2
             if not X0 - 2 <= cx <= X1 + 2:
                 return None
-            row = None
-            for i, s in enumerate(span):
-                if not s or s[0] != g["page"]:
-                    continue
-                prev = next((span[j] for j in range(i - 1, -1, -1) if span[j]), None)
-                nxt = next((span[j] for j in range(i + 1, len(span)) if span[j]), None)
-                y0 = (prev[2] + s[1]) / 2 if prev and prev[0] == s[0] else s[1] - 2
-                y1 = (s[2] + nxt[1]) / 2 if nxt and nxt[0] == s[0] else s[2] + 2
-                if y0 <= cy < y1:
-                    row = i
-                    break
+            row = next((i for i, s in enumerate(span) if s and s[0] == g["page"]
+                        and (lambda y0, y1: y0 <= cy < y1)(*_row_band(span, i, lambda s: (s[1] - 2, s[2] + 2)))), None)
             if row is None or len(rows[row]) < 1:
                 return None
-            r = rows[row]
-            cs = dict(cols.get(len(r), {}))
-            for k in range(len(r)):                         # столбец без места — между соседями
-                if k not in cs:
-                    lo = cs[k - 1][1] + 1 if k - 1 in cs else X0
-                    hi = next((cs[q][0] for q in range(k + 1, len(r)) if q in cs), X1) - 1
-                    cs[k] = (lo, max(lo, hi))
-            bounds = [(cs[k][1] + cs[k + 1][0]) / 2 for k in range(len(r) - 1)]
-            return row, sum(cx >= b for b in bounds)
+            return row, sum(cx >= b for b in _col_bounds(cols, len(rows[row]), X0, X1))
 
         def put(x, row, k):
             g = x["geom"]
@@ -2318,22 +2326,12 @@ def _cell_pictures(t, doc, blocks):
     одной картинкой области листа (img["clip"], как compose_figures). Задевает длинный текст ячейки — как было."""
     import fitz
     rows = t["rows"]
-    span = []                                               # (лист, верх, низ) содержимого строки
-    for r in rows:
-        gs = [c["geom"] for c in r if c.get("geom") and c["geom"].get("bottom")]
-        span.append((gs[0]["page"], min(g["top"] for g in gs), max(g["bottom"] for g in gs)) if gs else None)
-    cols = {}                                               # число ячеек строки → [(лево, право)] столбцов
-    for r in rows:
-        for k, c in enumerate(r):
-            g = c.get("geom")
-            if g and g.get("x1") is not None:
-                lo, hi = cols.setdefault(len(r), {}).get(k, (g["x0"], g["x1"]))
-                cols[len(r)][k] = (min(lo, g["x0"]), max(hi, g["x1"]))
+    span, cols = _text_grid(rows)                           # ряды и столбцы — как у adopt (E9b-R R5)
     pages, rep = {}, None
     for i, r in enumerate(rows):
         if span[i] is None or len(r) < 2:
             continue
-        pn, top, bot = span[i]
+        pn = span[i][0]
         if pn not in pages:
             page = doc[pn - 1]
             shown = _img_rects(blocks, pn)
@@ -2355,20 +2353,12 @@ def _cell_pictures(t, doc, blocks):
         if not imgs and not fills:
             continue
         H = page.rect.height
-        prev = next((span[j] for j in range(i - 1, -1, -1) if span[j] and span[j][0] == pn), None)
-        nxt = next((span[j] for j in range(i + 1, len(rows)) if span[j] and span[j][0] == pn), None)
         # первая и последняя строки таблицы на листе — не до краёв листа (шапка, подвал, фигура над таблицей)
-        y0 = (prev[2] + top) / 2 if prev else max(top - 40, 0.05 * H)
-        y1 = (bot + nxt[1]) / 2 if nxt else min(bot + 60, 0.95 * H)
-        cs = dict(cols.get(len(r), {}))
-        if not cs:
+        y0, y1 = _row_band(span, i, lambda s: (max(s[1] - 40, 0.05 * H), min(s[2] + 60, 0.95 * H)))
+        if not cols.get(len(r)):
             continue
-        for k in range(len(r)):     # столбец без текста ни в одной строке (цветные ячейки легенды JPDS) — между соседями
-            if k not in cs:
-                lo = cs[k - 1][1] + 1 if k - 1 in cs else 0
-                hi = next((cs[q][0] for q in range(k + 1, len(r)) if q in cs), page.rect.width) - 1
-                cs[k] = (lo, max(lo, hi))
-        bounds = [(cs[k][1] + cs[k + 1][0]) / 2 for k in range(len(r) - 1)]
+        # столбец без текста ни в одной строке (цветные ячейки легенды JPDS) — между соседями
+        bounds = _col_bounds(cols, len(r), 0, page.rect.width)
         for k, c in enumerate(r):
             x0 = bounds[k - 1] if k else 0
             x1 = bounds[k] if k < len(bounds) else page.rect.width
