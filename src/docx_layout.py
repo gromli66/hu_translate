@@ -23,6 +23,7 @@ from statistics import median
 import figures as FIG
 import geom as GM
 import patterns as PT
+import rows as RW
 import sids as SIDS
 import zones as ZN
 
@@ -832,8 +833,9 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields
         # 30TKBSZ36BIGT): полоса абзац не рвёт — ячейка отметки по низу, как в оригинале, а не вверху (аудит 30.10)
         span = [(c["geom"]["top"], c["geom"]["bottom"]) for c in row if c.get("geom")]
         for c in row:
-            g, tx = c.get("geom"), "".join(ru.get("t", "") for p in c["blocks"] for ru in p.get("runs") or []).strip()
-            if g and span and len(tx) <= 2 and not re.search(r"[^\W\d_]{2}|\d", tx) \
+            g = c.get("geom")
+            tx = [t for t in ("".join(ru.get("t", "") for ru in p.get("runs") or []).strip() for p in c["blocks"]) if t]
+            if g and span and 0 < len(tx) <= 2 and all(RW.FORM_MARK.match(t) for t in tx) \
                     and (g["top"] + g["bottom"]) / 2 > (min(a for a, _ in span) + max(z for _, z in span)) / 2:
                 c["valign"] = "bottom"
         rows.append(row)
