@@ -751,14 +751,11 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields
     # отметки съезжали друг относительно друга (31RDGT л. 1, 20.10), «Tevékenység | Állapot» — столбцами-стопками,
     # значение уезжало от своего кода (3SZ23, 3PR10, аудит 30.10). Полоса с текстом одной ячейки, у которой текст был
     # и в полосе выше, — продолжение той строки (рядом ничего, резать нечего); линий между подстроками нет.
-    # Якорь ряда — метка пункта или код в столбце якорей («1.1.», «31UJ21S601»; rows) — всегда своя полоса, даже если её
-    # задел чужой абзац: значения столбца, слитые нарезкой в абзац на пять строк (3SZ23 INFO «-3,6 m … 9,6 m»),
-    # склеивали все строки таблицы в одну — коды и места разъезжались; такой абзац — в полосу своей середины
-    # якорь ряда — одно определение с нарезкой (rows.is_anchor, Rows): метка пункта или код в столбце, где такие куски
-    # преобладают, — по кускам строк ячеек всей таблицы (rows.seg_frag)
-    order = lambda s: (round(s["loc"]["bbox"][1] / 3), s["loc"]["bbox"][0])
-    groups = {(r, ci): _lines(sorted(put.get((r, ci), []), key=order)) for r in range(len(grid)) for ci in range(len(grid[r]))}
-    anchors = set(RW.Rows([RW.seg_frag(g) for gs in groups.values() for g in gs], ()).anchors)
+    # Якорь ряда в первом столбце («1.1.», «31UJ21S601», «YA-K7»; rows.is_anchor — одно определение с нарезкой) — всегда
+    # своя полоса, даже если её задел чужой абзац: значения столбца, слитые нарезкой в абзац на пять строк (3SZ23 INFO
+    # «-3,6 m … 9,6 m»), склеивали все строки таблицы в одну — коды и места разъезжались; такой абзац — в полосу своей
+    # середины. Столбец якорей «где якоря преобладают» (Rows) сюда не годится: перечень кодов внутри ячейки текста
+    # (30GF118GT 2.2.0.11 «30YA12L419 …») резал ряд на подстроки по коду — при нарезке якорь делит строки справа от себя
     bands = []
     for r, cells in enumerate(grid):
         # края абзаца — по «чернилам»: середина первой (последней) строки ∓ 0,4 кегля, а не рамка: рамка моноширинной
@@ -772,7 +769,9 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields
             mid = (f[1] + f[3]) / 2
             return min(mid - 0.4 * sz, f[1] + 0.5 * sz) if top else max(mid + 0.4 * sz, f[3] - 0.5 * sz)
         spans = sorted((min(ink(g, True) for g in group), max(ink(g, False) for g in group), ci,
-                        RW.seg_frag(group)["bbox"] in anchors) for ci in range(len(cells)) for group in groups[(r, ci)])
+                        ci == 0 and RW.is_anchor(" ".join(g["text"] for g in group)))
+                       for ci in range(len(cells)) for group in _lines(sorted(
+                           put.get((r, ci), []), key=lambda s: (round(s["loc"]["bbox"][1] / 3), s["loc"]["bbox"][0]))))
         strips = []                                             # [верх, низ, {ячейки}, метка]
         for a, z, ci, anchor in spans:
             # метка — своя полоса, если чужой абзац начался выше на полстроки метки, а не на 2 pt: по «чернилам»
@@ -838,7 +837,7 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields
         for c in row:
             g = c.get("geom")
             tx = [t for t in ("".join(ru.get("t", "") for ru in p.get("runs") or []).strip() for p in c["blocks"]) if t]
-            if g and span and tx and all(RW.FORM_MARK.match(t) for t in tx) \
+            if g and span and 0 < len(tx) <= 2 and all(RW.FORM_MARK.match(t) for t in tx) \
                     and (g["top"] + g["bottom"]) / 2 > (min(a for a, _ in span) + max(z for _, z in span)) / 2:
                 c["valign"] = "bottom"
         rows.append(row)

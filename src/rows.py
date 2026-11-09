@@ -59,14 +59,6 @@ def is_anchor(t):
     return bool(ANCHOR.match(t)) or (code_line(t) and len(t.split()) <= 3 and bool(re.search(r"\d", t)))
 
 
-def seg_frag(group):
-    """Кусок строки листа ({t, bbox, size}, как у нарезки) из сегментов JSON одной строки (docx_layout._lines): рамка —
-    первые строки сегментов (loc.frags), текст — через пробел. По таким кускам Rows работает и в сборке."""
-    fr = [(s["loc"].get("frags") or [s["loc"]["bbox"]])[0] for s in group]
-    return {"t": " ".join(s["text"] for s in group), "size": max(s["loc"].get("size") or 0 for s in group),
-            "bbox": (min(f[0] for f in fr), min(f[1] for f in fr), max(f[2] for f in fr), max(f[3] for f in fr))}
-
-
 def row_anchor(frags, bb):
     """Якорь строки таблицы без горизонтальных линий: ближайший слева на той же линии кусок — код оборудования или номер
     пункта (через вертикальные линейки колонок — они делят колонки, а не строки). Возвращает его рамку или None."""
