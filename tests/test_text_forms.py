@@ -7,6 +7,7 @@ from docx.oxml.ns import qn
 import docx_build as B
 import docx_layout as DL
 import docx_struct as D
+import zones as ZN
 import figures as FIG
 
 from test_struct_docx import LAYOUT, PROFILE, W, p, png
@@ -469,8 +470,8 @@ def test_title_box_in_head_zone_is_not_table_head_but_short_continuation_is(tmp_
     segs = _segs(src)
     d = fitz.open(str(src))
     H = d[0].rect.height
-    keys = DL._running(segs, H, len(d))
-    heads = DL._head_rows(DL._page_rules(d, True), segs, keys, H)
+    keys = ZN.running_keys(segs, H, len(d))
+    heads = ZN.table_heads(DL._page_rules(d, True), segs, keys, H)
     got = {(s["page"], s["text"]) for s in segs if s["id"] in heads}
     assert not any("KKS" in t for _, t in got)
     assert (1, "Megnevezés") in got and (0, "Megnevezés") in got and (2, "Sor 8") in got
@@ -539,8 +540,8 @@ def test_running_counts_pages_not_pieces(tmp_path):
     one, two = tmp_path / "one.pdf", tmp_path / "two.pdf"
     pdf(one, 1)
     pdf(two, 2)
-    assert not DL._running(_segs(one), 842, 1)
-    keys = DL._running(_segs(two), 842, 2)
+    assert not ZN.running_keys(_segs(one), 842, 1)
+    keys = ZN.running_keys(_segs(two), 842, 2)
     assert ("head", "Verzió") in keys
     blocks, _ = DL.load(str(one), _segs(one), text=True)
     text = " ".join("".join(q.get("t", "") for q in x["runs"]) for b in blocks if b["k"] == "table"

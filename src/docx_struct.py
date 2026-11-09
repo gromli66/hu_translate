@@ -2625,6 +2625,17 @@ def layout(path, blocks, content=None):
                 if float(c["top"]) - bot <= float(c["bottom"]) - float(c["top"]) + 2:
                     head.append(c)
                     bot = max(bot, float(c["bottom"]))
+        # выше верха тела знаков нет, а вся шапка листа — рамкой ниже него, до первой строки тела (3FI18 л. 31, 33–39:
+        # рамка 57–83 pt при верхе тела документа 53): шапка — знаки внутри рамки (верхняя и нижняя горизонтали шире
+        # половины листа, не дальше 45 pt — две-три строки шапки); иначе шапка серии была пустой, а её строки после
+        # E9b-Z Z4 сняты из тела — пропадали
+        elif not head and ctops.get(pg.page_number, 0) > body_top:
+            longs = sorted(float(r["top"]) for r in _drawn(pg.rects + pg.lines)
+                           if float(r["bottom"]) - float(r["top"]) < GM.LINE and float(r["x1"]) - float(r["x0"]) > 0.5 * W
+                           and body_top - 2 <= float(r["top"]) < ctops[pg.page_number])
+            low = max((y for y in longs if y - longs[0] <= 45), default=None) if longs else None
+            if low is not None and low - longs[0] >= 8:
+                head = [c for c in art if longs[0] <= float(c["top"]) < low]
         return head, [c for c in art if c["top"] >= ft], ft
 
     # колонтитулы листов текстового слоя (PDF без разметки) — по тексту вместе с цифрами, кроме счётчика листов: версия
