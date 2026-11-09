@@ -3019,8 +3019,11 @@ class Builder:
         листах, 30THHAGT, шапки 30BL150FÜT и 30GF(246)51GT; E9b-Z3). Табуляция — левее, на «край − текст после неё»,
         если текст до неё на этой строке там уже кончился; абзацы одной ячейки (колонтитула) с той же табуляцией —
         вместе (столбец «Номер версии» / «Номер страницы»). Иначе — подпись и значение после табуляции неразрывно
-        (переносятся вместе). Только короткое значение (до половины строки) после табуляции с позицией; ширина —
-        метрикой шрифта печати (_print_w), класс шрифта — по имени (FONT_GUESS), незнакомое — из PDF (font_class)."""
+        (переносятся вместе). Только короткое значение (до половины строки) после табуляции с позицией. И без
+        табуляции: «подпись: значение» с цифрой в узкой ячейке («Номер версии: 0.» шапки-строки таблицы S 30RVRXTSBIGT,
+        31SDTÖMGT — «0.» уходило строкой ниже) — пробел после двоеточия неразрывный, значение переносится вместе со
+        словом подписи. Ширина — метрикой шрифта печати (_print_w), класс шрифта — по имени (FONT_GUESS), незнакомое —
+        из PDF (font_class)."""
         from docx.shared import Pt
         styles = {}
         for s in self.doc.styles.element.iter(W + "style"):
@@ -3044,9 +3047,9 @@ class Builder:
         dt = self.doc.settings.element.find(W + "defaultTabStop")
         deftab = tw(dt, "val") or 35.4
 
-        def layout(p, lim):
+        def layout(p, lim, words=None):
             """Табуляции абзаца по строкам: [(позиция стопа или None, конец текста до неё на строке)], ширина текста
-            после последней, на строке ли он со своей табуляцией, прогоны с ним."""
+            после последней, на строке ли он со своей табуляцией, прогоны с ним; words — сюда (слово, строка)."""
             ppr = p.find(W + "pPr")
             st = ppr.find(W + "pStyle") if ppr is not None else None
             sid = st.get(W + "val") if st is not None else "Normal"
@@ -3056,8 +3059,9 @@ class Builder:
             lim -= tw(ind, "right", "end") or 0.0
             x = left + (tw(ind, "firstLine") or 0.0) - (tw(ind, "hanging") or 0.0)
             tabs = ppr.find(W + "tabs") if ppr is not None else None
-            stops = sorted((tw(t, "pos"), t.get(W + "val")) for t in tabs if t.get(W + "val") != "clear")
-            used, after, runs, ok = [], 0.0, [], True
+            stops = sorted((tw(t, "pos"), t.get(W + "val")) for t in tabs if t.get(W + "val") != "clear") \
+                if tabs is not None else []
+            used, after, runs, ok, line = [], 0.0, [], True, 0
             for r in p.iter(W + "r"):
                 rpr = r.find(W + "rPr")
                 sz = rpr.find(W + "sz") if rpr is not None else None
@@ -3079,16 +3083,18 @@ class Builder:
                         used.append((nxt if nxt and nxt[0] <= lim else None, x))
                         x = nxt[0] if nxt and nxt[0] <= lim else (int(x / deftab) + 1) * deftab
                         if x > lim:
-                            x = left
+                            x, line = left, line + 1
                         after, runs, ok = 0.0, [], True
                     elif c.tag == W + "br":
-                        x, after, runs = left, 0.0, []
+                        x, after, runs, line = left, 0.0, [], line + 1
                     elif c.tag == W + "t" and c.text:
                         # знаки нулевой ширины (соединитель слов после поля-рамки, мягкий перенос) — без ширины
                         for w in re.split(r"(?<= )", re.sub("[\u00ad\u200b-\u200d\u2060\ufeff]", "", c.text)):
                             wd = _print_w(w, size, kind, bold)
                             if w.strip() and x + _print_w(w.rstrip(), size, kind, bold) > lim + 0.5 and x > left + 1:
-                                x, ok = left, False                    # перенос: слово — на следующую строку
+                                x, ok, line = left, False, line + 1    # перенос: слово — на следующую строку
+                            if words is not None and w.strip():
+                                words.append((w.strip(), line))
                             x += wd
                             after += wd
                         runs.append(c)
@@ -3100,6 +3106,27 @@ class Builder:
             или цифрой: «300.0s», «60/90.0s»; «(прод.)» — как есть)."""
             for c in runs:
                 c.text = re.sub(r"(?<=[./-])(?=\w)", "\u2060", c.text.replace(" ", "\u00a0"))
+        field = re.compile(r"\s*([^\W\d_][^:\d]{0,40}:)(\s+)(?=\S*\d)\S.{0,18}$")
+
+        def field_fit(p, width):
+            """«Номер версии: 0.» без табуляции: значение по модели строки — не на строке слова с двоеточием (узкая
+            ячейка) — пробел после двоеточия неразрывный."""
+            ts = list(p.iter(W + "t"))
+            text = "".join(t.text or "" for t in ts)
+            m = field.match(text)
+            if not m:
+                return
+            words = []
+            layout(p, width, words)
+            k = len(m.group(1).split())
+            if len(words) <= k or ":" not in words[k - 1][0] or words[k][1] == words[k - 1][1]:
+                return
+            a, z, at = m.start(2), m.end(2), 0
+            for t in ts:
+                n = len(t.text or "")
+                if at < z and a < at + n:
+                    t.text = "".join("\u00a0" if a <= at + i < z else ch for i, ch in enumerate(t.text))
+                at += n
         containers = []                                 # (абзацы контейнера, ширина текста)
         secs = self.doc.sections
         sec_w = [(s.page_width - s.left_margin - s.right_margin) / 12700 for s in secs]
@@ -3142,7 +3169,10 @@ class Builder:
                 continue
             info = {}
             for p in pars:
-                if p.find(f"{W}pPr/{W}tabs") is None or p.find(f".//{W}tab") is None:
+                if p.find(f"{W}r/{W}tab") is None:
+                    field_fit(p, width)
+                    continue
+                if p.find(f"{W}pPr/{W}tabs") is None:
                     continue
                 info[p] = layout(p, width)
             # стоп левой табуляции → новая позиция: у абзаца, чей короткий текст после последней табуляции не помещается

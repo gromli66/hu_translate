@@ -63,3 +63,20 @@ def test_no_room_value_not_torn_bound_together():
     p = cell.paragraphs[0]
     assert _stops(p) == [400]
     assert "300.⁠0 с" in "".join(t.text for t in p._p.iter(W + "t"))
+
+
+def test_field_value_in_narrow_cell_kept_with_label():
+    """Без табуляции: «Номер версии: 0.» в узкой ячейке шапки-строки таблицы S (63 pt текста, 30RVRXTSBIGT, 31SDTÖMGT) — «0.»
+    уходило строкой ниже, отдельно от подписи; пробел после двоеточия — неразрывный (значение со словом подписи).
+    В широкой ячейке — как было."""
+    for width, bound in ((1480, True), (6000, False)):
+        doc = Document()
+        cell = doc.add_table(rows=1, cols=1).cell(0, 0)
+        cell.width = Twips(width)
+        p = cell.paragraphs[0]
+        for t in ("Номер версии:", " ", "0."):
+            p.add_run(t).font.size = Pt(10)
+        b = B.Builder.__new__(B.Builder)
+        b.doc = doc
+        b._tab_fit({})
+        assert (p.text == "Номер версии: 0.") is bound, p.text
