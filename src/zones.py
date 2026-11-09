@@ -116,6 +116,79 @@ def table_heads(rules, body, keys, H):
                                                          or not any(seen[place(s)] > 1 for s in ids)) for s in ids}
 
 
+def _num_keys(text):
+    """Числа строки и их ключи — до 10 знаков перед числом, числа раньше — «#» (как docx_struct.layout.num_keys)."""
+    return [(re.sub(r"\d+", "#", text[:m.start()])[-10:], m) for m in re.finditer(r"\d+", text)]
+
+
+def rows_of(segs):
+    """Строки колонтитула листа: сегменты по высоте (±5 pt), в строке — слева направо (как docx_layout._grid)."""
+    rows = {}
+    for s in sorted(segs, key=lambda s: (s["loc"]["bbox"][1], s["loc"]["bbox"][0])):
+        k = next((k for k in rows if abs(k - s["loc"]["bbox"][1]) < 5), s["loc"]["bbox"][1])
+        rows.setdefault(k, []).append(s)
+    return [sorted(r, key=lambda s: s["loc"]["bbox"][0]) for _, r in sorted(rows.items())]
+
+
+def _row_spans(segs):
+    """Текст колонтитула листа по строкам и место каждого сегмента в нём: (текст, [(начало, сегмент)])."""
+    out, at = "", []
+    for r in rows_of(segs):
+        if out:
+            out += " | "
+        for j, s in enumerate(r):
+            if j:
+                out += " "
+            at.append((len(out), s))
+            out += s["text"].strip()
+    return out, at
+
+
+def sheet_numbers(zsegs):
+    """Номер листа оригинала по листам — счётчик в колонтитуле (путь А для распознанных листов, E9b-Z, Z8; как
+    docx_struct.layout для текстового слоя): число, у которого по тексту перед ним (10 знаков, по строкам колонтитула —
+    OCR рвёт «Oldalszám:» и «41» на куски и ставит число то в первую строку шапки, то во вторую) на листах
+    ≥ max(3, ½) разных значений; номер листа — первое такое число на листе; верен, если ≥ 60 % пар соседних листов
+    растут на 1, иначе номеров нет. zsegs — {лист от 1: сегменты колонтитула}. → ({лист: номер}, {ключи счётчика})."""
+    texts = {p: _row_spans(ss)[0] for p, ss in zsegs.items()}
+    vals = {}
+    for t in texts.values():
+        for k, m in _num_keys(t):
+            vals.setdefault(k, []).append(m.group())
+    counter = {k for k, v in vals.items() if len(set(v)) >= max(3, 0.5 * len(v))}
+    no = {}
+    for p, t in texts.items():
+        n = next((int(m.group()) for k, m in _num_keys(t) if k in counter), None)
+        if n is not None:
+            no[p] = n
+    pairs = [(no[p], no[p + 1]) for p in no if p + 1 in no]
+    if not pairs or sum(b == a + 1 for a, b in pairs) < 0.6 * len(pairs):
+        return {}, counter
+    # лист, где OCR номера не прочёл (3PR42 л. 5, 42, 98), между соседями через один — их середина: без номера лист
+    # шёл продолжением прошлого раздела («N (прод.)»)
+    for p in [p for p in range(min(no) + 1, max(no)) if p not in no]:
+        if p - 1 in no and p + 1 in no and no[p + 1] == no[p - 1] + 2:
+            no[p] = no[p - 1] + 1
+    return dict(sorted(no.items())), counter
+
+
+def mark_counter(segs, counter, mark):
+    """Копии сегментов колонтитула листа, где цифры счётчика листа (sheet_numbers) заменены знаком mark — там сборка
+    ставит поле PAGE (docx_build._zone_text, как метка пути А docx_struct.layout). → (сегменты, число счётчика или None)."""
+    text, at = _row_spans(segs)
+    hit = next((m for k, m in _num_keys(text) if k in counter), None)
+    if hit is None:
+        return segs, None
+    out = []
+    for a, s in at:
+        t = s["text"].strip()
+        if a <= hit.start() and hit.end() <= a + len(t):
+            i = hit.start() - a
+            s = dict(s, text=t[:i] + mark * len(hit.group()) + t[i + len(hit.group()):])
+        out.append(s)
+    return out, hit.group()
+
+
 class Why(dict):
     """{id сегмента: причина снятия — правило решателя} + heads — id содержимого таблиц с телом (свидетельство «тело»
     старшего ранга, table_heads)."""
@@ -175,8 +248,10 @@ def decide(body, H, pages, rules):
     # «под рамкой» — по середине строки: по верху с допуском 1 pt заголовок сразу под рамкой (верх 91,4 при рамке 92,6,
     # 30RR2126GT стр. 10–12) считался «в рамке», и «A 30RR25S002 ellenőrzése» снималась повтором прошлого листа (цифры —
     # маской) — два заголовка из трёх пропадали (E9_DESIGN §5, F-1)
-    under = lambda s: frames[s["page"]] is not None and         (s["loc"]["bbox"][1] + s["loc"]["bbox"][3]) / 2 >= frames[s["page"]]
-    titled = lambda s: s["id"] not in heads and not under(s) and len(re.sub(r"\W", "", s["text"])) >= 6         and re.search(r"[^\W\d_]{3}", s["text"])
+    under = lambda s: frames[s["page"]] is not None and \
+        (s["loc"]["bbox"][1] + s["loc"]["bbox"][3]) / 2 >= frames[s["page"]]
+    titled = lambda s: s["id"] not in heads and not under(s) and len(re.sub(r"\W", "", s["text"])) >= 6 \
+        and re.search(r"[^\W\d_]{3}", s["text"])
     band = lambda s: s["loc"]["bbox"][3] < 0.2 * H
     # пробелы — без счёта: OCR читает название то с двойным пробелом после номера, то с одним («1.1.  Turbina …»
     # / «1.1. Turbina …», 3SZ19), и повтор с прошлого листа оставался заголовком посреди раздела (19.10)
@@ -193,7 +268,8 @@ def decide(body, H, pages, rules):
     # теле первого листа серии (3PR10 л. 20, 3FI18 л. 33, 30GF*51GT л. 15), у 1SZ01 «Oldalszám:1» полужирной — заголовком;
     # путь А (docx_struct.layout) берёт её в шапку серии из знаков вне тела
     field = lambda s: FIELD.match(s["text"])
-    run_from = lambda s: band(s) and titled(s) and key(s["text"]) in top.get(s["page"] + 1, ())         and key(s["text"]) not in top.get(s["page"] - 1, ())
+    run_from = lambda s: band(s) and titled(s) and key(s["text"]) in top.get(s["page"] + 1, ()) \
+        and key(s["text"]) not in top.get(s["page"] - 1, ())
     # первое появление бегущего названия (то же — вверху следующего листа) — заголовок раздела, даже без метки портала:
     # «1.8. Turbina csapágyak rezgése …» 3SZ19 шло обычным абзацем, а со следующего листа снималось как повтор (19.10)
     # (название — полужирное или по центру: строка тела вверху листа, повторённая на следующем, — не заголовок)

@@ -1666,8 +1666,9 @@ def _grid(zsegs, bold=None):
         # полужирность — по текстовому слою: шапка 3SZ19 набрана жирным, OCR этого не видел
         out["rows"].append({"cells": cells, "bold": all(_seg_bold(s, bold) for s in ss)})
     # столбец из одних чисел («Oldalszám: | 41») — к предыдущему: узкий столбец разносил номер листа по строкам
+    # (и число-метка номера листа, zones.mark_counter)
     for ci in range(len(xs) - 1, 0, -1):
-        if all(re.fullmatch(r"\d{1,4}", r["cells"][ci]) or not r["cells"][ci] for r in out["rows"]) \
+        if all(re.fullmatch(r"[\d\ue000]{1,4}", r["cells"][ci]) or not r["cells"][ci] for r in out["rows"]) \
                 and any(r["cells"][ci] for r in out["rows"]):
             for r in out["rows"]:
                 r["cells"][ci - 1] = (r["cells"][ci - 1] + " " + r["cells"][ci]).strip()
@@ -1720,11 +1721,35 @@ def layout(src, blocks, segs, info):
                 break
     bold = info.get("style")
     # в сетку колонтитула — только строки, одинаковые почти на всех листах (zones.stable_running)
-    zone_of = lambda z: [s for s in by_page.get(rep, []) if ZN.zone(s, H) == z and ZN.stable_running(s, runs, run_keys, H)] \
-        if rep is not None else []
-    headz = zone_of("head")
+    stable = {s["id"] for s in runs if ZN.stable_running(s, runs, run_keys, H)}
+    zone_of = lambda z, p: [s for s in by_page.get(p, []) if ZN.zone(s, H) == z and s["id"] in stable] \
+        if p is not None else []
+    headz, footz = zone_of("head", rep), zone_of("foot", rep)
+    # путь А и для распознанных листов (E9b-Z, Z8; текстовый слой — docx_struct.layout): номер листа оригинала по
+    # листам — счётчик в колонтитуле, каждый лист — свой раздел со своим номером (docx_build), а номер в шапке — поле
+    # PAGE на месте счётчика (метка), а не первое число перевода и не «нумерация с 1 или 2» (3SZ19: первый лист PDF —
+    # «Oldalszám: 2»; 3PR42: нумерация сдвигается посреди документа)
+    zsegs = {}
+    for s in runs:
+        if s["id"] in stable:
+            zsegs.setdefault(s["page"] + 1, []).append(s)
+    sheet_no, counter = ZN.sheet_numbers(zsegs)
+    marked = False
+    if sheet_no and rep is not None:
+        from docx_struct import PAGE_MARK
+        # образец — ближайший к середине лист с тем же числом строк колонтитула, где счётчик прочитан (3PR42 л. 5:
+        # «Verziószám: 0 6» — номер OCR приклеил к версии)
+        for p in sorted((p for p in pages if len(by_page[p]) == common), key=lambda p: (abs(p - rep), p)):
+            zs, tok = ZN.mark_counter(zone_of("head", p) + zone_of("foot", p), counter, PAGE_MARK)
+            if tok:
+                headz, footz = [s for s in zs if ZN.zone(s, H) == "head"], [s for s in zs if ZN.zone(s, H) == "foot"]
+                page_tok, marked = tok, True
+                break
+        if marked:                          # первый лист тела — с его номера (у 3PR42 прежний расчёт давал −1)
+            first = 1 if any(s["page"] == 0 for s in runs) else 2
+            m = min(sheet_no)
+            num_start = {"page": first, "value": sheet_no.get(first, sheet_no[m] - (m - first))}
     head = _grid(headz, bold) if headz else None
-    footz = zone_of("foot")
     foot = _grid(footz, bold) if footz else {"rows": [], "widths": [], "aligns": [], "inner": False, "box": False}
     if head:                                # шапка — шрифтом документа (стиль шапки по умолчанию — Tahoma, 3SZ19 — Courier)
         head["font"], head["size"] = info.get("font"), info.get("size")
@@ -1738,4 +1763,5 @@ def layout(src, blocks, segs, info):
             "stamp": foot["rows"], "stamp_widths": foot["widths"], "stamp_aligns": foot["aligns"],
             "stamp_font": info.get("font") or "Times New Roman", "stamp_size": info.get("size"),
             "stamp_box": foot["box"], "stamp_inner": False, "page_tok": page_tok, "num_start": num_start,
-            "first_is_body": any(s["page"] == 0 for s in runs)}    # колонтитулы и на 1-м листе — титула нет
+            "first_is_body": any(s["page"] == 0 for s in runs),    # колонтитулы и на 1-м листе — титула нет
+            **({"sheet_no": sheet_no, "page_marked": True} if marked else {})}

@@ -3063,7 +3063,12 @@ def blocks_layout(pdf, segs, mode):
             blocks = [b for b in blocks if not (him and b["k"] == "p" and (b.get("geom") or {}).get("page") == 1
                                                 and b.get("runs") and all("img" in r and dup(r["img"]) for r in b["runs"]))]
             return blocks, SIDS.stamp(L, info)
-        return blocks, SIDS.stamp(docx_layout.layout(str(pdf), blocks, segs, info), info)
+        L = docx_layout.layout(str(pdf), blocks, segs, info)
+        # путь А распознанного документа (номер листа оригинала известен, E9b-Z Z8): лист — свой раздел, таблица и
+        # перечень режутся на границе листа (как у текстового слоя)
+        if L.get("sheet_no"):
+            blocks = docx_struct.split_at_zones(blocks, L.get("variants"), docx_struct.sheet_closed(L, blocks))
+        return blocks, SIDS.stamp(L, info)
     blocks, _ = docx_struct.load(str(pdf))
     blocks = docx_struct.compose_figures(blocks, str(pdf))   # не в load: load зовёт и coverage при извлечении
     docx_struct.list_geo(blocks)
