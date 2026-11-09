@@ -80,6 +80,75 @@ def test_ocr_sheets_numbered_from_header_counter(tmp_path):
     assert all("PAGE" in sec.first_page_header._element.xml for sec in doc.sections)
 
 
+def test_inserted_ocr_sheet_numbered_as_text(tmp_path):
+    """Вставной лист «5/1» (3PR42 «56/1–56/3»): номер не целый, полем PAGE не выразить — раздел листа без начала
+    нумерации, номер текстом в шапке (первая страница — «5/1», перелив — «5/1 (прод.)»); следующий лист — своё «7»."""
+    from docx import Document
+    from docx.oxml.ns import qn
+    import docx_build as B
+    from test_struct_docx import LAYOUT, PROFILE, ocr_doc, png
+    src, segs = ocr_doc(tmp_path)
+    for s in segs:
+        if s["page"] == 4 and s["text"].startswith("Oldalszám"):
+            s["text"] = "Oldalszám: 5/1"
+    blocks, L = B.blocks_layout(src, segs, "layout")
+    assert L["sheet_no"][5] == "5/1" and L["sheet_no"][6] == 7
+    out = tmp_path / "ocr.docx"
+    B.Builder(B.Memory([(s["text"], s["text"]) for s in segs]), lambda img: png(), PROFILE).build(
+        blocks, str(out), dict(LAYOUT, **L))
+    doc = Document(str(out))
+    starts = [(s._sectPr.find(qn("w:pgNumType")).get(qn("w:start")) if s._sectPr.find(qn("w:pgNumType")) is not None
+               else None) for s in doc.sections]
+    assert starts == ["2", "3", "4", "5", None, "7", "8", "9"]
+    ins = doc.sections[4]
+    assert "5/1" in ins.first_page_header._element.xml and " PAGE " not in ins.first_page_header._element.xml
+    assert "5/1 (прод.)" in "".join(p.text for p in ins.header.paragraphs) + "".join(
+        c.text for t in ins.header.tables for r in t.rows for c in r.cells)
+    assert " PAGE " in doc.sections[5].first_page_header._element.xml
+
+
+def test_ocr_header_sample_without_merged_lines(tmp_path):
+    """Образец шапки OCR — лист без сегмента в две строки, если такие листы есть: OCR склеил «Verziószám: 0» над
+    «Oldalszám: N» в один сегмент на большинстве листов (3PR42: 58 из 146), и шапка перевода шла «Номер версии: 0 Номер
+    страницы:» одной строкой, а номер — строкой ниже; на листах, где строки прочитаны по отдельности, — как в оригинале."""
+    import docx_build as B
+    import docx_struct as D
+    from test_struct_docx import ocr_doc
+    src, segs = ocr_doc(tmp_path)
+    sid = max(s["id"] for s in segs) + 1
+    out = []
+    for s in segs:
+        if s["text"].startswith("Azonosító"):     # вторая строка шапки слева — на всех листах (как «Megnevezés» 3PR42)
+            out.append(dict(s, id=sid, text="Megnevezés: TURBINA",
+                            loc=dict(s["loc"], bbox=[77, 48, 300, 57], frags=[[77, 48, 300, 57]])))
+            sid += 1
+        if s["text"].startswith("Oldalszám"):
+            n = s["text"].split()[-1]
+            if s["page"] < 5:                       # склейка двух строк шапки (два фрагмента — две строки)
+                s = dict(s, text=f"Verziószám: 0 Oldalszám: {n}",
+                         loc=dict(s["loc"], bbox=[460, 35, 530, 57], frags=[[460, 35, 530, 44], [460, 48, 530, 57]]))
+            else:
+                out.append(dict(s, id=sid, text="Verziószám: 0",
+                                loc=dict(s["loc"], bbox=[460, 35, 530, 44], frags=[[460, 35, 530, 44]])))
+                sid += 1
+        out.append(s)
+    blocks, L = B.blocks_layout(src, out, "layout")
+    rows = [" ".join(c if isinstance(c, str) else " ".join(t for t, _ in c["lines"]) for c in r["cells"])
+            for r in L["head_grid"]["rows"]]
+    assert any("Verziószám: 0" in r and "Oldalszám" not in r for r in rows), rows
+    assert any("Oldalszám:" in r and D.PAGE_MARK in r for r in rows), rows
+
+
+def test_header_cell_label_and_number_translated():
+    """Ячейка шапки «подпись + число» из двух сегментов («Verziószám:» и «0»: сетка колонтитула приклеивает столбец
+    чисел к подписи) — перевод подписи и число; в памяти целиком её нет, и она шла по-венгерски (3PR42)."""
+    import docx_build as B
+    mem = B.Memory([("Verziószám:", "Номер версии:"), ("0", "0"), ("Azonosító: 3PR42", "Идентификатор: 3PR42")])
+    assert mem("Verziószám: 0") is None
+    assert mem.zone("Verziószám: 0") == "Номер версии: 0"
+    assert mem.zone("Megnevezés 7") is None                  # подпись не из памяти — как было
+
+
 def test_sheet_numbers_only_read_and_monotonic():
     """Номер листа OCR — только прочитанный и в монотонном ряду: повтор/скачок назад — лист без номера; сбоев много —
     номеров нет у документа (прежнее поведение)."""
@@ -90,12 +159,18 @@ def test_sheet_numbers_only_read_and_monotonic():
     assert no == {1: 2, 2: 3, 3: 4, 6: 7, 7: 8, 8: 9, 9: 10, 10: 11}
     no, _ = ZN.sheet_numbers(zs([2, 3, None, None, 6, None, 8, 9]))
     assert no == {}
-    # вставные листы «56/1», «56/2» (3PR42) — без номера, сосед «56» свой номер не теряет
+    # вставные листы «56/1», «56/2» (3PR42) — номер строкой, если строго между соседями; сосед «56» свой номер не теряет
     z = zs([54, 55, 56, 56, 56, 57, 58, 59])
     for p in (4, 5):
         z[p][0]["text"] = f"Oldalszám: 56/{p - 3}"
     no, _ = ZN.sheet_numbers(z)
-    assert no == {1: 54, 2: 55, 3: 56, 6: 57, 7: 58, 8: 59}
+    assert no == {1: 54, 2: 55, 3: 56, 4: "56/1", 5: "56/2", 6: 57, 7: 58, 8: 59}
+    # OCR прочёл «56/7» вместо «56/2»: ряд «56/1, 56/7, 56/3» не растёт по порядку — у «56/7» и «56/3» номера нет, без
+    # угадывания; и у «56/1»: сосед без номера продолжил бы его раздел под «56/1 (прод.)»
+    z[5][0]["text"] = "Oldalszám: 56/7"
+    z[6][0]["text"] = "Oldalszám: 56/3"
+    no, _ = ZN.sheet_numbers(z)
+    assert no == {1: 54, 2: 55, 3: 56, 7: 58, 8: 59}
 
 
 def test_height_key_takes_header_row_not_registry_sheet_text():
