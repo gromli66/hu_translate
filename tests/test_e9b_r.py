@@ -114,3 +114,42 @@ def test_sub_rows_have_no_cell_margins_inside_their_row(tmp_path):
     assert [mar(ri, 1) for ri in range(3)] == [{"bottom": "0"}, {"top": "0", "bottom": "0"}, {"top": "0"}]
     assert [mar(ri, 2) for ri in range(3)] == [{"bottom": "0"}, {"top": "0", "bottom": "0"}, {"top": "0"}]
     assert tb.rows[0].cells[1].paragraphs[-1].paragraph_format.space_after.pt == 10
+
+
+def _grid1(xs, y0, y1):
+    """Сетка таблицы листа без внутренних горизонталей: одна строка сетки, вертикали по xs."""
+    import docx_layout as DL
+    gh = [(y0, xs[0], xs[-1]), (y1, xs[0], xs[-1])]
+    gv = [(x, y0, y1) for x in xs]
+    return DL._cluster([v[0] for v in gv]), [y0, y1], gh, gv
+
+
+def _seg(text, x0, y0, x1, lines=1, step=12):
+    return {"id": 0, "page": 0, "text": text, "loc": {"bbox": [x0, y0, x1, y0 + step * lines], "size": 10, "bold": False,
+            "align": "left", "frags": [[x0, y0 + step * k, x1, y0 + step * (k + 1)] for k in range(lines)]}}
+
+
+def test_band_anchor_is_the_rows_anchor():
+    """R6: якорь полосы _table_block — тот же, что при нарезке (rows.Rows): «YA-K7 ⇥ условие» (3PR10 л. 22–23) — код не
+    KKS, прежнее правило (patterns.ROW_ANCHOR в первом столбце) его не брало: абзац условия, заходящий на уровень
+    следующего кода, склеивал ряды — «YA-K7 YA-K8» одной ячейкой, условия мимо своих кодов."""
+    import docx_layout as DL
+    t = _grid1([60, 110, 400], 90, 200)
+    segs = [_seg("YA-K7", 70, 100, 100), _seg("YA-K8", 70, 124, 100), _seg("YA-K9", 70, 160, 100),
+            _seg("Megengedett a hidegvizes indítás 0,8 U névl tápfeszültségnél, melegvizes indítás", 120, 100, 390,
+                 lines=3), _seg("Tilos az FKSZ indítása, ha merev a primerkör", 120, 160, 390)]
+    b = DL._table_block(t, segs, 0, None, "Times New Roman", 10, False)
+    text = lambda c: ["".join(r.get("t", "") for r in p["runs"]) for p in c["blocks"]]
+    assert [text(r[0]) for r in b["rows"]] == [["YA-K7"], ["YA-K8"], ["YA-K9"]], [[text(c) for c in r] for r in b["rows"]]
+
+
+def test_code_under_a_phrase_in_phrase_column_is_not_a_band_anchor():
+    """R6, ограда (3SZ23 л. 6, шаг 0 сессии 1): код не-KKS под фразой в столбце «Tevékenység» («Az oltás indítását
+    követően a» / «31(32)NB11S601 NYIT.», значение рядом — на обе строки) — содержание, а не якорь: в столбце фразы
+    преобладают, ряд не режется (якорь в первом столбце по rows.is_anchor отрывал фразу от кода)."""
+    import docx_layout as DL
+    t = _grid1([60, 300, 400], 90, 200)
+    segs = [_seg("Az oltás indítását követően a", 70, 100, 290), _seg("31(32)NB11S601 NYIT.", 70, 112, 200),
+            _seg("A tartály töltése megkezdődik", 70, 124, 290), _seg("Indítás után nyitva", 310, 100, 390, lines=2)]
+    b = DL._table_block(t, segs, 0, None, "Times New Roman", 10, False)
+    assert len(b["rows"]) == 1

@@ -711,6 +711,24 @@ def _runs_of(group, bold, font, size, mono, right=None):
     return runs
 
 
+def _seg_frags(segs, size):
+    """Куски строк сегментов ({t, bbox, size}) — вход rows.Rows."""
+    return [{"t": s["text"], "bbox": tuple(f[:4]), "size": s["loc"].get("size") or size}
+            for s in segs for f in (s["loc"].get("frags") or [s["loc"]["bbox"]])]
+
+
+def _band_anchors(groups, size, rw):
+    """Якорь полосы (_table_block) для каждой строки ячейки groups = [(столбец, сегменты строки)] — тот же, что при
+    нарезке (rows.Rows по кускам строк таблицы, rw; E9b-R R6): номер пункта или код (rows.is_anchor) в столбце, где такие
+    куски преобладают, и на его уровне справа строка другой ячейки (якорь делит строки справа от себя, Rows._own).
+    Прежде своё правило — patterns.ROW_ANCHOR в первом столбце: «YA-K7 ⇥ …» (3PR10), «30UY01/1 ⇥ сигнал» (3SZ23) не
+    якоря — условия и сигналы шли стопкой мимо своих кодов."""
+    own = set(rw.anchors)
+    return [(f0 := tuple((group[0]["loc"].get("frags") or [group[0]["loc"]["bbox"]])[0][:4])) in own
+            and any(rw._own(f["bbox"]) == f0 for c, g in groups if c != ci for f in _seg_frags(g, size))
+            for ci, group in groups]
+
+
 def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields=(), subs=()):
     """Блок таблицы (как у docx_struct): ячейки — по сетке, текст ячейки — сегменты с центром в ней, картинки
     (подпись от руки в форме) — в ячейку своего центра, после текста; subs — [(рамка, блок)] вложенных таблиц (_nested):
@@ -751,9 +769,10 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields
     # отметки съезжали друг относительно друга (31RDGT л. 1, 20.10), «Tevékenység | Állapot» — столбцами-стопками,
     # значение уезжало от своего кода (3SZ23, 3PR10, аудит 30.10). Полоса с текстом одной ячейки, у которой текст был
     # и в полосе выше, — продолжение той строки (рядом ничего, резать нечего); линий между подстроками нет.
-    # Метка пункта или код оборудования в первом столбце («1.1.», «31UJ21S601») — всегда своя полоса, даже если её
+    # Якорь ряда (номер пункта, код оборудования — _band_anchors, как при нарезке) — всегда своя полоса, даже если её
     # задел чужой абзац: значения столбца, слитые нарезкой в абзац на пять строк (3SZ23 INFO «-3,6 m … 9,6 m»),
     # склеивали все строки таблицы в одну — коды и места разъезжались; такой абзац — в полосу своей середины
+    rw = RW.Rows(_seg_frags([s for ss in put.values() for s in ss], size), ())
     bands = []
     for r, cells in enumerate(grid):
         # края абзаца — по «чернилам»: середина первой (последней) строки ∓ 0,4 кегля, а не рамка: рамка моноширинной
@@ -766,10 +785,10 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields
             sz = g["loc"].get("size") or (f[3] - f[1]) / 1.2
             mid = (f[1] + f[3]) / 2
             return min(mid - 0.4 * sz, f[1] + 0.5 * sz) if top else max(mid + 0.4 * sz, f[3] - 0.5 * sz)
-        spans = sorted((min(ink(g, True) for g in group), max(ink(g, False) for g in group), ci,
-                        ci == 0 and bool(PT.ROW_ANCHOR.fullmatch(" ".join(g["text"] for g in group).strip())))
-                       for ci in range(len(cells)) for group in _lines(sorted(
-                           put.get((r, ci), []), key=lambda s: (round(s["loc"]["bbox"][1] / 3), s["loc"]["bbox"][0]))))
+        groups = [(ci, group) for ci in range(len(cells)) for group in _lines(sorted(
+            put.get((r, ci), []), key=lambda s: (round(s["loc"]["bbox"][1] / 3), s["loc"]["bbox"][0])))]
+        spans = sorted((min(ink(g, True) for g in group), max(ink(g, False) for g in group), ci, anchor)
+                       for (ci, group), anchor in zip(groups, _band_anchors(groups, size, rw)))
         strips = []                                             # [верх, низ, {ячейки}, метка]
         for a, z, ci, anchor in spans:
             # метка — своя полоса, если чужой абзац начался выше на полстроки метки, а не на 2 pt: по «чернилам»
