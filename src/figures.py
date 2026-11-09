@@ -147,7 +147,8 @@ def scheme_regions(page, pno, drawings, segs, masked, tabs, figs, rules=((), ())
     фигуры соединяются, если ближе 20 pt, подпись — с фигурой ближе 10 pt, подписи одного ряда (до 60 pt между ними)
     и строки одной подписи друг под другом — между собой. Группа — схема, если
       * от 6 фигур и от 2 подписей, ни одна подпись не абзац (до 120 знаков: распознавание сливает подписи ряда в одну —
-        «Turbina főgépész Primerköri főgépész»), и ни одна строка листа не задета краем группы;
+        «Turbina főgépész Primerköri főgépész») и не шире всей остальной группы (строка тела, через которую идёт схема), и
+        ни одна строка листа не задета краем группы;
       * есть связки — от 3 тонких линий длиннее 15 pt, и вертикальные, и горизонтальные («Layout format» Eskom,
         блок-схемы 3FI18; поля бланка — одни горизонтали, список условий с метками в рамочках — без вертикалей: это не
         схема), и группа не меньше 80×60 pt.
@@ -194,6 +195,12 @@ def scheme_regions(page, pno, drawings, segs, masked, tabs, figs, rules=((), ())
             R |= r
         if not (vert and horz and vert + horz >= GM.SCHEME_ARROWS and R.width >= GM.SCHEME_SIZE[0]
                 and R.height >= GM.SCHEME_SIZE[1]):
+            continue
+        # подпись шире всей остальной группы (с запасом SCHEME_CAPTION с боков) — строка текста тела, через которую идёт
+        # схема, а не её подпись: такая группа не схема (строка уже 60 % листа иначе уходила в снимок вместе с ней)
+        x0s, x1s = sorted(r.x0 for _, r in c), sorted(r.x1 for _, r in c)
+        rest = lambda r: (x1s[-2] if r.x1 == x1s[-1] else x1s[-1]) - (x0s[1] if r.x0 == x0s[0] else x0s[0])
+        if any(not f and r.width > rest(r) + 2 * GM.SCHEME_CAPTION for f, r in c):
             continue
         inside = [s for s, b in zip(segs, sb) if R.contains((b.tl + b.br) / 2)]
         if any(len(s["text"].strip()) > GM.SCHEME_PARAGRAPH for s in inside) or any(b.intersects(R) and s not in inside
