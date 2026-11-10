@@ -360,6 +360,41 @@ def test_mark_band_without_text_joins_the_item_it_hangs_over():
         [["4.10.14"], ["A reaktor MET-en"], ["O"]]], _rows_text(b)
 
 
+def test_code_band_joins_the_text_that_covers_it_not_the_item_above():
+    """30RR2126GT л. 5 (прогон h13): номер «2.3.» стоит по середине своего текста в три строки — текст начат выше номера
+    и сам по себе полоса ниже. Полоса без текста встаёт к тексту, что её накрывает, а не к хвосту пункта 2.2 выше."""
+    import docx_layout as DL
+    t = _grid1([75, 130, 465, 500], 200, 340)
+    box = lambda text, bb, fr=None: {"id": 0, "page": 0, "text": text, "loc": {"bbox": bb, "size": 11, "bold": False,
+                                                                              "align": "left", "frags": fr or [bb]}}
+    segs = [box("2.2.", [81, 211, 101, 226]), box("O", [475, 211, 486, 226]),
+            box("− A tömörség ellenőrzést egyszerre csak egy visszacsapó szelepnél lehet elvégezni.", [137, 208, 400, 238],
+                [[137, 208, 400, 223], [137, 223, 300, 238]]),
+            box("2.3.", [81, 261, 101, 276]),
+            box("− A blokkvezénylő és a helyszín közötti közvetlen telefonkapcsolat rendelkezésre áll", [137, 255, 418, 301],
+                [[137, 255, 418, 270], [137, 270, 418, 285], [137, 286, 200, 301]]), box("O", [475, 274, 486, 289]),
+            box("2.4.", [81, 301, 101, 316]), box("− A teszt végrehajtásához", [137, 302, 428, 317]),
+            box("O", [475, 302, 486, 317])]
+    b = DL._table_block(t, segs, 0, None, "Times New Roman", 10, False)
+    assert [r[0] for r in _rows_text(b)] == [["2.2."], ["2.3."], ["2.4."]], _rows_text(b)
+    assert _rows_text(b)[1][1] == ["− A blokkvezénylő és a helyszín közötti közvetlen telefonkapcsolat rendelkezésre áll"]
+
+
+def test_code_without_text_does_not_stack_over_an_item_with_its_own_value():
+    """1SZ01 л. 90 (прогон h13): у 11SA10P101 своего текста нет (значения ушли в шапку), у 11SA10P501 — своё «11KF11» и
+    часть слитого «jelzés 11GB02 RM 2.1.». Весь текст 11SA10P501 полосу 11SA10P101 не накрывает — стопки нет:
+    стопкой «11KF11» вставало против чужого кода."""
+    import docx_layout as DL
+    t = _grid1([72, 140, 228, 300, 400, 540], 110, 185)
+    box = lambda text, bb, fr=None: {"id": 0, "page": 0, "text": text, "loc": {"bbox": bb, "size": 10, "bold": False,
+                                                                              "align": "left", "frags": fr or [bb]}}
+    segs = [box("11SA10P101", [78, 115, 137, 130]), box("11SA10P501", [78, 128, 137, 143]), box("11KF11", [157, 128, 195, 143]),
+            box("jelzés 11GB02 RM 2.1. -- --", [316, 115, 386, 166], [[316, 115 + 13 * k, 386, 128 + 13 * k] for k in range(4)]),
+            box("11SA10P801", [78, 141, 137, 156]), box("helyszín", [152, 141, 195, 156])]
+    b = DL._table_block(t, segs, 0, None, "Times New Roman", 10, False)
+    assert [r[0] for r in _rows_text(b)] == [["11SA10P101"], ["11SA10P501"], ["11SA10P801"]], _rows_text(b)
+
+
 def test_continuation_without_code_does_not_take_next_item_number():
     """30THHAGT 4.23 (E9B_R2): строка продолжения пункта 4.22 без номера («30TH50B001 nyomása … bar ○ ○») задевает полосу
     пункта 4.23 со своим текстом — граница остаётся: номер «4.23.» против своего «Nyitni …», а не против чужого давления."""

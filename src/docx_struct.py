@@ -478,8 +478,9 @@ def sub_rows(bs):
             # подстрока без своего текста (метка, отметка), которую накрывает абзац, — в стопку при общем тексте (одно
             # правило с полосами docx_layout._table_block — rows.stack_bands); прочие границы — как были
             within = lambda t, k: (k == 0 or t >= tops[k] - 2) and (k == len(tops) - 1 or t < tops[k + 1] - 2)
-            own = [any(not lab and ci not in marks for t, _, ci, lab in spans if within(t, k)) for k in range(len(tops))]
-            tops = stack_bands(tops + [float("inf")], [(a, z) for a, z, _, _ in spans], own)[:-1]
+            own = [[(a, z) for a, z, ci, lab in spans if within(a, k) and not lab and ci not in marks]
+                   for k in range(len(tops))]
+            tops = stack_bands(tops + [float("inf")], own)[:-1]
             if len(tops) < 2:
                 rows.append(r)
                 continue

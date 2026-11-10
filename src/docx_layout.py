@@ -793,12 +793,11 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields
             anc = set(rw.anchors)
             is_code = lambda ci, s: ci == 0 and tuple((s["loc"].get("frags") or [s["loc"]["bbox"]])[0][:4]) in anc
             mid = lambda s: (s["loc"]["bbox"][1] + s["loc"]["bbox"][3]) / 2
-            own = [any(not is_code(ci, s) and s["text"].strip() and not RW.mark_only(s["text"])
-                       for ci in range(len(cells)) for s in put.get((r, ci), [])
-                       if cuts[k] <= mid(s) < cuts[k + 1] or k == len(cuts) - 2 and mid(s) >= cuts[k + 1])
+            own = [[(ink(s, True), ink(s, False)) for ci in range(len(cells)) for s in put.get((r, ci), [])
+                    if (cuts[k] <= mid(s) < cuts[k + 1] or k == len(cuts) - 2 and mid(s) >= cuts[k + 1])
+                    and not is_code(ci, s) and s["text"].strip() and not RW.mark_only(s["text"])]
                    for k in range(len(cuts) - 1)]
-            ink_all = [(ink(g, True), ink(g, False)) for ci in range(len(cells)) for g in put.get((r, ci), [])]
-            cuts = RW.stack_bands(cuts, ink_all, own)
+            cuts = RW.stack_bands(cuts, own)
             # полоса без текста — не ряд: якорь ниже начала абзаца соседней ячейки, абзац уходит в полосу своей
             # середины, а над якорем вставал пустой ряд («@0YATBEATL», 01-02FMP0BIGT л. 24; «0.» листов изменений)
             mids = [(s["loc"]["bbox"][1] + s["loc"]["bbox"][3]) / 2 for ci in range(len(cells))
