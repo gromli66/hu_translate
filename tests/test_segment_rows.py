@@ -264,3 +264,46 @@ def test_wide_row_keeps_cell_continuation():
     more = [_fr(f"tovább{i}", (200 + 45 * i, 113, 240 + 45 * i, 130)) for i in range(14)]
     vs = [(95, 135, 197 + 45 * i) for i in range(15)]                    # линейки столбцов
     assert "E412/II. csőfolyosó" in _texts(cell + cells + more, vs=vs)
+
+
+def test_code_rows_are_apart_for_rules_and_portal_labels():
+    """Две строки кодов подряд — ячейки перечня (Rows.apart: «коды»), и для склейки по меткам портала: перечень
+    «30RR03S002» / «30RR03S020, S021» (30GF118GT л. 13) портал склеивал в одну строку. Перечень, который продолжается,
+    не делится: запятая или «;» в конце строки от двух кодов, тире цепочки в конце верхней, тире или пояснение в скобках
+    в начале нижней (маршрут, перенесённый по ширине: «…- 30TK54» / «(52) - 30TE04 …», 30HU175GT л. 7). Перенос слова
+    «KI-» / «KAPCSOLVA» — не коды."""
+    import roles as R
+    import rows as RW
+    from lines import join_lines
+    a = _fr("30RR03S002", (94, 270, 150, 282))
+    b = _fr("30RR03S020, S021", (94, 282, 180, 294))
+    assert RW.Rows([a, b], []).apart(a, b) == "коды"
+    assert len(_texts([a, b])) == 2
+    pars = lambda: [{"frags": [a], "bbox": a["bbox"], "size": 9.96, "bold": False},
+                    {"frags": [b], "bbox": b["bbox"], "size": 9.96, "bold": False}]
+    lines = [{"id": 0, "x0": 94, "x1": 150, "top": 270, "bottom": 282},
+             {"id": 1, "x0": 94, "x1": 180, "top": 282, "bottom": 294}]
+    labels = {0: {"new": True, "role": "body"}, 1: {"new": False, "role": "body"}}
+    assert len(R.apply(pars(), lines, labels, join_lines)) == 1
+    assert len(R.apply(pars(), lines, labels, join_lines, apart=RW.Rows([a, b], []).apart)) == 2
+    for up, low in (("30TK35(25)B001 - 30TK36(26)W001 - 30TK40 - 30TK41D001(2,3) - 30TK54", "(52) - 30TE04 - 30YA"),
+                    ("30TK35(25)B001 - 30TK40 - 30TK41D001(2,3) - 30TK54", "- 30TE04 - 30TE12S201 - 30YA"),
+                    ("TC01B002-TC12D001(2) TC16-TD36-TD30-TD15-TK28-TK30(20)-", "TK35(25)B001"),
+                    ("31,32SZ93S002,S003; 31,32SC75S009,30UJ04S007,S008;", "30UJ04S016,30UJ97S001"),
+                    ("30TD97S202, 30TD98S201,", "40TD97S201")):
+        u, w = _fr(up, (120, 100, 440, 112)), _fr(low, (120, 112, 440, 124))
+        assert RW.Rows([u, w], []).apart(u, w) is None, up
+        if not low.startswith(("(", "-")):         # «(52)», «- » в начале строки — метка пункта: склеивает портал
+            assert len(_texts([u, w])) == 1, up
+    k1, k2 = _fr("A tábla KI-", (120, 100, 200, 112)), _fr("KAPCSOLVA feliratú", (120, 112, 260, 124))
+    assert not RW.code_rows(k1["t"], k2["t"]) and RW.Rows([k1, k2], []).apart(k1, k2) is None
+    # одиночный код с запятой — продолжение фразы при обычном шаге (30TKBSZ36BIGT л. 8), через пустую строку — ряд
+    y1, y2 = _fr("YP14T001XQ01,", (195, 368, 269, 381)), _fr("YP24T001XQ01,", (195, 379, 269, 392))
+    assert RW.Rows([y1, y2], []).apart(y1, y2) is None and len(_texts([y1, y2])) == 1
+    r1, r2 = _fr("02TD95S201,", (70.8, 270.7, 143.4, 289.5), 11.04), _fr("02TD95S202,", (70.8, 295, 143.4, 313.8), 11.04)
+    assert RW.Rows([r1, r2], []).apart(r1, r2) is not None and len(_texts([r1, r2])) == 2
+    # перечень через «;» — один абзац и после короткой строки (1SZ01 л. 21, под «ZÁRNAK:»)
+    rows_ = ["1*SE10S801, S802, S803, S804;", "1*RB11S801, RB12S801;", "1*RA11S203, RA12S203, RA14S203, RA15S201;",
+             "1*RM21S201."]
+    fr = [_fr(t, (326, 171 + 10.3 * k, x1, 186 + 10.3 * k), 9.2) for k, (t, x1) in enumerate(zip(rows_, (483, 439, 547, 385)))]
+    assert _texts(fr, vs=[(150, 260, 320.0), (150, 260, 562.0)]) == [" ".join(rows_)]

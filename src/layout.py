@@ -10,7 +10,7 @@ import bisect
 import re
 import fitz
 from lines import hyphen_break, join_lines, mid_phrase     # перенос слова — одна функция для всех читателей (E4)
-from rows import Rows, code_cells, code_line, code_rows     # граница ряда таблицы — до склейки строк в абзацы (E5)
+from rows import Rows, code_cells, code_line     # граница ряда таблицы — до склейки строк в абзацы (E5)
 
 GAP = 30.0          # выключка по ширине в узких ячейках даёт пробелы до ~25 pt
 
@@ -545,18 +545,17 @@ def group(frags, hs, vs=(), form=False, rows=None):
                     continue
                 if form and p["frags"][-1]["t"].rstrip().endswith(":"):
                     continue
-                if code_rows(p["frags"][-1]["t"], f["t"]):
-                    continue                                # строки перечня кодов — каждая своим куском
                 # фраза оборвана на середине: длинная строка без знака конца, следующая — со строчной (центрированный
                 # текст в ячейке: «…A hidroakkumulátorok megengedett» / «szintváltozásának módosítása…» шли порознь, и
                 # перевод выходил «Допустимые гидроемкостей САОЗ изменение изменения уровня», 30TH50, 28.10)
                 if abs(x0 - last[0]) < 3 and mid_phrase(p["frags"][-1]["t"], f["t"]):
                     best = p
                     break
-                # перечень кодов через запятую продолжается на следующей строке того же края при обычном шаге строк:
-                # короткая строка «1*RB11S801, RB12S801,» не закрывает перечень (1SZ01 л. 20, под «ZÁRNAK:»); коды через
-                # пустую строку («02TD95S201,» / «02TD95S202,» 02VE25 л. 44 — ряды псевдотаблицы) — нет
-                if abs(x0 - last[0]) < 3 and plast.rstrip().endswith(",") and code_line(f["t"]) \
+                # перечень кодов через запятую или «;» продолжается на следующей строке того же края при обычном шаге
+                # строк: короткая строка «1*RB11S801, RB12S801,» не закрывает перечень (1SZ01 л. 20, под «ZÁRNAK:»; л. 21
+                # — через «;»); коды через пустую строку («02TD95S201,» / «02TD95S202,» 02VE25 л. 44 — ряды
+                # псевдотаблицы) — нет
+                if abs(x0 - last[0]) < 3 and plast.rstrip().endswith((",", ";")) and code_line(f["t"]) \
                         and (y0 + y1 - last[1] - last[3]) / 2 <= 1.3 * size:
                     best = p
                     break

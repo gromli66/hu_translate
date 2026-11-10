@@ -43,11 +43,19 @@ def code_cells(left, right):
     return code_line(left) and code_line(right) and not code_enum(left, right)
 
 
-def code_rows(upper, lower):
+def code_rows(upper, lower, close=False):
     """Две строки из кодов подряд — ячейки перечня, каждая своим куском; кроме перечисления, которое продолжается на
-    следующей строке: в верхней от двух кодов и запятая в конце («30TD97S202, 30TD98S201, … 40TD97S202,»)."""
-    up = upper.rstrip()
-    return code_line(up) and code_line(lower) and not (up.endswith(",") and len(up.split()) >= 2)
+    следующей строке: запятая или «;» в конце верхней («30TD97S202, 30TD98S201, … 40TD97S202,»; «31,32SZ93S002,S003;
+    …,S008;» / «30UJ04S016,…», 3SZ17 л. 5), или цепочка через тире, перенесённая по ширине: тире в конце верхней
+    («…-TK28-TK30(20)-» / «TK35(25)B001», 30PR132GT л. 6), тире или пояснение в скобках в начале нижней («…- 30TK54» /
+    «(52) - 30TE04 …», 30HU175GT л. 7; «30UA09S035» / «(30TH31S802)» в ячейке, 30BOXFELTEL). Одиночный код с запятой —
+    продолжение только при обычном шаге строк (close: «…csökken az» / «YP14T001XQ01,» / «YP24T001XQ01,» /
+    «YP29T001XQ01 értéke,», 30TKBSZ36BIGT л. 8); через пустую строку это ряды псевдотаблицы («02TD95S201,» /
+    «02TD95S202,», 02VE25 л. 44)."""
+    up, low = upper.rstrip(), lower.lstrip()
+    return code_line(up) and code_line(low) and not (
+        up.endswith((",", ";")) and (close or len(up.split()) >= 2) or up.endswith(("-", "–"))
+        or low.startswith(("-", "–", "(")))
 
 
 def is_anchor(t):
@@ -209,7 +217,8 @@ class Rows:
         подложку склеивают (roles.apply: 30RL2126GT — плашка под каждой строкой, «…akkor a» / «30RL21S001 zárva van.»
         рвались). У двух строк справа свои отметки бланка — пункты перечня, каждый со своей отметкой: «30TJ13 ág: …» и
         «30TJ23 ág: …» (30PR25GT л. 13) шли одним абзацем. Пустая строка (blank_between) — и для меток портала: пункты
-        «A, …» / «B, …» через пустую строку (1SZ01 л. 112) портал склеивал."""
+        «A, …» / «B, …» через пустую строку (1SZ01 л. 112) портал склеивал. Две строки кодов (code_rows) — ячейки перечня
+        и для меток портала: «30RR03S002» / «30RR03S020, S021» / … (30GF118GT л. 13) портал склеивал в один кусок («коды»)."""
         a, b = fa["bbox"], fb["bbox"]
         if rule_between(self.hs, a, b, soft, self.vs):
             return "линейка"
@@ -221,6 +230,9 @@ class Rows:
             return "отметка"
         if blank_between(fa, fb):
             return "пустая строка"
+        size = max(fa.get("size") or 0, fb.get("size") or 0)
+        if code_rows(fa["t"], fb["t"], close=_mid(b) - _mid(a) <= 1.3 * size):
+            return "коды"
         return None
 
 
