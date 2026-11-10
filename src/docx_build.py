@@ -1858,10 +1858,12 @@ class Builder:
                     "top") is not None]
                 sheet_cell = bool(gs and self.L) and max(q["bottom"] for q in gs) - min(q["top"] for q in gs) \
                     >= 0.5 * self.L["H"]
-                prev_g = None
+                prev_g, listed = None, False
                 for x in cell["blocks"]:
                     if x["k"] == "list":
-                        self.list_(x, 0, dc); continue
+                        self.list_(x, 0, dc)
+                        listed = True
+                        continue
                     if x["k"] == "table":
                         # таблица в ячейке (листовка из Word свёрстана таблицей в таблице) — вложенной таблицей; раньше
                         # пропускалась вместе с текстом (№09 партии 2: 94 % слов, 22.10)
@@ -1873,8 +1875,10 @@ class Builder:
                     if x["k"] != "p" or not x["runs"]:
                         continue
                     # пустой начальный абзац ячейки стоит выше всего — абзац после списка в него нельзя: «Ha nem állnak…»
-                    # вставал над пунктом «− Az RVR …» своей подстроки (30RVRXTSBIGT_TU 1.15, печать 10.11)
-                    if not used and len(dc.paragraphs) == 1:
+                    # вставал над пунктом «− Az RVR …» своей подстроки (30RVRXTSBIGT_TU 1.15, печать 10.11); признак —
+                    # список в этой ячейке, а не число абзацев: у ячейки, объединённой с верхней, абзацы есть и так, и
+                    # начальный (текст ряда выше) потом удалялся как пустой (ÜFK I л. 147: −133 знака)
+                    if not used and not listed:
                         first.style = self.doc.styles[style]
                         if all("img" in r for r in x["runs"]):
                             for r in x["runs"]:
