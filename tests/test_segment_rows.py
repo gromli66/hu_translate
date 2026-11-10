@@ -331,3 +331,17 @@ def test_label_value_pair_is_apart_but_not_across_word_break():
     side = [_fr("Megnevezés", (156, 521, 280, 533)), _fr("Típus", (156, 533.5, 280, 545))]
     assert RW.Rows(side + [w1, w2], []).apart(w1, w2) is None
     assert "Beépített oltóberendezés" in _texts(side + [w1, w2])
+
+
+def test_item_label_is_one_definition():
+    """Метка пункта отдельным куском — одно определение (patterns.ITEM_LABEL) для якоря ряда и начала абзаца по номеру
+    слева (E9N N5): «1.2.», «(3)», «a)», «(a)» — метки; код и слово — нет."""
+    import layout as LY
+    import rows as RW
+    for t in ("1.", "1.2.", "(3)", "0.", "a)", "b.", "(a)"):
+        assert RW.ANCHOR.match(t) and RW.is_anchor(t), t
+    for t in ("FOT", "a", "1.2.3.a", "rendben"):
+        assert not RW.ANCHOR.match(t), t
+    toc = [_fr("a)", (93, 238, 104, 250)), _fr("Az első pont címe", (145, 238, 300, 250)),
+           _fr("b)", (93, 251, 104, 263)), _fr("A második pont címe", (145, 251, 310, 263))]
+    assert "A második pont címe" in _texts(toc)

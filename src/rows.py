@@ -11,8 +11,12 @@
 import re
 
 from lines import hyphen_break, mid_phrase
+from patterns import ITEM_LABEL
 
-ANCHOR = re.compile(r"^\(?\d+(?:\.\d+)*\.?\)?$")
+# метка пункта отдельным куском — одно определение для якоря ряда (is_anchor, полосы сборки docx_layout._band_anchors) и
+# начала абзаца по номеру слева (layout.group, numbered); «a)» — тоже (E9N N5: на корпусе 57 PDF буквенных меток отдельным
+# куском в столбце якорей нет, нарезка не меняется)
+ANCHOR = re.compile(rf"^{ITEM_LABEL}$")
 # отметка бланка; значки символьных шрифтов (частная область: □ Wingdings \uf0xx у пунктов «30YA62P401ZQ35 p = …,»
 # 30PR132GT л. 5; \ue279 30BL150FÜT) — тоже; «Ο» греческая (30SZBV*IT TU), «X» и «×» — отметка-крестик (30BL150FÜT
 # 4.2.2). Одно определение и для сборки (valign ячейки отметок, docx_layout._table_block; E9b-R): там было своё — «до
@@ -59,7 +63,7 @@ def code_rows(upper, lower, close=False):
 
 
 def is_anchor(t):
-    """Якорь ряда: номер пункта («1.2.») или до трёх слов из кодов с цифрой («31UJ21S601», «YA-K7»)."""
+    """Якорь ряда: метка пункта («1.2.», «a)») или до трёх слов из кодов с цифрой («31UJ21S601», «YA-K7»)."""
     t = t.strip()
     return bool(ANCHOR.match(t)) or (code_line(t) and len(t.split()) <= 3 and bool(re.search(r"\d", t)))
 

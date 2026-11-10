@@ -10,7 +10,7 @@ import bisect
 import re
 import fitz
 from lines import hyphen_break, join_lines, mid_phrase     # перенос слова — одна функция для всех читателей (E4)
-from rows import Rows, code_cells, code_line, _right_limit, _vrule_in     # граница ряда таблицы — до склейки строк в абзацы (E5)
+from rows import ANCHOR, Rows, code_cells, code_line, _right_limit, _vrule_in     # граница ряда таблицы — до склейки строк в абзацы (E5)
 
 GAP = 30.0          # выключка по ширине в узких ячейках даёт пробелы до ~25 pt
 
@@ -372,9 +372,9 @@ def group(frags, hs, vs=(), form=False, rows=None):
     rows = rows or Rows(frags, hs, vs)
     frags = sorted(frags, key=lambda f: (round(f["bbox"][1] / 3), f["bbox"][0]))
     # слева на той же строке — номер пункта отдельным куском («1.6.» ⇥ «FOT szintcsökkenés» в оглавлении 3SZ19): кусок
-    # начинает новый абзац — иначе название приклеивалось к названию пункта выше, а у «1.6.» оставалось пустым (17.10)
-    label = re.compile(r"^\(?\d+(\.\d+)*\.?\)?$|^[a-zA-Z][.)]$")
-    nums = [f["bbox"] for f in frags if label.match(f["t"].strip())]
+    # начинает новый абзац — иначе название приклеивалось к названию пункта выше, а у «1.6.» оставалось пустым (17.10);
+    # метка — та же, что у якоря ряда (rows.ANCHOR)
+    nums = [f["bbox"] for f in frags if ANCHOR.match(f["t"].strip())]
     used = set()                              # номер открывает абзац один раз — для первой строки против него
 
     def labeled(bb):
