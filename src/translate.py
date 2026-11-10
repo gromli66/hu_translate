@@ -10,12 +10,15 @@ Translator.run_batch переводит пачку сегментов одним
 длина, перевёрнутые действия (открыть/закрыть, вкл/выкл…), потерянные отрицания, обязательные термины комплекта.
 Мягкая (только в отчёт): термины основного глоссария. Постобработка: fix_units, fix_caps, first_use."""
 import re, json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import glossary as G
 import morph
 from conventions import is_tag
 from llm import chat, STAT
+
+RETRY_WORKERS = 6       # повторов упавших сегментов пачки одновременно (общий потолок запросов — llm.HU_PORTAL_PAR)
 
 
 SYSTEM_DOMAIN = 'Ты — профессиональный переводчик эксплуатационной документации АЭС с венгерского языка на русский. Документы — АЭС «Пакш» (ВВЭР-440): инструкции по эксплуатации (KU), пределы и условия безопасной эксплуатации (ÜFK), инструкции по ликвидации нарушений и аварий.'
@@ -369,11 +372,13 @@ def check(src, ru, allowed_latin=frozenset(), gloss_abbr=frozenset(), vocab=froz
         if lost:
             issues.append("латиница потеряна: " + ", ".join(lost[:6]))
     left = [w for w in LATIN_WORD.findall(TAG.sub(" ", ru)) if w not in allowed_latin]
-    caps_ru = set(LAT_ABBR.findall(TAG.sub(" ", ru)))
+    # по порядку в переводе, а не обходом множества: порядок множества строк зависит от зерна хэша процесса, а текст
+    # замечания уходит в запрос повтора — у каждого задания был свой запрос и промах кэша (10.11, 3 запроса 1SZ01)
+    caps_ru = list(dict.fromkeys(LAT_ABBR.findall(TAG.sub(" ", ru))))
     # прописное слово документа (VAGY ~ vagy) — текст; аббревиатуры раздела глоссария (BRO, ÁNEREM) остаются латиницей законно
     left += [a for a in caps_ru if a.lower() in vocab and a not in abbr_keep and len(a) >= 3]   # «NR» — индекс, не слово
     # прописная фраза оригинала из 2+ слов (NEM LETT ELVÉGEZVE, KISEBB VAGY EGYENLŐ) — текст, а не обозначения
-    left += [w for w in phrase_words if w in caps_ru and len(w) >= 3 and w not in left]
+    left += [w for w in caps_ru if w in phrase_words and len(w) >= 3 and w not in left]
     names = name_words(src) | {w for d in DESIGNATOR.findall(plain) for w in LETTERS.findall(d)}     # обозначения — код
     # прописное слово внутри обозначения с цифрами («3SZ17/INFO») — часть кода, а не слово текста
     names |= {w for tok in re.findall(r"\S*\d\S*", plain) for w in LETTERS.findall(tok) if w.isupper()}
@@ -828,40 +833,51 @@ class Translator:
         for i, u in enumerate(units):
             ru = got.get(i, "")
             res[u["key"]] = {"ru": ru, "issues": self.full_check(u["text"], ru), "tries": 1}
-        # повтор упавших поштучно, с рассуждением и перечнем замечаний
-        for i, u in enumerate(units):
-            cur = res[u["key"]]
-            for attempt in range(2):
-                if not cur["issues"]:
-                    break
-                note = ("В прошлый раз перевод этого сегмента не прошел проверку: " + "; ".join(cur["issues"]) +
-                        ". Исправь. Если в оригинале есть код или число — оно должно быть в переводе без изменений." +
-                        (" Проверь, что каждое отрицание оригинала сохранено (см. разбор слов выше)."
-                         if any(i.startswith("отрицание") for i in cur["issues"]) else ""))
-                if self.ru_en:
-                    note = ("The previous translation of this segment failed the check (issues in Russian): "
-                            + "; ".join(cur["issues"]) + ". Fix it and answer in English. Every number and code of the "
-                            "original must be in the translation unchanged (decimal comma → decimal point).")
-                elif not self.hu_ru:
-                    import langs as L
-                    note = ("The previous translation of this segment failed the check (issues in Russian): "
-                            + "; ".join(cur["issues"]) + f". Fix it and answer in {L.NAME_EN[self.tgt]}. Every number "
-                            "and code of the original must be in the translation (with the decimal separator of the "
-                            "target language).")
-                # обозначение «1.GF.H.ÁG.SZEK.FEDÉL» модель каждый раз «расшифровывает» по-своему (48 строк 30YCGT, 28.10):
-                # в повторе оно уходит под меткой и возвращается дословно
-                lost = any(i.startswith("нет кодов") for i in cur["issues"])
-                masked, back = mask_designators(u["text"]) if lost and self.hu_ru else (u["text"], {})
-                g2, _ = self._call([{**u, "text": masked}], [a for a in plan["first_abbr"] if a in u["text"]],
-                                   plan["context"], self.retry_think, note + ("" if attempt == 0 else " (повторная попытка)"))
-                ru2 = unmask_designators(g2.get(0, ""), back)
-                iss2 = self.full_check(u["text"], ru2)
-                if ru2 and badness(iss2) < badness(cur["issues"]):
-                    cur = {"ru": ru2, "issues": iss2, "tries": cur["tries"] + 1}
-                else:
-                    cur["tries"] += 1
+        # повтор упавших, с рассуждением и перечнем замечаний: у каждого сегмента своя цепочка попыток, цепочки
+        # независимы — идут параллельно (выдача та же: те же запросы, ответы из кэша побайтно равны; 10.11 — повторы
+        # были ~90 % вызовов перевода и шли по одному)
+        fails = [u for u in units if res[u["key"]]["issues"]]
+        if len(fails) > 1 and RETRY_WORKERS > 1:
+            with ThreadPoolExecutor(min(RETRY_WORKERS, len(fails))) as ex:
+                done = list(ex.map(lambda u: self._retry(u, res[u["key"]], plan), fails))
+        else:
+            done = [self._retry(u, res[u["key"]], plan) for u in fails]
+        for u, cur in zip(fails, done):
             res[u["key"]] = cur
         return res
+
+    def _retry(self, u, cur, plan):
+        """До двух повторов сегмента u, не прошедшего проверку (cur — текущий результат); лучший результат."""
+        for attempt in range(2):
+            if not cur["issues"]:
+                break
+            note = ("В прошлый раз перевод этого сегмента не прошел проверку: " + "; ".join(cur["issues"]) +
+                    ". Исправь. Если в оригинале есть код или число — оно должно быть в переводе без изменений." +
+                    (" Проверь, что каждое отрицание оригинала сохранено (см. разбор слов выше)."
+                     if any(i.startswith("отрицание") for i in cur["issues"]) else ""))
+            if self.ru_en:
+                note = ("The previous translation of this segment failed the check (issues in Russian): "
+                        + "; ".join(cur["issues"]) + ". Fix it and answer in English. Every number and code of the "
+                        "original must be in the translation unchanged (decimal comma → decimal point).")
+            elif not self.hu_ru:
+                import langs as L
+                note = ("The previous translation of this segment failed the check (issues in Russian): "
+                        + "; ".join(cur["issues"]) + f". Fix it and answer in {L.NAME_EN[self.tgt]}. Every number "
+                        "and code of the original must be in the translation (with the decimal separator of the "
+                        "target language).")
+            # обозначение «1.GF.H.ÁG.SZEK.FEDÉL» модель каждый раз «расшифровывает» по-своему (48 строк 30YCGT, 28.10):
+            # в повторе оно уходит под меткой и возвращается дословно
+            lost = any(i.startswith("нет кодов") for i in cur["issues"])
+            masked, back = mask_designators(u["text"]) if lost and self.hu_ru else (u["text"], {})
+            g2, _ = self._call([{**u, "text": masked}], [a for a in plan["first_abbr"] if a in u["text"]],
+                               plan["context"], self.retry_think, note + ("" if attempt == 0 else " (повторная попытка)"))
+            ru2 = unmask_designators(g2.get(0, ""), back)
+            iss2 = self.full_check(u["text"], ru2)
+            if ru2 and badness(iss2) < badness(cur["issues"]):
+                cur = {"ru": ru2, "issues": iss2, "tries": cur["tries"] + 1}
+            else:
+                cur["tries"] += 1
+        return cur
 
     def first_use(self, segs, out):
         """«СУЗ (SZBV)» при первом употреблении в документе, дальше «СУЗ». Только для коротких русских

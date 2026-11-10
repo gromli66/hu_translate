@@ -37,6 +37,9 @@ def _token():
 CACHE = Path(_env("HU_CACHE", str(ROOT / "cache"))); CACHE.mkdir(parents=True, exist_ok=True)
 _TOK = None
 _lock = threading.Lock()
+# одновременных запросов к порталу на процесс: стадии зовут портал из вложенных пулов (потоки перевода × повторы
+# сегментов), общий потолок держит нагрузку в прежних рамках (проверка — 6 потоков, замер 10.11: задержка не растёт)
+_par = threading.BoundedSemaphore(max(1, int(_env("HU_PORTAL_PAR", "6") or 6)))
 STAT = {"calls": 0, "cached": 0, "sec": 0.0, "out_tok": 0, "in_tok": 0}
 
 
@@ -124,7 +127,9 @@ def chat(messages, max_tokens=8000, think=False, temperature=0, tag="", images=N
         req.add_header("Content-Type", "application/json")
         t0 = time.time()
         try:
-            raw = urllib.request.urlopen(req, timeout=900).read().decode()
+            with _par:
+                t0 = time.time()                # задержка самого вызова, без ожидания очереди
+                raw = urllib.request.urlopen(req, timeout=900).read().decode()
             d = json.loads(raw)
             if not d.get("choices"):
                 # портал под нагрузкой отвечает 200 без choices (01.10, ~12:10–12:25) — текст сбоя в журнал
