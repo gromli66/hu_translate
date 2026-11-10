@@ -1828,6 +1828,11 @@ class Builder:
                     else self._tab_base
                 if own_edges:
                     self._cell_borders(dc, cell["edges"], fr.get("line") or "000000")
+                elif cell.get("cut") and b.get("borders", True):
+                    # подстрока ряда в сетке Table Grid (у ячеек нет своих линий) — без линий по сторонам разреза: линия
+                    # под каждой строкой пункта (30RA+SGT TU 4.1.x, печать 10.11; в оригинале внутри пункта линий нет)
+                    self._cell_borders(dc, {s: s not in cell["cut"] for s in ("top", "bottom", "left", "right")},
+                                       fr.get("line") or "000000")
                 if cell.get("vcont"):                       # продолжение ячейки сверху (docx_struct.sub_rows)
                     continue
                 first = dc.paragraphs[0]

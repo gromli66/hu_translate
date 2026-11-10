@@ -120,6 +120,10 @@ def test_sub_rows_have_no_cell_margins_inside_their_row(tmp_path):
     assert top > 0 and bot > 0
     for ci in (1, 2):                                       # зазор оригинала до следующей подстроки — 10 pt
         assert [sp(ri, ci) for ri in range(3)] == [(top, 10), (0, 0), (0, bot)], ci
+    # у ячеек нет своих линий (Table Grid) — по сторонам разреза линий нет (30RA+SGT TU 4.1.x, печать 10.11)
+    bd = lambda ri, ci: {el.tag.split("}")[1]: el.get(W + "val") for el in tb.rows[ri].cells[ci]._tc.tcPr.find(W + "tcBorders")}
+    assert [(bd(ri, 1)["top"], bd(ri, 1)["bottom"]) for ri in range(3)] == [
+        ("single", "nil"), ("nil", "nil"), ("nil", "single")]
 
 
 def _grid1(xs, y0, y1):
