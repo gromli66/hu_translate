@@ -2667,12 +2667,17 @@ def layout(path, blocks, content=None):
             if ns:
                 cands[pn] = ns
         # чисел-счётчиков на листе несколько (подвал ÜFK I «Módosítás sorszáma: 2. | 8. oldal»: номер изменения заполнен
-        # на 6 листах из 157 и стоит перед номером листа с той же подписью) — номер листа тот, что продолжает ряд
-        # соседей; иначе первое, как было. Брался первый: листу «8. oldal» доставался номер «2», а метка — изменению
-        one = {pn: ns[0] for pn, ns in cands.items() if len(ns) == 1}
-        for pn in sorted(cands):
-            fit = [n for n in cands[pn] if sheet_no.get(pn - 1) == n - 1 or one.get(pn + 1) == n + 1]
-            sheet_no[pn] = fit[0] if fit else cands[pn][0]
+        # на 6 листах из 157 и стоит перед номером листа с той же подписью) — у документа, чей ряд первых чисел растёт
+        # (как прежде, проверка ниже), номер листа — первое, если оно продолжает ряд соседей, иначе следующее такое.
+        # Брался первый: листу «8. oldal» доставался «2», а метка — изменению. Ряд, которого по первым числам нет, этим
+        # не создаётся (30GF*18GT, 30RL2126GT: подбор по соседям «находил» номера там, где счётчика нет)
+        sheet_no = {pn: ns[0] for pn, ns in cands.items()}
+        pairs = [(sheet_no[p], sheet_no[p + 1]) for p in sheet_no if p + 1 in sheet_no]
+        if pairs and sum(b == a + 1 for a, b in pairs) >= 0.6 * len(pairs):
+            first = dict(sheet_no)
+            for pn in sorted(cands):
+                ok = lambda n: sheet_no.get(pn - 1) == n - 1 or first.get(pn + 1) == n + 1
+                sheet_no[pn] = next((n for n in cands[pn] if ok(n)), cands[pn][0])
         pairs = [(sheet_no[p], sheet_no[p + 1]) for p in sheet_no if p + 1 in sheet_no]
         if not pairs or sum(b == a + 1 for a, b in pairs) < 0.6 * len(pairs):
             sheet_no = {}
