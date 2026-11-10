@@ -87,3 +87,25 @@ def test_unmarked_number_in_zone_is_text_not_page_field(tmp_path):
         B.Builder(mem, lambda img: png(), PROFILE).build(blocks, str(out), L)
         xml = Document(str(out)).sections[0].footer._element.xml
         assert ("PAGE" in xml) == field and "85" in xml
+
+
+def test_fit_layout_takes_section_mark_not_its_toc_copy(tmp_path):
+    """docx_fit._layout: LibreOffice при печати обновляет оглавление, и заголовок с меткой раздела (1 pt) попадает в
+    него кеглем оглавления. Началом раздела бралась страница оглавления — у ÜFK I 151 раздел «на стр. 2–3», подгонка не
+    видела ужатия и откатывала его (листов 162 → 175). Метка ≤ 2 pt важнее копии; без мелкой — любая, как прежде."""
+    import docx_fit as F
+    pdf = tmp_path / "m.pdf"
+    d = fitz.open()
+    pg = d.new_page()                                   # л. 1: раздел 0 и оглавление с копиями меток 1 и 2
+    pg.insert_text((72, 100), F.MARK.format(0), fontsize=1)
+    pg.insert_text((72, 200), F.MARK.format(1) + " 1. Fejezet ....... 3", fontsize=11)
+    pg.insert_text((72, 230), F.MARK.format(2) + " 2. Fejezet ....... 4", fontsize=11)
+    d.new_page().insert_text((72, 100), "folytatás", fontsize=11)
+    d.new_page().insert_text((72, 100), F.MARK.format(1) + " 1. Fejezet", fontsize=1)
+    d.new_page().insert_text((72, 100), F.MARK.format(2) + " 2. Fejezet", fontsize=1)
+    d.new_page().insert_text((72, 100), "folytatás", fontsize=11)
+    pg = d.new_page()                                   # раздел 3 — метка только обычным кеглем (поддельная печать)
+    pg.insert_text((72, 100), F.MARK.format(3), fontsize=10)
+    d.save(str(pdf))
+    L = F._layout(pdf)
+    assert {i: v[:2] for i, v in L.items()} == {0: (0, 2), 1: (2, 1), 2: (3, 2), 3: (5, 1)}
