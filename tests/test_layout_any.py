@@ -394,12 +394,12 @@ def test_one_sheet_text_layer_document_measures_margins_on_its_sheet(tmp_path):
 
 
 def test_foot_top_text_layer_ignores_trailing_space():
-    """Текстовый слой: пробел в конце строки таблицы выше низа тела — не подвал (таблица решений OAH: нижнее поле
-    165 pt); у размеченного PDF (cbot None) — как было."""
+    """Пробел в конце строки таблицы выше низа тела — не подвал (таблица решений OAH: нижнее поле 165 pt); и у
+    размеченного PDF — одно свидетельство с текстовым слоем (E9b-S Z10: прежде пробел-артефакт был его подвалом)."""
     import docx_struct as D
     space = {"text": " ", "top": 443.0, "bottom": 455.0, "x0": 598.0, "x1": 601.0}
     assert D._foot_top([space], [], 595.0, 470.0) == 595.0
-    assert D._foot_top([space], [], 595.0, None) < 450
+    assert D._foot_top([space], [], 595.0, 0.0) == 595.0
 
 
 def test_fit_words_picks_donor_with_fewest_new_lines():

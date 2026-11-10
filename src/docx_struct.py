@@ -2520,7 +2520,25 @@ def layout(path, blocks, content=None):
                 c["mcid"] = -1 if inside else None
             cbots[pg.page_number] = max((b[3] for b in bx), default=0.0)
             ctops[pg.page_number] = min((b[1] for b in bx), default=0.0)
-    cbot = (lambda pg: cbots.get(pg.page_number, 0.0)) if content else (lambda pg: None)
+    else:
+        # размеченный PDF: низ тела листа — по знакам с MCID (содержимое дерева разметки) — то же свидетельство, что
+        # рамки текста тела у текстового слоя (E9b-S Z10; прежде подвал размеченного — строки-артефакты ниже 0,7 листа,
+        # с пробелами). Знаки с MCID ниже последней строки подвала — не низ тела: сноска обложки UTS под штампом (иначе
+        # штамп оказывался в теле и пропадал)
+        H0 = float(pdf.pages[0].height)
+        for pg in pdf.pages:
+            ink = [c for c in pg.chars if c["text"].strip() and _upright(c)]
+            foot = max((float(c["top"]) for c in ink if c.get("mcid") is None and float(c["top"]) > H0 * GM.FOOT_TEXT),
+                       default=None)
+            # и картинки дерева (рисунок с MCID: 31SDTÖMGT л. 10 — график до 748 pt под текстом до 181 pt), кроме фона во
+            # весь лист (обложка UTS) и заходящих ниже подвала
+            cbots[pg.page_number] = max([float(c["bottom"]) for c in ink if c.get("mcid") is not None
+                                         and (foot is None or float(c["top"]) < foot)]
+                                        + [float(i["bottom"]) for i in pg.images if i.get("mcid") is not None
+                                           and (float(i["x1"]) - float(i["x0"])) * (float(i["bottom"]) - float(i["top"]))
+                                           < 0.5 * float(pg.width) * float(pg.height)
+                                           and (foot is None or float(i["bottom"]) <= foot)], default=0.0)
+    cbot = lambda pg: cbots.get(pg.page_number, 0.0)
     W, H = float(pdf.pages[0].width), float(pdf.pages[0].height)
     def flat(bs):
         for b in bs:
@@ -2780,8 +2798,8 @@ def layout(path, blocks, content=None):
     lasts = {}
     for g in body3:                                     # низ тела — по прежней выборке (у одного листа — cbots)
         lasts[g["page"]] = max(lasts.get(g["page"], 0), g.get("bottom") or g["top"])
-    if content:
-        # текстовый слой: низ текста тела каждого листа (cbots), кроме сканов (OCR — до края листа); таблица через
+    if cbots:
+        # низ текста тела каждого листа (cbots: рамки текстового слоя, знаки с MCID размеченного — E9b-S Z10), кроме сканов (OCR — до края листа); таблица через
         # лист — одним блоком с местом первого листа, и по блокам низ знали 2 листа из 13 (30RR2126GT); в документе
         # из одного-двух листов (лист изменений) — по ним: поле по умолчанию уводило хвост таблицы на второй лист
         own = {pn: v for pn, v in cbots.items() if v and not scanned(pdf.pages[pn - 1])}
@@ -2790,7 +2808,9 @@ def layout(path, blocks, content=None):
         lasts = next((d for d in ({pn: v for pn, v in own.items() if pn > k} for k in (2, 1)) if len(d) >= 2), None) \
             or own or lasts
     foot_top = min([float(c["top"]) for c in foot_chars] + [i["top"] for i in foot_imgs],
-                   default=max(lasts.values()) + 14 if lasts else H - 100)
+                   default=max(max(lasts.values()) + 14, H - 100) if lasts else H - 100)
+    # (не выше поля по умолчанию: короткий единственный лист — бланк MODJ в треть листа — давал нижнее поле 570 pt, и
+    # перевод уходил на лишние листы; низ тела по листам поле только расширяет — HSE без подвала: 92 → 55 pt — поле по оригиналу, а не по пробелу-артефакту)
     foot_bottom = max([float(c["bottom"]) for c in foot_chars] + [i["bottom"] for i in foot_imgs], default=H - 40)
     # шапки нет — пустой абзац шапки (её расстояние + строка) должен уместиться в верхнее поле: при поле 24 pt и
     # расстоянии 36 pt тело уезжало на каждом листе вниз на 2–3 строки (ТЭ357: 66 листов → 85, 16.10)
@@ -3084,52 +3104,23 @@ def _typical_page(pdf, body_top, H, sample=15, cbot=lambda pg: None):
     return pdf.pages[rep], tok, off, boxes
 
 
-def _foot_top(arts, rects, H, cbot=None):
-    """Верх подвала: нижняя группа строк-артефактов без разрыва больше 15 pt — или связанных вертикалью таблицы
-    (строка штампа-таблицы выше 15 pt: подвал обрезался до пустой строки под таблицей, синтетика 16.10), плюс линия
-    рамки над ней. Порог «ниже 80 % листа» захватывал низ таблицы и пометку «Folytatás a következő oldalon» — их
-    линии резали подвал на лишние ячейки (ÜFK I, 16.10). cbot — низ текста тела листа (PDF без разметки): подвал —
-    всё ниже него, без счёта разрывов («CONTROLLED DISCLOSURE» Eskom в 20 pt над прочими строками терялся)."""
-    if cbot is not None:
-        # текстовый слой: пробел — не краска, пробел в конце строки тела выходит за её рамку и считался подвалом
-        # (32RDGT: верх подвала на 509 pt, нижнее поле 344 pt, 20.10). У размеченного — как было: у HSE без подвала
-        # поле считалось по пробелу-артефакту, без него лист переполнялся (регрессия A/B)
-        low = [float(c["top"]) for c in arts if float(c["top"]) > max(cbot, H * GM.FOOT_TEXT) and c["text"].strip()]
-        if not low:
-            # знаков ниже тела нет — подвала нет: линии рядов таблицы у низа листа (шаг меньше 15 pt) склеивались в
-            # «подвал из одних линий» от 0,7 листа, пробелы в концах строк под ним — в его знаки, нижнее поле 9 см
-            # (3PR10, 3SZ17, 30TKBSZ36BIGT: тело кончалось на 70 % листа, аудит 30.10)
-            return H
-        top = min(low)
-        border = [float(r["top"]) for r in rects if float(r["bottom"]) - float(r["top"]) < GM.LINE
-                  and max(cbot, H * GM.FOOT_TEXT) < float(r["top"]) <= top]
-        return round(min(border) if border else top) - 1
-    rows = sorted({round(float(c["top"])) for c in arts if float(c["top"]) > H * GM.FOOT_TAGGED}, reverse=True)
-    rr = [r for r in rects if float(r["top"]) > H * GM.FOOT_TAGGED]
-    if not rows:                                # подвал из одних линий (рамка без текста)
-        ys = sorted({round(float(r["top"])) for r in rr}, reverse=True)
-        if not ys:
-            return H
-        top = ys[0]
-        for y in ys[1:]:
-            if top - y > GM.FOOT_GAP:
-                break
-            top = y
-        return top - 1
-    vs = [(float(r["top"]), float(r["bottom"])) for r in rr
-          if float(r["x1"]) - float(r["x0"]) < GM.LINE and float(r["bottom"]) - float(r["top"]) > 5]
-    top = rows[0]
-    for y in rows[1:]:
-        linked = any(a <= y + 12 and b2 >= top - 6 for a, b2 in vs)
-        if top - y > GM.FOOT_GAP and not linked:
-            break
-        top = y
-    # линия рамки — ближайшая над текстом (и вплотную к ней — двойная/толстая): самая верхняя в 12 pt брала низ
-    # таблицы тела, кончившейся над штампом, — лишняя пустая строка штампа (синтетика, 16.10)
-    border = sorted({float(r["top"]) for r in rr if float(r["bottom"]) - float(r["top"]) < GM.LINE
-                     and top - 12 <= float(r["top"]) <= top}, reverse=True)
+def _foot_top(arts, rects, H, cbot):
+    """Верх подвала листа: знаки вне тела (не пробелы) ниже низа тела cbot и ниже 0,6 листа, плюс линия рамки над ними
+    (ближайшая, и вплотную к ней — двойная/толстая). cbot — низ тела листа: рамки текста тела (текстовый слой) или знаки
+    с MCID (размеченный) — одно свидетельство (E9b-S Z10). Прежде у размеченного — строки-артефакты ниже 0,7 листа
+    подряд, с пробелами: пробел в конце строки тела выходит за её рамку и считался подвалом (32RDGT: верх подвала на
+    509 pt), а подвал по разрывам терял строку над прочими («CONTROLLED DISCLOSURE» Eskom в 20 pt). Знаков ниже тела нет
+    — подвала нет: линии рядов таблицы у низа листа склеивались в «подвал из одних линий» (3PR10, 3SZ17, 30TKBSZ36BIGT,
+    аудит 30.10). Линия — ближайшая над текстом, в 12 pt: любая линия ниже тела брала низ таблицы или рамки рисунка тела
+    над подвалом (JPDS: лишняя пустая строка штампа на 57 листах; синтетика 16.10: низ таблицы в 2,5 pt над штампом)."""
+    low = [float(c["top"]) for c in arts if float(c["top"]) > max(cbot, H * GM.FOOT_TEXT) and c["text"].strip()]
+    if not low:
+        return H
+    top = min(low)
+    border = sorted({float(r["top"]) for r in rects if float(r["bottom"]) - float(r["top"]) < GM.LINE
+                     and max(top - 12, cbot) < float(r["top"]) <= top}, reverse=True)
     for i in range(1, len(border)):
-        if border[i - 1] - border[i] > 2:           # низ таблицы тела в 2.5 pt над штампом — не его линия
+        if border[i - 1] - border[i] > 2:
             border = border[:i]
             break
     return round(border[-1] if border else top) - 1

@@ -31,13 +31,27 @@ def test_tagged_pdf_gets_sheet_numbers_by_counter(tmp_path):
 
 
 def test_counter_with_filled_field_before_it_takes_sheet_number(tmp_path):
-    """Номер изменения «2.» перед «N. oldal» на листах 3–5 (ÜFK I л. 14–16, 34, 64, 65): номер листа — число, что
-    продолжает ряд соседей, а не первое по подписи; метка поля PAGE — на нём, «2.» — текстом в подвале серии."""
+    """Номер изменения «2.» перед «N. oldal» на листах 4–6 из 12 (ÜFK I: л. 14–16, 34, 64, 65 из 157): номер листа —
+    число, что продолжает ряд соседей, а не первое по подписи; метка поля PAGE — на нём, «2.» — текстом в подвале серии.
+    Ряд, которого нет по первым числам (изменение на 3 листах из 7), подбором не создаётся — номеров нет, как прежде."""
     src = tmp_path / "amend.pdf"
-    blocks = _tagged_like(src, 7, amend={3, 4, 5})
+    blocks = _tagged_like(src, 12, amend={4, 5, 6})
     L = D.layout(str(src), blocks)
-    assert L.get("sheet_no") == {pn: pn for pn in range(1, 8)}
-    v = [z for z in L["variants"] if z["from"] <= 3 <= z["to"]]
+    assert L.get("sheet_no") == {pn: pn for pn in range(1, 13)}
+    v = [z for z in L["variants"] if z["from"] <= 4 <= z["to"]]
     assert v, "листы с номером изменения — своя серия"
     stamp = " ".join(c for r in v[0]["stamp"] for c in r["cells"])
     assert stamp.replace(" ", "") == "Modositassorszama:2." + D.PAGE_MARK + ".oldal"
+    dense = tmp_path / "dense.pdf"
+    assert not D.layout(str(dense), _tagged_like(dense, 7, amend={3, 4, 5})).get("sheet_no")
+
+
+def test_foot_top_border_is_nearest_rule_not_body_table_bottom():
+    """Верх подвала — по ближайшей линии над его строкой (и вплотную к ней), а не по любой линии ниже тела: низ таблицы
+    тела в 12 pt над подвалом давал штампу лишнюю пустую строку (JPDS, 57 листов; E9b-S Z10)."""
+    import docx_struct as D
+    foot = {"text": "Д11", "top": 780.0, "bottom": 790.0, "x0": 70.0, "x1": 100.0}
+    rule = lambda y: {"top": y, "bottom": y + 0.5, "x0": 70.0, "x1": 560.0}
+    assert D._foot_top([foot], [rule(763.0), rule(775.0)], 842.0, 752.0) == 774
+    assert D._foot_top([foot], [rule(763.0)], 842.0, 752.0) == 779          # линии рядом нет — по строке
+    assert D._foot_top([foot], [rule(774.0), rule(775.5)], 842.0, 752.0) == 773   # двойная линия — целиком
