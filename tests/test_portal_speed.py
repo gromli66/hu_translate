@@ -181,3 +181,19 @@ def test_portal_cap_limits_simultaneous_requests(tmp_path, monkeypatch):
     assert peak.peak == 2
     assert len(list(tmp_path.glob("*.json"))) == 8
 
+
+# ---------------------------------------------------------------- замечание проверки не зависит от зерна хэша
+def test_check_issue_text_does_not_depend_on_hash_seed():
+    """Текст замечания уходит в запрос повтора (ключ кэша портала): слова — по порядку в переводе, при любом
+    PYTHONHASHSEED одинаково (прежде порядок множества — у каждого процесса свой запрос, промах кэша)."""
+    import os
+    import subprocess
+    import sys
+    code = ("import translate as T; print(T.check('A rendszer: INFO BANK VEZÉRLÉS nem érhető el', "
+            "'Система: ZETA INFO BANK VEZÉRLÉS недоступна', vocab=frozenset({'info', 'bank', 'zeta', 'vezérlés'})))")
+    src = os.path.join(os.path.dirname(__file__), "..", "src")
+    outs = {subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, encoding="utf-8", cwd=src,
+                           env=dict(os.environ, PYTHONHASHSEED=str(seed), PYTHONIOENCODING="utf-8")).stdout
+            for seed in range(8)}
+    assert len(outs) == 1
+    assert "ZETA, INFO, BANK, VEZÉRLÉS" in outs.pop()

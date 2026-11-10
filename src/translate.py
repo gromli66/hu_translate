@@ -372,11 +372,13 @@ def check(src, ru, allowed_latin=frozenset(), gloss_abbr=frozenset(), vocab=froz
         if lost:
             issues.append("латиница потеряна: " + ", ".join(lost[:6]))
     left = [w for w in LATIN_WORD.findall(TAG.sub(" ", ru)) if w not in allowed_latin]
-    caps_ru = set(LAT_ABBR.findall(TAG.sub(" ", ru)))
+    # по порядку в переводе, а не обходом множества: порядок множества строк зависит от зерна хэша процесса, а текст
+    # замечания уходит в запрос повтора — у каждого задания был свой запрос и промах кэша (10.11, 3 запроса 1SZ01)
+    caps_ru = list(dict.fromkeys(LAT_ABBR.findall(TAG.sub(" ", ru))))
     # прописное слово документа (VAGY ~ vagy) — текст; аббревиатуры раздела глоссария (BRO, ÁNEREM) остаются латиницей законно
     left += [a for a in caps_ru if a.lower() in vocab and a not in abbr_keep and len(a) >= 3]   # «NR» — индекс, не слово
     # прописная фраза оригинала из 2+ слов (NEM LETT ELVÉGEZVE, KISEBB VAGY EGYENLŐ) — текст, а не обозначения
-    left += [w for w in phrase_words if w in caps_ru and len(w) >= 3 and w not in left]
+    left += [w for w in caps_ru if w in phrase_words and len(w) >= 3 and w not in left]
     names = name_words(src) | {w for d in DESIGNATOR.findall(plain) for w in LETTERS.findall(d)}     # обозначения — код
     # прописное слово внутри обозначения с цифрами («3SZ17/INFO») — часть кода, а не слово текста
     names |= {w for tok in re.findall(r"\S*\d\S*", plain) for w in LETTERS.findall(tok) if w.isupper()}
