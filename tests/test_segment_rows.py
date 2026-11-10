@@ -358,3 +358,13 @@ def test_next_line_is_one_definition_of_line_below():
     tall_a, tall_b = (0, 100, 200, 119), (0, 111, 200, 130)                             # 3SZ23: перекрытие 8, шаг 11
     assert not RW.next_line(tall_a, tall_b, 10) and RW.next_line(tall_a, tall_b, 10, cont=True)
     assert not RW.next_line((0, 100, 200, 112), (0, 125, 200, 137), 10)                 # через пустую строку
+
+
+def test_word_break_continues_in_the_general_loop_past_number_and_bold():
+    """Перенос слова — сильнейшее свидетельство продолжения в общем цикле layout.group (E9N N6): номер пункта против
+    второй строки и жирный остаток слова его не рвут; линейка между строками — рвёт (граница ряда, rows.apart)."""
+    a = _fr("A 1SZ22KU vonatkozó fejezete alapján LEÁLLÍ-", (74.4, 470, 300, 487))
+    b = dict(_fr("TANI, és KISZAKASZOLNI.", (74.4, 486.5, 204, 503.8), bold=True))
+    num = _fr("4.2.", (40, 490, 60, 500))
+    assert "A 1SZ22KU vonatkozó fejezete alapján LEÁLLÍTANI, és KISZAKASZOLNI." in _texts([a, b, num])
+    assert len([t for t in _texts([a, b], hs=[(60, 320, 486.8)]) if t]) == 2

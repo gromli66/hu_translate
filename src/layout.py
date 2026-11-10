@@ -389,17 +389,6 @@ def group(frags, hs, vs=(), form=False, rows=None):
         return -40 <= x0 - last[0] <= 3 or abs((x0 + x1) / 2 - (last[0] + last[2]) / 2) < 6 \
             or (x0 >= last[0] - 3 and x1 <= last[2] + 3)
 
-    def hyphen_cont(q, f):
-        """Строка f — вторая половина слова, разорванного переносом в последней строке абзаца q. Перенос — сильнее
-        прочих признаков: другое начертание (жирный остаток «TANI,»), короткая строка, номер пункта против второй
-        строки и выше рамки (17 pt при кегле 9 и шаге 10, 3SZ17) слово пополам не режут; не пускает только граница ряда
-        (линейка между строками, якорь другой строки таблицы)."""
-        size = max(q["size"], f["size"])
-        if not (hyphen_break(q["frags"][-1]["t"], f["t"]) and aligned(q, f) and abs(q["size"] - f["size"]) <= 1.5
-                and next_line(q["frags"][-1]["bbox"], f["bbox"], size, cont=True)):
-            return False
-        return not rows.apart(q["frags"][-1], f, soft=False)
-
     def near(f):
         """Абзацы-кандидаты на продолжение строки f, от последнего к первому: последняя строка кончается не выше кегля над
         f — дальше ни одна проверка продолжения не пройдёт. Прежде — 12 последних абзацев: в широкой таблице (3FI18 л. 35,
@@ -463,8 +452,6 @@ def group(frags, hs, vs=(), form=False, rows=None):
         if starts and continues(f):
             starts = False
         if plain:
-            best = next((p for p in near(f) if hyphen_cont(p, f) and not skips(p, f)), None)
-        if plain and not starts and best is None:
             for p in near(f):
                 if len(p["frags"]) == 1 and BULLET.match(p["frags"][0]["t"].strip()) or skips(p, f):
                     continue
@@ -472,7 +459,15 @@ def group(frags, hs, vs=(), form=False, rows=None):
                 last = p["frags"][-1]["bbox"]
                 size = max(p["size"], f["size"])
                 plast = p["frags"][-1]["t"]
-                if qty and is_mark(f["t"], plast):
+                # перенос слова — сильнейшее свидетельство продолжения: другое начертание (жирный остаток «TANI,»),
+                # короткая строка, номер пункта против второй строки и рамки выше шага (3SZ17) слово пополам не режут;
+                # строка — под последней строкой абзаца (aligned, next_line); не пускает только граница ряда (rows.apart:
+                # линейка между строками, якорь другой строки таблицы)
+                if hyphen_break(plast, f["t"]) and aligned(p, f) and abs(p["size"] - f["size"]) <= 1.5 \
+                        and next_line(last, f["bbox"], size, cont=True) and not rows.apart(p["frags"][-1], f, soft=False):
+                    best = p
+                    break
+                if starts or qty and is_mark(f["t"], plast):
                     continue
                 tail = abs(x0 - last[0]) < 3 and orphan_tail(plast, f["t"])
                 cont = (abs(x0 - last[0]) < 3 and mid_phrase(plast, f["t"])) or tail
