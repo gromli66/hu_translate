@@ -341,23 +341,35 @@ def test_code_band_without_text_joins_the_stack_under_common_text():
         [["YA-K10"], ["Tilos az FKSZ indítása, ha merev a primerkör"], []]], _rows_text(b)
 
 
-def test_mark_band_without_text_joins_the_item_it_hangs_over():
-    """01-02FMP0BIGT 4.10.13 (лист 17): «O» пункта стоит на первой строке его текста, но выше номера — своя полоса без
-    текста, которую накрывает абзац пункта: «O» в ряду своего пункта, а не отдельной строкой над ним (E9B_R2: «лучше»)."""
+def test_mark_band_without_code_stays_with_its_item():
+    """30GF(135)51GT л. 12 (прогон h14): «□» пункта 4.11.4 — своя полоса без кода; её накрывает вторая фраза 4.11.4,
+    которую нарезка отдала пункту 4.11.5. Полоса из одних отметок границу не снимает: «□» остаётся у 4.11.4, а не
+    второй отметкой у 4.11.5 (у 4.11.4 не оставалось отметки подтверждения). Геометрия листа — точно, как в JSON."""
     import docx_layout as DL
-    t = _grid1([80, 125, 520, 560], 470, 570)
-    box = lambda text, bb, fr=None: {"id": 0, "page": 0, "text": text, "loc": {"bbox": bb, "size": 10, "bold": False,
+    t = _grid1([50, 97, 460, 500], 595, 750)
+    box = lambda text, bb, fr=None: {"id": 0, "page": 0, "text": text, "loc": {"bbox": bb, "size": 9.96, "bold": False,
                                                                               "align": "left", "frags": fr or [bb]}}
-    segs = [box("4.10.12", [84, 484, 117, 497]), box("ÜM engedélyezte a MET-re hozást", [131, 484, 274, 497]),
-            box("O", [533, 483, 543, 497]), box("O", [533, 506, 543, 520]),
-            box("A MET-re hozást a PR04 szerint végre kell hajtani", [131, 507, 507, 532],
-                [[131, 507, 507, 519], [131, 520, 400, 532]]), box("4.10.13", [84, 518, 117, 532]),
-            box("4.10.14", [84, 541, 117, 555]), box("A reaktor MET-en", [131, 541, 208, 555]), box("O", [533, 541, 543, 555])]
+    mark = ""                                                    # «□» символьного шрифта (частная область)
+    segs = [box("4.11.2.", [63.84, 605.14, 93.81, 618.56]), box(mark, [473.9, 616.12, 482.77, 627.17]),
+            box("A szivárgásellenőrző rendszeren ellenőrizni, hogy a nikkel gyűrűk tömören zárnak",
+                [100.78, 604.86, 384.53, 641.7], [[100.78, 604.86, 384.53, 618.65], [100.78, 616.39, 352.51, 630.17],
+                                                  [100.78, 627.91, 207.19, 641.7]]),
+            box("4.11.3.", [63.84, 639.71, 93.81, 653.13]), box(mark, [473.9, 650.2, 482.77, 661.26]),
+            box("Ellenőrizni kell a varratvédő kamrák nyomásait. Nyomásemelkedés nem megengedett.",
+                [100.78, 650.96, 412.9, 676.15], [[100.78, 650.96, 412.9, 664.74], [100.78, 662.36, 159.67, 676.15]]),
+            box("4.11.4.", [63.84, 674.17, 93.81, 687.58]),
+            box("A 30RZ91,93,95S211,S212,S241,S242,S271 armatúrák köztes terének", [100.78, 685.41, 387.81, 699.2]),
+            box(mark, [473.9, 695.81, 482.77, 706.86]),
+            box("szivárgás ellenőrző csonkjaira felszerelt nyitott állapotú provizórikumon a szivárgást ellenőrizni.(RO)",
+                [100.78, 697.09, 400.27, 722.03], [[100.78, 697.09, 400.27, 710.51], [100.78, 708.62, 211.63, 722.03]]),
+            box("4.11.5.", [57.12, 708.74, 92.13, 722.15]), box(mark, [473.9, 718.37, 482.77, 729.42]),
+            box("A 30RZ91,93,95S211,S212,S241,S242,S271 armatúrák köztes teréből", [100.8, 719.92, 386.14, 733.71]),
+            box("szivárgás nem tapasztalható.(RO)", [100.8, 731.48, 235.42, 744.9])]
     b = DL._table_block(t, segs, 0, None, "Times New Roman", 10, False)
-    assert _rows_text(b) == [
-        [["4.10.12"], ["ÜM engedélyezte a MET-re hozást"], ["O"]],
-        [["4.10.13"], ["A MET-re hozást a PR04 szerint végre kell hajtani"], ["O"]],
-        [["4.10.14"], ["A reaktor MET-en"], ["O"]]], _rows_text(b)
+    got = _rows_text(b)
+    k = next(i for i, r in enumerate(got) if r[0] == ["4.11.5."])
+    assert got[k][2] == [] and got[k - 1][2] == [mark], got             # «□» 4.11.4 — строкой над 4.11.5, не у него
+    assert sum(len(r[2]) for r in got) == 4, got                        # все четыре «□» на месте
 
 
 def test_code_band_joins_the_text_that_covers_it_not_the_item_above():
