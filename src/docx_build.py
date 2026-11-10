@@ -1791,7 +1791,10 @@ class Builder:
             # высокая строка (больше трети поля тела по линиям оригинала) тоже рвётся: русский текст длиннее, строка не
             # помещалась после заголовка таблицы и уходила на следующий лист целиком (3PR10, листы 5–6, 28.10)
             tall_row = bool(row_cap) and len(row_ys) == len(rows) + 1 and row_ys[ri + 1] - row_ys[ri] > 0.35 * (row_cap + 60)
-            if size < 600 and not tall_row and not any("img" in r for c in row for x in c["blocks"] if x["k"] == "p" for r in x["runs"]):
+            # подстрока ряда (c["cut"]: sub_rows, полосы) — тоже: ряд оригинала лист рвал, а высокая неразрывная подстрока
+            # уходила на следующий лист целиком, низ листа пустел (30RVRXTSBIGT_TU 4.2.2.3: 27 → 28 листов, печать 10.11)
+            if size < 600 and not tall_row and not any(c.get("cut") for c in row) \
+                    and not any("img" in r for c in row for x in c["blocks"] if x["k"] == "p" for r in x["runs"]):
                 _trpr_put(t.rows[ri]._tr, _el("w:cantSplit"))
             # пустая строка (графы для подписей листов ознакомления ИН-1065) — не ниже, чем в оригинале: без текста
             # она схлопывалась в 6 pt, лист ознакомления выходил вдвое короче (19.10); высота — по линиям таблицы
