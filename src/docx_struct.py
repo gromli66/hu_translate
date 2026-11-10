@@ -460,12 +460,14 @@ def sub_rows(bs):
                 rows.append(r)
                 continue
             cut = labels + pair + [ci for ci in marks if ci not in labels + pair]
-            # места разреза — полосы, как у _table_block (rows.bands, E9b-R R2): якоря — метки и отметки. Прежде — верхи
+            # места разреза — полосы, как у _table_block (rows.bands, E9b-R R2): якоря — метки. Прежде — верхи
             # меток и отметок с допуском 2 pt: «□» на 2,2 pt выше своей строки оставалась в подстроке выше (30RA+SGT TU),
             # отметка на 2,4 pt ниже метки давала подстроку в 2,4 pt (31SDTÖMGT TU); текст ячейки-пары над первой меткой
-            # (заголовок раздела) стоял в одной подстроке с ней
+            # (заголовок раздела) стоял в одной подстроке с ней. Отметка — не якорь: своя полоса ей — только по своей
+            # строке; якорем каждая «○» без строки становилась подстрокой (три «○» строки кодов 4.2.3.2 — три подстроки,
+            # 30RVRXTSBIGT_TU 27 → 28 листов, печать 10.11)
             # абзацы ячеек — и пункты списков: «O» против пунктов «− 30EV …» (30RVRXTSBIGT_TU 1.15) — свои подстроки
-            spans = sorted((top(y), (y.get("geom") or {}).get("bottom") or top(y) + 10, ci, ci not in pair)
+            spans = sorted((top(y), (y.get("geom") or {}).get("bottom") or top(y) + 10, ci, ci in labels)
                            for ci in cut for x in full[ci] for y in _flat_paras(x) if y["k"] == "p" and top(y) is not None)
             tops = [q[0] for q in bands(spans)]
             if len(tops) < 2:
