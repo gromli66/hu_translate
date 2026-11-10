@@ -788,6 +788,11 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields
             # наименьшей высотой не делилась на листы LibreOffice — уходила на следующий, полстраницы пусто (3SZ23)
             end = min(ys[r + 1], max(s[1] for s in strips) + 4) if r == len(grid) - 1 else ys[r + 1]
             cuts = [ys[r]] + [s[0] - 2 for s in strips[1:] if s[0] - 2 > ys[r] + 1] + [end]
+            # ряд делится, только если у каждой полосы свой текст: сегмент, что накрывает границу полос (нарезка слила
+            # условия YA-K7…K9 в один абзац, 3PR10 л. 22–23), её снимает — коды стопкой при общем тексте; иначе строка
+            # кода оставалась пустой, а её текст стоял у соседней (печать 10.11)
+            ink_all = [(ink(g, True), ink(g, False)) for ci in range(len(cells)) for g in put.get((r, ci), [])]
+            cuts = [cuts[0]] + [c for c in cuts[1:-1] if not any(a < c - 1 and z > c + 1 for a, z in ink_all)] + [cuts[-1]]
             # полоса без текста — не ряд: якорь ниже начала абзаца соседней ячейки, абзац уходит в полосу своей
             # середины, а над якорем вставал пустой ряд («@0YATBEATL», 01-02FMP0BIGT л. 24; «0.» листов изменений)
             mids = [(s["loc"]["bbox"][1] + s["loc"]["bbox"][3]) / 2 for ci in range(len(cells))

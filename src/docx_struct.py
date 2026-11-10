@@ -475,6 +475,9 @@ def sub_rows(bs):
             spans = sorted((top(y), (y.get("geom") or {}).get("bottom") or top(y) + 10, ci, ci in labels)
                            for ci in cut for x in full[ci] for y in _flat_paras(x) if y["k"] == "p" and top(y) is not None)
             tops = [q[0] for q in bands(spans)]
+            # ряд делится, только если у каждой подстроки свой текст: абзац, что накрывает границу, её снимает (как полосы
+            # docx_layout._table_block: коды стопкой при общем тексте, печать 10.11)
+            tops = [t for k, t in enumerate(tops) if k == 0 or not any(a < t - 1 and z > t + 1 for a, z, _, _ in spans)]
             if len(tops) < 2:
                 rows.append(r)
                 continue

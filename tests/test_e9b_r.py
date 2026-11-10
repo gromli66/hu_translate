@@ -150,7 +150,11 @@ def test_band_anchor_is_the_rows_anchor():
                  lines=3), _seg("Tilos az FKSZ indítása, ha merev a primerkör", 120, 160, 390)]
     b = DL._table_block(t, segs, 0, None, "Times New Roman", 10, False)
     text = lambda c: ["".join(r.get("t", "") for r in p["runs"]) for p in c["blocks"]]
-    assert [text(r[0]) for r in b["rows"]] == [["YA-K7"], ["YA-K8"], ["YA-K9"]], [[text(c) for c in r] for r in b["rows"]]
+    # ряд делится, только если у каждой полосы свой текст: условие K7 накрывает и K8 (нарезка слила их) — K7 и K8 стопкой
+    # при общем тексте; K9 со своим условием — свой ряд (печать 10.11: иначе строка K7 пустая, её условие — у K8)
+    assert [[text(c) for c in r] for r in b["rows"]] == [
+        [["YA-K7", "YA-K8"], ["Megengedett a hidegvizes indítás 0,8 U névl tápfeszültségnél, melegvizes indítás"]],
+        [["YA-K9"], ["Tilos az FKSZ indítása, ha merev a primerkör"]]], [[text(c) for c in r] for r in b["rows"]]
 
 
 def test_code_under_a_phrase_in_phrase_column_is_not_a_band_anchor():
