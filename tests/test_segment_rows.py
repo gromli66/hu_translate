@@ -77,7 +77,7 @@ def test_values_column_is_cut_by_rows_of_codes_column():
     assert got.count("0,0m helyszín") == 2 and "-3,6m helyszín" in got and "9,6m helyszín" in got
     rw = RW.Rows(codes + place + vals, [])
     assert rw.apart(vals[0], vals[1]) == "якорь" and rw.apart(vals[1], vals[2]) == "якорь"
-    assert RW.Rows(place + vals, []).apart(vals[0], vals[1]) is None
+    assert RW.Rows(place + vals, []).apart(vals[0], vals[1]) == "пара"     # якорь молчит; значения против подписей
 
 
 def test_row_rule_hidden_under_tall_frames_splits_title_from_column_header():
@@ -307,3 +307,27 @@ def test_code_rows_are_apart_for_rules_and_portal_labels():
              "1*RM21S201."]
     fr = [_fr(t, (326, 171 + 10.3 * k, x1, 186 + 10.3 * k), 9.2) for k, (t, x1) in enumerate(zip(rows_, (483, 439, 547, 385)))]
     assert _texts(fr, vs=[(150, 260, 320.0), (150, 260, 562.0)]) == [" ".join(rows_)]
+
+
+def test_label_value_pair_is_apart_but_not_across_word_break():
+    """Пара «подпись — значение» без линеек — свидетельство Rows.apart («пара», E9N N2): столбик «rendben» против подписей
+    слева (31RDGT) и подписи со значениями справа (титул UTS) — по строке, и для меток портала. Слово, разорванное
+    переносом против подписей слева («Beépített ol-» / «tóberendezés», 3FI18), и фраза, что продолжается, — не пара."""
+    import roles as R
+    import rows as RW
+    from lines import join_lines
+    labels = [_fr(t, (156, 288 + 13 * k, 280, 300 + 13 * k)) for k, t in enumerate(("BSZG állásjelzések", "BV állásjelzések"))]
+    vals = [_fr("rendben", (375, 288 + 13 * k, 414, 300 + 13 * k)) for k in range(2)]
+    rw = RW.Rows(labels + vals, [])
+    assert rw.apart(vals[0], vals[1]) == "пара"
+    a, b = vals
+    pars = lambda: [{"frags": [a], "bbox": a["bbox"], "size": 9.96, "bold": False},
+                    {"frags": [b], "bbox": b["bbox"], "size": 9.96, "bold": False}]
+    lines = [{"id": 0, "x0": 375, "x1": 414, "top": 288, "bottom": 300},
+             {"id": 1, "x0": 375, "x1": 414, "top": 301, "bottom": 313}]
+    lab = {0: {"new": True, "role": "body"}, 1: {"new": False, "role": "body"}}
+    assert len(R.apply(pars(), lines, lab, join_lines, apart=rw.apart)) == 2
+    w1, w2 = _fr("Beépített ol-", (375, 521, 440, 533)), _fr("tóberendezés", (375, 533.5, 440, 545))
+    side = [_fr("Megnevezés", (156, 521, 280, 533)), _fr("Típus", (156, 533.5, 280, 545))]
+    assert RW.Rows(side + [w1, w2], []).apart(w1, w2) is None
+    assert "Beépített oltóberendezés" in _texts(side + [w1, w2])
