@@ -1864,7 +1864,9 @@ class Builder:
                         continue
                     if x["k"] != "p" or not x["runs"]:
                         continue
-                    if not used:
+                    # пустой начальный абзац ячейки стоит выше всего — абзац после списка в него нельзя: «Ha nem állnak…»
+                    # вставал над пунктом «− Az RVR …» своей подстроки (30RVRXTSBIGT_TU 1.15, печать 10.11)
+                    if not used and len(dc.paragraphs) == 1:
                         first.style = self.doc.styles[style]
                         if all("img" in r for r in x["runs"]):
                             for r in x["runs"]:

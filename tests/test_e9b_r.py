@@ -294,3 +294,17 @@ def test_row_asked_as_one_line_before_r1_is_not_lost_when_cells_are_taken():
     res = {str(s["id"]): {"ru": s["text"]} for s in segs}
     lost = A.lost_ids(segs, res, used={1, 2, 3, 4, 5, 7, 8}, exempt={}, tree=True)
     assert [s["id"] for s, _ in lost] == [10]
+
+
+def test_paragraph_after_list_in_cell_stays_after_it(tmp_path):
+    """Ячейка, начатая списком: абзац после списка писался в пустой начальный абзац ячейки — над списком («Ha nem
+    állnak…» вставал над пунктом «− Az RVR …» своей подстроки, 30RVRXTSBIGT_TU 1.15, печать 10.11)."""
+    lst = {"k": "list", "kind": "bullet", "items": [[_p("− Az RVR turbina gyorszárak", 100, 120)]]}
+    cell = lambda *bl: {"blocks": list(bl), "th": False, "geom": {"page": 1, "top": 100, "bottom": 130, "x0": 70,
+                                                                  "x1": 300}}
+    tab = {"k": "table", "rows": [[cell(_p("1.15.", 100, 70)), cell(lst, _p("Ha nem állnak rendelkezésre", 112, 130))]],
+           "borders": True, "geom": {"page": 1, "top": 95, "bottom": 135, "x0": 65, "x1": 526, "first_x0": 65, "size": 10}}
+    out = tmp_path / "l.docx"
+    B.Builder(B.Memory([]), lambda img: png(), PROFILE).build([tab], str(out), dict(LAYOUT, first_is_body=True))
+    texts = [p.text for p in Document(str(out)).tables[0].rows[0].cells[1].paragraphs if p.text.strip()]
+    assert [t[:8] for t in texts] == ["Az RVR t", "Ha nem á"], texts          # «−» — нумерацией списка
