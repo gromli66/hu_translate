@@ -341,6 +341,25 @@ def test_code_band_without_text_joins_the_stack_under_common_text():
         [["YA-K10"], ["Tilos az FKSZ indítása, ha merev a primerkör"], []]], _rows_text(b)
 
 
+def test_mark_band_without_text_joins_the_item_it_hangs_over():
+    """01-02FMP0BIGT 4.10.13 (лист 17): «O» пункта стоит на первой строке его текста, но выше номера — своя полоса без
+    текста, которую накрывает абзац пункта: «O» в ряду своего пункта, а не отдельной строкой над ним (E9B_R2: «лучше»)."""
+    import docx_layout as DL
+    t = _grid1([80, 125, 520, 560], 470, 570)
+    box = lambda text, bb, fr=None: {"id": 0, "page": 0, "text": text, "loc": {"bbox": bb, "size": 10, "bold": False,
+                                                                              "align": "left", "frags": fr or [bb]}}
+    segs = [box("4.10.12", [84, 484, 117, 497]), box("ÜM engedélyezte a MET-re hozást", [131, 484, 274, 497]),
+            box("O", [533, 483, 543, 497]), box("O", [533, 506, 543, 520]),
+            box("A MET-re hozást a PR04 szerint végre kell hajtani", [131, 507, 507, 532],
+                [[131, 507, 507, 519], [131, 520, 400, 532]]), box("4.10.13", [84, 518, 117, 532]),
+            box("4.10.14", [84, 541, 117, 555]), box("A reaktor MET-en", [131, 541, 208, 555]), box("O", [533, 541, 543, 555])]
+    b = DL._table_block(t, segs, 0, None, "Times New Roman", 10, False)
+    assert _rows_text(b) == [
+        [["4.10.12"], ["ÜM engedélyezte a MET-re hozást"], ["O"]],
+        [["4.10.13"], ["A MET-re hozást a PR04 szerint végre kell hajtani"], ["O"]],
+        [["4.10.14"], ["A reaktor MET-en"], ["O"]]], _rows_text(b)
+
+
 def test_continuation_without_code_does_not_take_next_item_number():
     """30THHAGT 4.23 (E9B_R2): строка продолжения пункта 4.22 без номера («30TH50B001 nyomása … bar ○ ○») задевает полосу
     пункта 4.23 со своим текстом — граница остаётся: номер «4.23.» против своего «Nyitni …», а не против чужого давления."""
