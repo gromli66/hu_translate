@@ -11,8 +11,12 @@
 import re
 
 from lines import hyphen_break, mid_phrase
+from patterns import ITEM_LABEL
 
-ANCHOR = re.compile(r"^\(?\d+(?:\.\d+)*\.?\)?$")
+# метка пункта отдельным куском — одно определение для якоря ряда (is_anchor, полосы сборки docx_layout._band_anchors) и
+# начала абзаца по номеру слева (layout.group, numbered); «a)» — тоже (E9N N5: на корпусе 57 PDF буквенных меток отдельным
+# куском в столбце якорей нет, нарезка не меняется)
+ANCHOR = re.compile(rf"^{ITEM_LABEL}$")
 # отметка бланка; значки символьных шрифтов (частная область: □ Wingdings \uf0xx у пунктов «30YA62P401ZQ35 p = …,»
 # 30PR132GT л. 5; \ue279 30BL150FÜT) — тоже; «Ο» греческая (30SZBV*IT TU), «X» и «×» — отметка-крестик (30BL150FÜT
 # 4.2.2). Одно определение и для сборки (valign ячейки отметок, docx_layout._table_block; E9b-R): там было своё — «до
@@ -43,15 +47,23 @@ def code_cells(left, right):
     return code_line(left) and code_line(right) and not code_enum(left, right)
 
 
-def code_rows(upper, lower):
+def code_rows(upper, lower, close=False):
     """Две строки из кодов подряд — ячейки перечня, каждая своим куском; кроме перечисления, которое продолжается на
-    следующей строке: в верхней от двух кодов и запятая в конце («30TD97S202, 30TD98S201, … 40TD97S202,»)."""
-    up = upper.rstrip()
-    return code_line(up) and code_line(lower) and not (up.endswith(",") and len(up.split()) >= 2)
+    следующей строке: запятая или «;» в конце верхней («30TD97S202, 30TD98S201, … 40TD97S202,»; «31,32SZ93S002,S003;
+    …,S008;» / «30UJ04S016,…», 3SZ17 л. 5), или цепочка через тире, перенесённая по ширине: тире в конце верхней
+    («…-TK28-TK30(20)-» / «TK35(25)B001», 30PR132GT л. 6), тире или пояснение в скобках в начале нижней («…- 30TK54» /
+    «(52) - 30TE04 …», 30HU175GT л. 7; «30UA09S035» / «(30TH31S802)» в ячейке, 30BOXFELTEL). Одиночный код с запятой —
+    продолжение только при обычном шаге строк (close: «…csökken az» / «YP14T001XQ01,» / «YP24T001XQ01,» /
+    «YP29T001XQ01 értéke,», 30TKBSZ36BIGT л. 8); через пустую строку это ряды псевдотаблицы («02TD95S201,» /
+    «02TD95S202,», 02VE25 л. 44)."""
+    up, low = upper.rstrip(), lower.lstrip()
+    return code_line(up) and code_line(low) and not (
+        up.endswith((",", ";")) and (close or len(up.split()) >= 2) or up.endswith(("-", "–"))
+        or low.startswith(("-", "–", "(")))
 
 
 def is_anchor(t):
-    """Якорь ряда: номер пункта («1.2.») или до трёх слов из кодов с цифрой («31UJ21S601», «YA-K7»)."""
+    """Якорь ряда: метка пункта («1.2.», «a)») или до трёх слов из кодов с цифрой («31UJ21S601», «YA-K7»)."""
     t = t.strip()
     return bool(ANCHOR.match(t)) or (code_line(t) and len(t.split()) <= 3 and bool(re.search(r"\d", t)))
 
@@ -134,12 +146,68 @@ def blank_between(fa, fb):
         and not (mid_phrase(fa["t"], fb["t"]) or hyphen_break(fa["t"], fb["t"]))
 
 
+SPACE = 5.0         # пробел между словами строки (подложка под вставленным словом: 2,7–4,1 pt; поля шапки: от 7 pt)
+
+
+def _vrule_in(vs, xa, xb, y0, y1):
+    """Вертикальная линейка в промежутке xa..xb на высоте y0..y1. Сторона белой подложки (soft, см. rules) в промежутке
+    не шире пробела линейкой не считается: подложка под вставленным в строку словом не делит строку."""
+    return any(xa - 1 <= r[2] <= xb + 1 and min(y1, r[1]) - max(y0, r[0]) > 0.5 * (y1 - y0)
+               and not (getattr(r, "soft", False) and xb - xa <= SPACE) for r in vs)
+
+
+def _right_limit(frags, vs, bb, page_right):
+    """Где кончается место справа от строки: вертикальная линейка или соседний фрагмент на той же высоте. Линейку, за
+    которую последний знак строки выступает (моноширинная строка 1SZ01 л. 20–23 кончается на 1,8 pt правее линии
+    столбца), — тоже: кусок режется по линиям по серединам знаков (_cut_spans), глубже полузнака линия в строку не
+    заходит. Прежде такая строка считалась короткой (до правого края листа далеко), и фраза рвалась
+    («…az S203» / «és az SE10S801…»)."""
+    x0, y0, x1, y1 = bb
+    lim = page_right
+    for ry0, ry1, x in vs:
+        if x >= x1 - max(1.0, 0.35 * (y1 - y0)) and min(y1, ry1) - max(y0, ry0) > 0.5 * (y1 - y0):
+            lim = min(lim, x)
+    for f in frags:
+        fx0, fy0, fx1, fy1 = f["bbox"]
+        if fx0 >= x1 + 1 and min(y1, fy1) - max(y0, fy0) > 0.5 * (y1 - y0):
+            lim = min(lim, fx0)
+    return lim
+
+
+def _partner(frags, vs, bb, left=False):
+    """Справа на той же линии есть другой фрагмент и линейки между ними нет (вторая колонка списка без таблицы);
+    left — слева (значение против своей подписи)."""
+    x0, y0, x1, y1 = bb
+    same = lambda f: min(y1, f["bbox"][3]) - max(y0, f["bbox"][1]) > 0.5 * (y1 - y0)
+    if left:
+        return any(f["bbox"][2] <= x0 - 5 and same(f) and not _vrule_in(vs, f["bbox"][2], x0, y0, y1) for f in frags)
+    return any(f["bbox"][0] >= x1 + 5 and same(f) and not _vrule_in(vs, x1, f["bbox"][0], y0, y1) for f in frags)
+
+
+def next_line(a, b, size, cont=False):
+    """Строка b (рамка) — следующая под строкой a (рамка), кегль size: зазор рамок от −0,35 до 0,6 кегля. Рамки выше шага
+    строк перекрываются: моноширинный шрифт 3SZ17 — рамка 15 pt при шаге 10, b всё равно следующая, если её верх ниже
+    верха a на шаг (от 0,85 кегля) при перекрытии до 0,7 кегля; рамки ещё выше (жирный моноширинный 3SZ23: 19 pt при
+    кегле 10 и шаге 11, номер пункта против второй строки при кегле 9 и шаге 10) — если фраза явно продолжается (cont:
+    середина фразы, слово разорвано переносом) и середины строк через шаг (0,85–1,8 кегля); заголовок и шапка таблицы под
+    ним (оба прописные) так не склеятся. Одно определение для склейки строк (layout.group), и через перенос слова, и
+    продолжения фразы против номера (continues)."""
+    gap = b[1] - a[3]
+    if -0.35 * size <= gap <= 0.6 * size:
+        return True
+    return gap < 0 and ((-0.7 * size <= gap and b[1] - a[1] >= 0.85 * size)
+                        or (cont and 0.85 * size <= (b[1] + b[3] - a[1] - a[3]) / 2 <= 1.8 * size))
+
+
 class Rows:
     """Границы рядов листа: frags — куски строк листа ({t, bbox, size}), hs, vs — линейки (layout.rules), gutter — x
     просвета двух колонок сплошного текста (layout.gutter) или None: через него якоря не берутся."""
 
     def __init__(self, frags, hs, vs=(), gutter=None):
         self.hs, self.vs, self.gutter = hs, vs, gutter
+        # просвет колонок — невидимой линейкой для соседей на линии (как в layout.group: segments кладёт его в vs)
+        self.pvs = list(vs) + ([(0, 1e6, gutter)] if gutter is not None else [])
+        self.right = max((f["bbox"][2] for f in frags), default=0)
         self.frags = sorted(frags, key=lambda f: (round(f["bbox"][1] / 3), f["bbox"][0]))     # порядок layout.group
         self.marks = [tuple(f["bbox"]) for f in self.frags if FORM_MARK.match(f["t"].strip())]
         flag = [is_anchor(f["t"]) for f in self.frags]
@@ -209,7 +277,8 @@ class Rows:
         подложку склеивают (roles.apply: 30RL2126GT — плашка под каждой строкой, «…akkor a» / «30RL21S001 zárva van.»
         рвались). У двух строк справа свои отметки бланка — пункты перечня, каждый со своей отметкой: «30TJ13 ág: …» и
         «30TJ23 ág: …» (30PR25GT л. 13) шли одним абзацем. Пустая строка (blank_between) — и для меток портала: пункты
-        «A, …» / «B, …» через пустую строку (1SZ01 л. 112) портал склеивал."""
+        «A, …» / «B, …» через пустую строку (1SZ01 л. 112) портал склеивал. Две строки кодов (code_rows) — ячейки перечня
+        и для меток портала: «30RR03S002» / «30RR03S020, S021» / … (30GF118GT л. 13) портал склеивал в один кусок («коды»)."""
         a, b = fa["bbox"], fb["bbox"]
         if rule_between(self.hs, a, b, soft, self.vs):
             return "линейка"
@@ -221,7 +290,31 @@ class Rows:
             return "отметка"
         if blank_between(fa, fb):
             return "пустая строка"
+        size = max(fa.get("size") or 0, fb.get("size") or 0)
+        close = _mid(b) - _mid(a) <= 1.3 * size
+        if code_rows(fa["t"], fb["t"], close=close):
+            return "коды"
+        if self.pair(fa, fb, close):
+            return "пара"
         return None
+
+    def pair(self, fa, fb, close):
+        """Строки fa и fb — пункты списка «подпись — значение» без линеек: у обеих на их линии справа значение, и строка
+        fa закрывается и при малом остатке справа (титул UTS: «RRP3 azonosító / EVP azonosító …» слипались; оценка
+        ширины слова тут не годится: «EVP azonosító» — остаток 64,3 pt, «Dokumentum» — 64,4 pt; в двух колонках
+        сплошного текста строка доходит до просвета, остаток меньше 25 pt), или обе короткие (до трёх слов) против своих
+        подписей слева («BSZG állásjelzések … rendben» ×4, 31RDGT: «rendben rendben rendben rendben» шло одним абзацем).
+        Не пара: фраза продолжается с того же края (mid_phrase), перечень кодов через «,» или «;» при обычном шаге
+        (close), слово разорвано переносом («Beépített ol-» / «tóberendezés» против подписей слева, 3FI18)."""
+        a, b = fa["bbox"], fb["bbox"]
+        if hyphen_break(fa["t"], fb["t"]) or abs(b[0] - a[0]) < 3 and (
+                mid_phrase(fa["t"], fb["t"]) or fa["t"].rstrip().endswith((",", ";")) and code_line(fb["t"]) and close):
+            return False
+        if _partner(self.frags, self.pvs, a) and _partner(self.frags, self.pvs, b) \
+                and _right_limit(self.frags, self.pvs, a, self.right) - a[2] > 25:
+            return True
+        return len(fa["t"].split()) <= 3 and len(fb["t"].split()) <= 3 \
+            and _partner(self.frags, self.pvs, a, left=True) and _partner(self.frags, self.pvs, b, left=True)
 
 
 def bands(spans):

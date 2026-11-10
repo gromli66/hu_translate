@@ -10,7 +10,7 @@ import bisect
 import re
 import fitz
 from lines import hyphen_break, join_lines, mid_phrase     # перенос слова — одна функция для всех читателей (E4)
-from rows import Rows, code_cells, code_line, code_rows     # граница ряда таблицы — до склейки строк в абзацы (E5)
+from rows import ANCHOR, Rows, code_cells, code_line, next_line, _right_limit, _vrule_in     # граница ряда таблицы — до склейки строк в абзацы (E5)
 
 GAP = 30.0          # выключка по ширине в узких ячейках даёт пробелы до ~25 pt
 
@@ -66,16 +66,6 @@ def _ink_x1(f):
     t, bb = f["t"], f["bbox"]
     k = len(t) - len(t.rstrip())
     return bb[2] - k * (bb[2] - bb[0]) / len(t) if t and k else bb[2]
-
-
-SPACE = 5.0         # пробел между словами строки (подложка под вставленным словом: 2,7–4,1 pt; поля шапки: от 7 pt)
-
-
-def _vrule_in(vs, xa, xb, y0, y1):
-    """Вертикальная линейка в промежутке xa..xb на высоте y0..y1. Сторона белой подложки (soft, см. rules) в промежутке
-    не шире пробела линейкой не считается: подложка под вставленным в строку словом не делит строку."""
-    return any(xa - 1 <= r[2] <= xb + 1 and min(y1, r[1]) - max(y0, r[0]) > 0.5 * (y1 - y0)
-               and not (getattr(r, "soft", False) and xb - xa <= SPACE) for r in vs)
 
 
 BULLET = re.compile(r"^[•▪◦·o\-–]$")
@@ -364,34 +354,6 @@ def rules(page):
     return hs, vs
 
 
-def _right_limit(frags, vs, bb, page_right):
-    """Где кончается место справа от строки: вертикальная линейка или соседний фрагмент на той же высоте. Линейку, за
-    которую последний знак строки выступает (моноширинная строка 1SZ01 л. 20–23 кончается на 1,8 pt правее линии
-    столбца), — тоже: кусок режется по линиям по серединам знаков (_cut_spans), глубже полузнака линия в строку не
-    заходит. Прежде такая строка считалась короткой (до правого края листа далеко), и фраза рвалась
-    («…az S203» / «és az SE10S801…»)."""
-    x0, y0, x1, y1 = bb
-    lim = page_right
-    for ry0, ry1, x in vs:
-        if x >= x1 - max(1.0, 0.35 * (y1 - y0)) and min(y1, ry1) - max(y0, ry0) > 0.5 * (y1 - y0):
-            lim = min(lim, x)
-    for f in frags:
-        fx0, fy0, fx1, fy1 = f["bbox"]
-        if fx0 >= x1 + 1 and min(y1, fy1) - max(y0, fy0) > 0.5 * (y1 - y0):
-            lim = min(lim, fx0)
-    return lim
-
-
-def _partner(frags, vs, bb, left=False):
-    """Справа на той же линии есть другой фрагмент и линейки между ними нет (вторая колонка списка без таблицы);
-    left — слева (значение против своей подписи)."""
-    x0, y0, x1, y1 = bb
-    same = lambda f: min(y1, f["bbox"][3]) - max(y0, f["bbox"][1]) > 0.5 * (y1 - y0)
-    if left:
-        return any(f["bbox"][2] <= x0 - 5 and same(f) and not _vrule_in(vs, f["bbox"][2], x0, y0, y1) for f in frags)
-    return any(f["bbox"][0] >= x1 + 5 and same(f) and not _vrule_in(vs, x1, f["bbox"][0], y0, y1) for f in frags)
-
-
 ORDINAL = re.compile(r"\b\d+(?:\.\d+)*\.$")
 
 
@@ -410,9 +372,9 @@ def group(frags, hs, vs=(), form=False, rows=None):
     rows = rows or Rows(frags, hs, vs)
     frags = sorted(frags, key=lambda f: (round(f["bbox"][1] / 3), f["bbox"][0]))
     # слева на той же строке — номер пункта отдельным куском («1.6.» ⇥ «FOT szintcsökkenés» в оглавлении 3SZ19): кусок
-    # начинает новый абзац — иначе название приклеивалось к названию пункта выше, а у «1.6.» оставалось пустым (17.10)
-    label = re.compile(r"^\(?\d+(\.\d+)*\.?\)?$|^[a-zA-Z][.)]$")
-    nums = [f["bbox"] for f in frags if label.match(f["t"].strip())]
+    # начинает новый абзац — иначе название приклеивалось к названию пункта выше, а у «1.6.» оставалось пустым (17.10);
+    # метка — та же, что у якоря ряда (rows.ANCHOR)
+    nums = [f["bbox"] for f in frags if ANCHOR.match(f["t"].strip())]
     used = set()                              # номер открывает абзац один раз — для первой строки против него
 
     def labeled(bb):
@@ -426,21 +388,6 @@ def group(frags, hs, vs=(), form=False, rows=None):
         last, x0, x1 = q["frags"][-1]["bbox"], f["bbox"][0], f["bbox"][2]
         return -40 <= x0 - last[0] <= 3 or abs((x0 + x1) / 2 - (last[0] + last[2]) / 2) < 6 \
             or (x0 >= last[0] - 3 and x1 <= last[2] + 3)
-
-    def hyphen_cont(q, f):
-        """Строка f — вторая половина слова, разорванного переносом в последней строке абзаца q. Перенос — сильнее
-        прочих признаков: другое начертание (жирный остаток «TANI,»), короткая строка, номер пункта против второй
-        строки и выше рамки (17 pt при кегле 9 и шаге 10, 3SZ17) слово пополам не режут; не пускает только граница ряда
-        (линейка между строками, якорь другой строки таблицы)."""
-        last = q["frags"][-1]["bbox"]
-        x0, y0, x1, y1 = f["bbox"]
-        size = max(q["size"], f["size"])
-        gap = y0 - last[3]
-        if not (hyphen_break(q["frags"][-1]["t"], f["t"]) and aligned(q, f) and abs(q["size"] - f["size"]) <= 1.5
-                and (-0.35 * size <= gap <= 0.6 * size
-                     or (gap < 0 and 0.85 * size <= (y0 + y1 - last[1] - last[3]) / 2 <= 1.8 * size))):
-            return False
-        return not rows.apart(q["frags"][-1], f, soft=False)
 
     def near(f):
         """Абзацы-кандидаты на продолжение строки f, от последнего к первому: последняя строка кончается не выше кегля над
@@ -470,12 +417,13 @@ def group(frags, hs, vs=(), form=False, rows=None):
 
     def continues(f):
         """Предыдущая строка этого же столбца оборвана на середине фразы, начинается без номера и выровнена с этой."""
-        x0, y0 = f["bbox"][0], f["bbox"][1]
+        x0 = f["bbox"][0]
         for q in near(f):
             last = q["frags"][-1]["bbox"]
             size = max(q["size"], f["size"])
-            if -0.35 * size <= y0 - last[3] <= 0.6 * size and min(f["bbox"][2], q["bbox"][2]) - max(x0, q["bbox"][0]) > 0:
-                return abs(x0 - last[0]) < 3 and mid_phrase(q["frags"][-1]["t"], f["t"]) and not labeled(q["frags"][0]["bbox"])
+            cont = abs(x0 - last[0]) < 3 and mid_phrase(q["frags"][-1]["t"], f["t"])
+            if next_line(last, f["bbox"], size, cont) and min(f["bbox"][2], q["bbox"][2]) - max(x0, q["bbox"][0]) > 0:
+                return cont and not labeled(q["frags"][0]["bbox"])
         return False
 
     def numbered(bb):
@@ -504,27 +452,27 @@ def group(frags, hs, vs=(), form=False, rows=None):
         if starts and continues(f):
             starts = False
         if plain:
-            best = next((p for p in near(f) if hyphen_cont(p, f) and not skips(p, f)), None)
-        if plain and not starts and best is None:
             for p in near(f):
                 if len(p["frags"]) == 1 and BULLET.match(p["frags"][0]["t"].strip()) or skips(p, f):
                     continue
                 px0, py0, px1, py1 = p["bbox"]
                 last = p["frags"][-1]["bbox"]
-                gap = y0 - last[3]
                 size = max(p["size"], f["size"])
-                # рамка строки выше шага строк (моноширинный шрифт 3SZ17: рамка 15 pt при шаге 10 pt) — рамки соседних
-                # строк перекрываются; строка ниже верха предыдущей на шаг — продолжение, а не та же строка
-                tall = gap < 0 and -0.7 * size <= gap and y0 - last[1] >= 0.85 * size
                 plast = p["frags"][-1]["t"]
-                if qty and is_mark(f["t"], plast):
+                # перенос слова — сильнейшее свидетельство продолжения: другое начертание (жирный остаток «TANI,»),
+                # короткая строка, номер пункта против второй строки и рамки выше шага (3SZ17) слово пополам не режут;
+                # строка — под последней строкой абзаца (aligned, next_line); не пускает только граница ряда (rows.apart:
+                # линейка между строками, якорь другой строки таблицы)
+                if hyphen_break(plast, f["t"]) and aligned(p, f) and abs(p["size"] - f["size"]) <= 1.5 \
+                        and next_line(last, f["bbox"], size, cont=True) and not rows.apart(p["frags"][-1], f, soft=False):
+                    best = p
+                    break
+                if starts or qty and is_mark(f["t"], plast):
                     continue
                 tail = abs(x0 - last[0]) < 3 and orphan_tail(plast, f["t"])
                 cont = (abs(x0 - last[0]) < 3 and mid_phrase(plast, f["t"])) or tail
-                # рамки ещё выше (жирный моноширинный: 19 pt при кегле 10 и шаге 11, 3SZ23): середины строк — через шаг
-                # строк, а фраза явно продолжается; заголовок и шапка таблицы под ним (оба прописные) так не склеятся
-                tall = tall or (cont and gap < 0 and 0.85 * size <= (y0 + y1 - last[1] - last[3]) / 2 <= 1.8 * size)
-                if not (-0.35 * size <= gap <= 0.6 * size or tall):
+                # следующая строка под последней строкой абзаца — по зазору рамок и шагу середин (rows.next_line)
+                if not next_line(last, f["bbox"], size, cont):
                     continue
                 if min(x1, px1) - max(x0, px0) <= 0:
                     continue
@@ -545,18 +493,17 @@ def group(frags, hs, vs=(), form=False, rows=None):
                     continue
                 if form and p["frags"][-1]["t"].rstrip().endswith(":"):
                     continue
-                if code_rows(p["frags"][-1]["t"], f["t"]):
-                    continue                                # строки перечня кодов — каждая своим куском
                 # фраза оборвана на середине: длинная строка без знака конца, следующая — со строчной (центрированный
                 # текст в ячейке: «…A hidroakkumulátorok megengedett» / «szintváltozásának módosítása…» шли порознь, и
                 # перевод выходил «Допустимые гидроемкостей САОЗ изменение изменения уровня», 30TH50, 28.10)
                 if abs(x0 - last[0]) < 3 and mid_phrase(p["frags"][-1]["t"], f["t"]):
                     best = p
                     break
-                # перечень кодов через запятую продолжается на следующей строке того же края при обычном шаге строк:
-                # короткая строка «1*RB11S801, RB12S801,» не закрывает перечень (1SZ01 л. 20, под «ZÁRNAK:»); коды через
-                # пустую строку («02TD95S201,» / «02TD95S202,» 02VE25 л. 44 — ряды псевдотаблицы) — нет
-                if abs(x0 - last[0]) < 3 and plast.rstrip().endswith(",") and code_line(f["t"]) \
+                # перечень кодов через запятую или «;» продолжается на следующей строке того же края при обычном шаге
+                # строк: короткая строка «1*RB11S801, RB12S801,» не закрывает перечень (1SZ01 л. 20, под «ZÁRNAK:»; л. 21
+                # — через «;»); коды через пустую строку («02TD95S201,» / «02TD95S202,» 02VE25 л. 44 — ряды
+                # псевдотаблицы) — нет
+                if abs(x0 - last[0]) < 3 and plast.rstrip().endswith((",", ";")) and code_line(f["t"]) \
                         and (y0 + y1 - last[1] - last[3]) / 2 <= 1.3 * size:
                     best = p
                     break
@@ -567,18 +514,6 @@ def group(frags, hs, vs=(), form=False, rows=None):
                 width = lim - px0
                 word = f["t"].split()[0] if f["t"].split() else ""
                 fits = (x1 - x0) * (len(word) + 1) / max(len(f["t"]), 1) + 2
-                # список «подпись — значение» без линеек (титул UTS: «RRP3 azonosító / EVP azonosító …» слипались):
-                # у обеих строк справа на той же линии есть значение — строка закрывается и при малом остатке
-                # (оценка ширины слова тут не годится: «EVP azonosító» — остаток 64,3 pt, «Dokumentum» — 64,4 pt);
-                # в двух колонках сплошного текста строка доходит до промежутка, остаток меньше 25 pt
-                pair = _partner(frags, vs, last) and _partner(frags, vs, f["bbox"])
-                if pair and lim - last[2] > 25:
-                    continue
-                # столбик коротких значений против своих подписей слева («BSZG állásjelzések … rendben» ×4, 31RDGT:
-                # «rendben rendben rendben rendben» шло одним абзацем); сплошной текст второй колонки — длинные строки
-                if len(p["frags"][-1]["t"].split()) <= 3 and len(f["t"].split()) <= 3 \
-                        and _partner(frags, vs, last, left=True) and _partner(frags, vs, f["bbox"], left=True):
-                    continue
                 # строка по центру ячейки: свободное место — с двух сторон («Fejlesztő / környezet» в шапке
                 # таблицы 1 UTS переводились порознь: «Разработчик / среда»)
                 room = lim - last[2]

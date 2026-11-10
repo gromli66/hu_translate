@@ -77,7 +77,7 @@ def test_values_column_is_cut_by_rows_of_codes_column():
     assert got.count("0,0m helyszín") == 2 and "-3,6m helyszín" in got and "9,6m helyszín" in got
     rw = RW.Rows(codes + place + vals, [])
     assert rw.apart(vals[0], vals[1]) == "якорь" and rw.apart(vals[1], vals[2]) == "якорь"
-    assert RW.Rows(place + vals, []).apart(vals[0], vals[1]) is None
+    assert RW.Rows(place + vals, []).apart(vals[0], vals[1]) == "пара"     # якорь молчит; значения против подписей
 
 
 def test_row_rule_hidden_under_tall_frames_splits_title_from_column_header():
@@ -264,3 +264,107 @@ def test_wide_row_keeps_cell_continuation():
     more = [_fr(f"tovább{i}", (200 + 45 * i, 113, 240 + 45 * i, 130)) for i in range(14)]
     vs = [(95, 135, 197 + 45 * i) for i in range(15)]                    # линейки столбцов
     assert "E412/II. csőfolyosó" in _texts(cell + cells + more, vs=vs)
+
+
+def test_code_rows_are_apart_for_rules_and_portal_labels():
+    """Две строки кодов подряд — ячейки перечня (Rows.apart: «коды»), и для склейки по меткам портала: перечень
+    «30RR03S002» / «30RR03S020, S021» (30GF118GT л. 13) портал склеивал в одну строку. Перечень, который продолжается,
+    не делится: запятая или «;» в конце строки от двух кодов, тире цепочки в конце верхней, тире или пояснение в скобках
+    в начале нижней (маршрут, перенесённый по ширине: «…- 30TK54» / «(52) - 30TE04 …», 30HU175GT л. 7). Перенос слова
+    «KI-» / «KAPCSOLVA» — не коды."""
+    import roles as R
+    import rows as RW
+    from lines import join_lines
+    a = _fr("30RR03S002", (94, 270, 150, 282))
+    b = _fr("30RR03S020, S021", (94, 282, 180, 294))
+    assert RW.Rows([a, b], []).apart(a, b) == "коды"
+    assert len(_texts([a, b])) == 2
+    pars = lambda: [{"frags": [a], "bbox": a["bbox"], "size": 9.96, "bold": False},
+                    {"frags": [b], "bbox": b["bbox"], "size": 9.96, "bold": False}]
+    lines = [{"id": 0, "x0": 94, "x1": 150, "top": 270, "bottom": 282},
+             {"id": 1, "x0": 94, "x1": 180, "top": 282, "bottom": 294}]
+    labels = {0: {"new": True, "role": "body"}, 1: {"new": False, "role": "body"}}
+    assert len(R.apply(pars(), lines, labels, join_lines)) == 1
+    assert len(R.apply(pars(), lines, labels, join_lines, apart=RW.Rows([a, b], []).apart)) == 2
+    for up, low in (("30TK35(25)B001 - 30TK36(26)W001 - 30TK40 - 30TK41D001(2,3) - 30TK54", "(52) - 30TE04 - 30YA"),
+                    ("30TK35(25)B001 - 30TK40 - 30TK41D001(2,3) - 30TK54", "- 30TE04 - 30TE12S201 - 30YA"),
+                    ("TC01B002-TC12D001(2) TC16-TD36-TD30-TD15-TK28-TK30(20)-", "TK35(25)B001"),
+                    ("31,32SZ93S002,S003; 31,32SC75S009,30UJ04S007,S008;", "30UJ04S016,30UJ97S001"),
+                    ("30TD97S202, 30TD98S201,", "40TD97S201")):
+        u, w = _fr(up, (120, 100, 440, 112)), _fr(low, (120, 112, 440, 124))
+        assert RW.Rows([u, w], []).apart(u, w) is None, up
+        if not low.startswith(("(", "-")):         # «(52)», «- » в начале строки — метка пункта: склеивает портал
+            assert len(_texts([u, w])) == 1, up
+    k1, k2 = _fr("A tábla KI-", (120, 100, 200, 112)), _fr("KAPCSOLVA feliratú", (120, 112, 260, 124))
+    assert not RW.code_rows(k1["t"], k2["t"]) and RW.Rows([k1, k2], []).apart(k1, k2) is None
+    # одиночный код с запятой — продолжение фразы при обычном шаге (30TKBSZ36BIGT л. 8), через пустую строку — ряд
+    y1, y2 = _fr("YP14T001XQ01,", (195, 368, 269, 381)), _fr("YP24T001XQ01,", (195, 379, 269, 392))
+    assert RW.Rows([y1, y2], []).apart(y1, y2) is None and len(_texts([y1, y2])) == 1
+    r1, r2 = _fr("02TD95S201,", (70.8, 270.7, 143.4, 289.5), 11.04), _fr("02TD95S202,", (70.8, 295, 143.4, 313.8), 11.04)
+    assert RW.Rows([r1, r2], []).apart(r1, r2) is not None and len(_texts([r1, r2])) == 2
+    # перечень через «;» — один абзац и после короткой строки (1SZ01 л. 21, под «ZÁRNAK:»)
+    rows_ = ["1*SE10S801, S802, S803, S804;", "1*RB11S801, RB12S801;", "1*RA11S203, RA12S203, RA14S203, RA15S201;",
+             "1*RM21S201."]
+    fr = [_fr(t, (326, 171 + 10.3 * k, x1, 186 + 10.3 * k), 9.2) for k, (t, x1) in enumerate(zip(rows_, (483, 439, 547, 385)))]
+    assert _texts(fr, vs=[(150, 260, 320.0), (150, 260, 562.0)]) == [" ".join(rows_)]
+
+
+def test_label_value_pair_is_apart_but_not_across_word_break():
+    """Пара «подпись — значение» без линеек — свидетельство Rows.apart («пара», E9N N2): столбик «rendben» против подписей
+    слева (31RDGT) и подписи со значениями справа (титул UTS) — по строке, и для меток портала. Слово, разорванное
+    переносом против подписей слева («Beépített ol-» / «tóberendezés», 3FI18), и фраза, что продолжается, — не пара."""
+    import roles as R
+    import rows as RW
+    from lines import join_lines
+    labels = [_fr(t, (156, 288 + 13 * k, 280, 300 + 13 * k)) for k, t in enumerate(("BSZG állásjelzések", "BV állásjelzések"))]
+    vals = [_fr("rendben", (375, 288 + 13 * k, 414, 300 + 13 * k)) for k in range(2)]
+    rw = RW.Rows(labels + vals, [])
+    assert rw.apart(vals[0], vals[1]) == "пара"
+    a, b = vals
+    pars = lambda: [{"frags": [a], "bbox": a["bbox"], "size": 9.96, "bold": False},
+                    {"frags": [b], "bbox": b["bbox"], "size": 9.96, "bold": False}]
+    lines = [{"id": 0, "x0": 375, "x1": 414, "top": 288, "bottom": 300},
+             {"id": 1, "x0": 375, "x1": 414, "top": 301, "bottom": 313}]
+    lab = {0: {"new": True, "role": "body"}, 1: {"new": False, "role": "body"}}
+    assert len(R.apply(pars(), lines, lab, join_lines, apart=rw.apart)) == 2
+    w1, w2 = _fr("Beépített ol-", (375, 521, 440, 533)), _fr("tóberendezés", (375, 533.5, 440, 545))
+    side = [_fr("Megnevezés", (156, 521, 280, 533)), _fr("Típus", (156, 533.5, 280, 545))]
+    assert RW.Rows(side + [w1, w2], []).apart(w1, w2) is None
+    assert "Beépített oltóberendezés" in _texts(side + [w1, w2])
+
+
+def test_item_label_is_one_definition():
+    """Метка пункта отдельным куском — одно определение (patterns.ITEM_LABEL) для якоря ряда и начала абзаца по номеру
+    слева (E9N N5): «1.2.», «(3)», «a)», «(a)» — метки; код и слово — нет."""
+    import layout as LY
+    import rows as RW
+    for t in ("1.", "1.2.", "(3)", "0.", "a)", "b.", "(a)"):
+        assert RW.ANCHOR.match(t) and RW.is_anchor(t), t
+    for t in ("FOT", "a", "1.2.3.a", "rendben"):
+        assert not RW.ANCHOR.match(t), t
+    toc = [_fr("a)", (93, 238, 104, 250)), _fr("Az első pont címe", (145, 238, 300, 250)),
+           _fr("b)", (93, 251, 104, 263)), _fr("A második pont címe", (145, 251, 310, 263))]
+    assert "A második pont címe" in _texts(toc)
+
+
+def test_next_line_is_one_definition_of_line_below():
+    """Строка ниже — следующая (rows.next_line, E9N N4): зазор рамок от −0,35 до 0,6 кегля; рамки выше шага (моноширинный
+    3SZ17: 15 pt при шаге 10) — верх ниже на шаг при перекрытии до 0,7 кегля; рамки ещё выше (3SZ23: 19 pt при шаге 11) —
+    только когда фраза продолжается (cont). Та же строка (верх рядом) и строка через пустую — нет."""
+    import rows as RW
+    assert RW.next_line((0, 100, 200, 112), (0, 113, 200, 125), 10)
+    assert RW.next_line((0, 100, 200, 115), (0, 110, 200, 125), 10)                     # 3SZ17: перекрытие 5 при шаге 10
+    assert not RW.next_line((0, 100, 200, 115), (0, 102, 200, 117), 10)                 # та же строка
+    tall_a, tall_b = (0, 100, 200, 119), (0, 111, 200, 130)                             # 3SZ23: перекрытие 8, шаг 11
+    assert not RW.next_line(tall_a, tall_b, 10) and RW.next_line(tall_a, tall_b, 10, cont=True)
+    assert not RW.next_line((0, 100, 200, 112), (0, 125, 200, 137), 10)                 # через пустую строку
+
+
+def test_word_break_continues_in_the_general_loop_past_number_and_bold():
+    """Перенос слова — сильнейшее свидетельство продолжения в общем цикле layout.group (E9N N6): номер пункта против
+    второй строки и жирный остаток слова его не рвут; линейка между строками — рвёт (граница ряда, rows.apart)."""
+    a = _fr("A 1SZ22KU vonatkozó fejezete alapján LEÁLLÍ-", (74.4, 470, 300, 487))
+    b = dict(_fr("TANI, és KISZAKASZOLNI.", (74.4, 486.5, 204, 503.8), bold=True))
+    num = _fr("4.2.", (40, 490, 60, 500))
+    assert "A 1SZ22KU vonatkozó fejezete alapján LEÁLLÍTANI, és KISZAKASZOLNI." in _texts([a, b, num])
+    assert len([t for t in _texts([a, b], hs=[(60, 320, 486.8)]) if t]) == 2
