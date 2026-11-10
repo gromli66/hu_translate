@@ -1524,10 +1524,15 @@ def load(path):
         # …или через три ряда и больше (E9b-R R1): вложенная таблица на много рядов — столбцы, хоть и короче половины
         # (30BOXVILGT_TU л. 3: «Megnevezés | Állapot | Ellenőrzés» ×2 в ячейке «Megnevezés» на 16 рядов — рамка в два
         # столбца, fit_rows сворачивал ряд в одну ячейку «30XL11S201 ЗАКРЫТО 30XL53S201 ЗАКРЫТО», отметки «□» пропадали)
+        # — если и ячеек Word столько хотя бы в трёх рядах: рамка примечания на 4 ряда (ÜFK I л. 147 «*A szolgálatvezetőknek
+        # …», ячеек в три столбца — один ряд) столбцом всей таблицы ломала двухъячеечные ряды — значения «Létszám» уходили
+        # в ячейку, объединённую сверху («Численность1 чел.1 чел.», печать 10.11)
         rows_at = lambda x: sum(1 for y in ys if min(float(o["top"]) for o in at(x)) - 1 <= y
                                 <= max(float(o["bottom"]) for o in at(x)) + 1) - 1
         if len(xs) > 2:
-            xs = [x for i, x in enumerate(xs) if i in (0, len(xs) - 1) or cover(x) >= 0.5 * span or rows_at(x) >= 3]
+            half = [x for i, x in enumerate(xs) if i in (0, len(xs) - 1) or cover(x) >= 0.5 * span]
+            wide = sum(1 for r in rows if len(r) > len(half) - 1) >= 3
+            xs = [x for i, x in enumerate(xs) if x in half or wide and rows_at(x) >= 3]
         hexcol = lambda col: GM.hex_rgb(_rgb(col)) if _rgb(col) else None
         out = {"xs": [round(x, 1) for x in xs], "ys": [round(y, 1) for y in ys]}   # линии строк — высота пустых строк
         if vert:
