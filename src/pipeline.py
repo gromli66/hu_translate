@@ -25,6 +25,7 @@ from conventions import is_tag
 from llm import STAT
 
 SEC_CHARS, CTX_CHARS, STREAM_CHARS = 6000, 3000, 250000
+STRUCT_WORKERS, FIT_WORKERS = 4, 4         # одновременных запросов добора структуры и сокращения под место
 cl = lambda t: TAG.sub("", t or "").strip()
 # ключ памяти: схлопываются только пробелы; табуляции и переносы — часть разметки (иначе чужая раскладка)
 norm = lambda t: re.sub(r" +", " ", t).strip(" ")
@@ -643,17 +644,26 @@ def struct_fill(work, prj, progress=_quiet):
                 main = [e for e in tr.entries if id(e) in tr.main_ids]
             units = [t for t, _, _ in miss if tmkey(t) not in tm and t not in failed and not is_tag(t)]
             got = {}
-            for j in range(0, len(units), 12):
-                chunk = units[j:j + 12]
+            chunks = [units[j:j + 12] for j in range(0, len(units), 12)]
+
+            def ask(chunk, tr=tr):
                 try:
-                    out = tr.run_batch({"units": [{"key": k, "text": t} for k, t in enumerate(chunk)], "first_abbr": [],
-                                        "context": ""})
+                    return tr.run_batch({"units": [{"key": k, "text": t} for k, t in enumerate(chunk)], "first_abbr": [],
+                                         "context": ""}), None
                 except RuntimeError as e:            # нет токена / отказ портала: пересборка идёт без добора
-                    log(f"структура: {f.stem} — добор не удался ({str(e)[:120]}), повтор при следующей пересборке")
-                    failed.update(chunk)
-                    continue
-                got.update({t: out[k] for k, t in enumerate(chunk)})
-                progress("структура", i + 0.9 * (j + len(chunk)) / len(units), len(files))
+                    return None, e
+
+            # пачки без контекста независимы — запросы параллельно, разбор по порядку (выдача та же; 10.11 — шли по одной)
+            with ThreadPoolExecutor(STRUCT_WORKERS) as ex:
+                j = 0
+                for chunk, (out, e) in zip(chunks, ex.map(ask, chunks)):
+                    j += len(chunk)
+                    if e is not None:
+                        log(f"структура: {f.stem} — добор не удался ({str(e)[:120]}), повтор при следующей пересборке")
+                        failed.update(chunk)
+                        continue
+                    got.update({t: out[k] for k, t in enumerate(chunk)})
+                    progress("структура", i + 0.9 * j / len(units), len(files))
             for t, page, code in miss:
                 if is_tag(t):
                     r = {"ru": t, "issues": [], "tries": 0, "copied": True}
@@ -899,7 +909,9 @@ def fit(work, prj=None):
             info = build_pdf(d["file"], Path(tmp) / "trial.pdf", d["segs"], dp["res"], check=False)   # пробная: сверка листов не нужна
         by_id = {str(s["id"]): s for s in d["segs"]}
         done = 0
-        for it in info.get("shrunk", []):
+
+        def plan(it):
+            """(s, r, pr, ru, label, keep, prompt): keep — прежнее сокращение в силе; prompt None — сокращать некуда."""
             # r — запись в JSON (сюда сокращение), pr — тот же сегмент, каким его рисуют (мерится и сокращается он)
             s, r, pr = by_id[str(it["id"])], d["res"][str(it["id"])], dp["res"][str(it["id"])]
             ru = cl(pr["ru"])
@@ -907,18 +919,32 @@ def fit(work, prj=None):
             # (сокращать вдвое — терять смысл)
             n = max(8, int(len(ru) * max((it["scale"] / 0.75) ** 2, 0.6)))
             label = len(ru.split()) <= 3
-            if r.get("ru_pdf") and r.get("ru_pdf_of") == pr["ru"] and (not label or _abbr_of(r["ru_pdf"], ru, cl(s["text"]))):
+            keep = bool(r.get("ru_pdf") and r.get("ru_pdf_of") == pr["ru"] and (not label or _abbr_of(r["ru_pdf"], ru, cl(s["text"]))))
+            prompt = None
+            if not keep and n < len(ru):
+                if hu_ru:
+                    prompt = (FIT_PROMPT_SHORT.format(n=n, ru=ru) if label
+                              else FIT_PROMPT.format(n=n, hu=cl(s["text"]), ru=ru))
+                else:
+                    prompt = (FIT_PROMPT_SHORT_GENERIC.format(n=n, ru=ru) if label else
+                              FIT_PROMPT_GENERIC.format(n=n, hu=cl(s["text"]), ru=ru, src=L.NAME_EN[sl], tgt=L.NAME_EN[tl]))
+            return s, r, pr, ru, label, keep, prompt
+
+        ask = lambda prompt, sid: chat([{"role": "user", "content": prompt}], max_tokens=2000, tag=f"fit{sid}")
+        # запросы — заранее и параллельно (ответы ложатся в кэш портала), разбор ниже — по одному, как прежде: тот же
+        # запрос берётся из кэша, выдача та же (10.11 — 47 сокращений шли по одному 34 мин)
+        pre = [(p[6], it["id"]) for it in info.get("shrunk", []) for p in [plan(it)] if p[6]]
+        if len(pre) > 1:
+            with ThreadPoolExecutor(FIT_WORKERS) as ex:
+                list(ex.map(lambda a: ask(*a), pre))
+        for it in info.get("shrunk", []):
+            s, r, pr, ru, label, keep, prompt = plan(it)
+            if keep:
                 continue
             r.pop("ru_pdf", None); r.pop("ru_pdf_of", None)
-            if n >= len(ru):
+            if prompt is None:
                 continue
-            if hu_ru:
-                prompt = (FIT_PROMPT_SHORT.format(n=n, ru=ru) if label
-                          else FIT_PROMPT.format(n=n, hu=cl(s["text"]), ru=ru))
-            else:
-                prompt = (FIT_PROMPT_SHORT_GENERIC.format(n=n, ru=ru) if label else
-                          FIT_PROMPT_GENERIC.format(n=n, hu=cl(s["text"]), ru=ru, src=L.NAME_EN[sl], tgt=L.NAME_EN[tl]))
-            out = chat([{"role": "user", "content": prompt}], max_tokens=2000, tag=f"fit{it['id']}")
+            out = ask(prompt, it["id"])
             short = (out.get("text") or "").strip().strip("«»\"")
             codes = lambda t: sorted(CODE.findall(t))
             if short and len(short) < len(ru) and codes(short) == codes(ru) \
