@@ -3309,7 +3309,12 @@ def blocks_layout(pdf, segs, mode):
     blocks, _ = docx_struct.load(str(pdf))
     blocks = docx_struct.compose_figures(blocks, str(pdf))   # не в load: load зовёт и coverage при извлечении
     docx_struct.list_geo(blocks)
-    return blocks, dict(docx_struct.layout(str(pdf), blocks), sizes=True)    # кегль — из знаков PDF, точный
+    L = dict(docx_struct.layout(str(pdf), blocks), sizes=True)    # кегль — из знаков PDF, точный
+    # путь А и у размеченного (E9b-S Z9): номер листа оригинала известен или есть серии — лист — свой раздел, таблица и
+    # перечень режутся на границе листа, как у текстового слоя
+    if L.get("sheet_no") or L.get("variants"):
+        blocks = docx_struct.split_at_zones(blocks, L.get("variants"), docx_struct.sheet_closed(L, blocks))
+    return blocks, L
 
 
 def job_memory(segs, res):

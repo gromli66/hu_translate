@@ -2642,7 +2642,7 @@ def layout(path, blocks, content=None):
     zkeys, wcounter = {}, set()
     base_key = None
     sheet_no = {}
-    if content and len(pdf.pages) > 2:
+    if len(pdf.pages) > 2:
         texts = {pg.page_number: zone_text(pg) for pg in pdf.pages}
         zkeys, _ = _zone_keys(texts)
         # счётчик листа серии (zones own=True) — по словам: по знакам подряд «08:28» и номер «2/46» правее на той же
@@ -2660,11 +2660,19 @@ def layout(path, blocks, content=None):
                                                                    key=lambda w: (round(float(w["top"]) / 3), float(w["x0"]))))
                  for pg in pdf.pages}
         _, wcount = _zone_keys(words)
+        cands = {}
         for pn, t in words.items():
             ps = re.split(r"(\d+)", t)
-            n = next((int(ps[i]) for i in range(1, len(ps), 2) if ps[i - 1][-10:] in wcount), None)
-            if n is not None:
-                sheet_no[pn] = n
+            ns = [int(ps[i]) for i in range(1, len(ps), 2) if ps[i - 1][-10:] in wcount]
+            if ns:
+                cands[pn] = ns
+        # чисел-счётчиков на листе несколько (подвал ÜFK I «Módosítás sorszáma: 2. | 8. oldal»: номер изменения заполнен
+        # на 6 листах из 157 и стоит перед номером листа с той же подписью) — номер листа тот, что продолжает ряд
+        # соседей; иначе первое, как было. Брался первый: листу «8. oldal» доставался номер «2», а метка — изменению
+        one = {pn: ns[0] for pn, ns in cands.items() if len(ns) == 1}
+        for pn in sorted(cands):
+            fit = [n for n in cands[pn] if sheet_no.get(pn - 1) == n - 1 or one.get(pn + 1) == n + 1]
+            sheet_no[pn] = fit[0] if fit else cands[pn][0]
         pairs = [(sheet_no[p], sheet_no[p + 1]) for p in sheet_no if p + 1 in sheet_no]
         if not pairs or sum(b == a + 1 for a, b in pairs) < 0.6 * len(pairs):
             sheet_no = {}
@@ -2704,6 +2712,9 @@ def layout(path, blocks, content=None):
             pieces = word_text(zone_chars(pg))
             txt = "".join(t for t, _ in pieces)
             hit = [m for k, m in num_keys(txt) if k in wcounter]
+            # метка — на числе, что равно номеру листа (sheet_no), если счётчиков на листе несколько (ÜFK I: номер
+            # изменения «2.» перед «8. oldal» — полем PAGE становился он)
+            hit.sort(key=lambda m: int(m.group()) != sheet_no.get(pg.page_number, int(m.group())))
             if not hit and not body:
                 mk, tok = (lambda chars: chars), None
             if hit:
