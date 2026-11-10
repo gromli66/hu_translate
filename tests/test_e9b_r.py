@@ -150,7 +150,11 @@ def test_band_anchor_is_the_rows_anchor():
                  lines=3), _seg("Tilos az FKSZ indítása, ha merev a primerkör", 120, 160, 390)]
     b = DL._table_block(t, segs, 0, None, "Times New Roman", 10, False)
     text = lambda c: ["".join(r.get("t", "") for r in p["runs"]) for p in c["blocks"]]
-    assert [text(r[0]) for r in b["rows"]] == [["YA-K7"], ["YA-K8"], ["YA-K9"]], [[text(c) for c in r] for r in b["rows"]]
+    # ряд делится, только если у каждой полосы свой текст: условие K7 накрывает и K8 (нарезка слила их) — K7 и K8 стопкой
+    # при общем тексте; K9 со своим условием — свой ряд (печать 10.11: иначе строка K7 пустая, её условие — у K8)
+    assert [[text(c) for c in r] for r in b["rows"]] == [
+        [["YA-K7", "YA-K8"], ["Megengedett a hidegvizes indítás 0,8 U névl tápfeszültségnél, melegvizes indítás"]],
+        [["YA-K9"], ["Tilos az FKSZ indítása, ha merev a primerkör"]]], [[text(c) for c in r] for r in b["rows"]]
 
 
 def test_code_under_a_phrase_in_phrase_column_is_not_a_band_anchor():
@@ -312,3 +316,214 @@ def test_paragraph_after_list_in_cell_stays_after_it(tmp_path):
     B.Builder(B.Memory([]), lambda img: png(), PROFILE).build([tab], str(out), dict(LAYOUT, first_is_body=True))
     texts = [p.text for p in Document(str(out)).tables[0].rows[0].cells[1].paragraphs if p.text.strip()]
     assert [t[:8] for t in texts] == ["Az RVR t", "Ha nem á"], texts          # «−» — нумерацией списка
+
+
+# ------------------------------------------------------------------ стопка кодов (E9B_R2, печать 10.11): rows.stack_bands
+def _rows_text(b):
+    text = lambda c: ["".join(r.get("t", "") for r in p["runs"]) for p in c["blocks"]]
+    return [[text(c) for c in r] for r in b["rows"]]
+
+
+def test_code_band_without_text_joins_the_stack_under_common_text():
+    """3PR10 л. 22–23: нарезка слила условия YA-K7…K9 в один абзац; полосы резали ряд по каждому коду — строки K7 и K9
+    пустые, их условия у K8. Полоса с кодом без своего текста (у K7 только «1» в столбце «M»), которую накрывает абзац, —
+    в стопку кодов при общем тексте; K10 со своим условием — свой ряд."""
+    import docx_layout as DL
+    t = _grid1([60, 110, 400, 430], 90, 200)
+    segs = [_seg("YA-K7", 70, 100, 100), _seg("1", 410, 100, 420), _seg("YA-K8", 70, 112, 100),
+            _seg("YA-K9", 70, 124, 100), _seg("YA-K10", 70, 140, 100),
+            _seg("Megengedett a hidegvizes indítás. Tilos az FKSZ beszakaszolása. Tilos az FKSZ indítása", 120, 100, 390,
+                 lines=3), _seg("Tilos az FKSZ indítása, ha merev a primerkör", 120, 140, 390)]
+    b = DL._table_block(t, segs, 0, None, "Times New Roman", 10, False)
+    assert _rows_text(b) == [
+        [["YA-K7", "YA-K8", "YA-K9"], ["Megengedett a hidegvizes indítás. Tilos az FKSZ beszakaszolása. Tilos az FKSZ "
+                                       "indítása"], ["1"]],
+        [["YA-K10"], ["Tilos az FKSZ indítása, ha merev a primerkör"], []]], _rows_text(b)
+
+
+def test_mark_band_without_code_stays_with_its_item():
+    """30GF(135)51GT л. 12 (прогон h14): «□» пункта 4.11.4 — своя полоса без кода; её накрывает вторая фраза 4.11.4,
+    которую нарезка отдала пункту 4.11.5. Полоса из одних отметок границу не снимает: «□» остаётся у 4.11.4, а не
+    второй отметкой у 4.11.5 (у 4.11.4 не оставалось отметки подтверждения). Геометрия листа — точно, как в JSON."""
+    import docx_layout as DL
+    t = _grid1([50, 97, 460, 500], 595, 750)
+    box = lambda text, bb, fr=None: {"id": 0, "page": 0, "text": text, "loc": {"bbox": bb, "size": 9.96, "bold": False,
+                                                                              "align": "left", "frags": fr or [bb]}}
+    mark = ""                                                    # «□» символьного шрифта (частная область)
+    segs = [box("4.11.2.", [63.84, 605.14, 93.81, 618.56]), box(mark, [473.9, 616.12, 482.77, 627.17]),
+            box("A szivárgásellenőrző rendszeren ellenőrizni, hogy a nikkel gyűrűk tömören zárnak",
+                [100.78, 604.86, 384.53, 641.7], [[100.78, 604.86, 384.53, 618.65], [100.78, 616.39, 352.51, 630.17],
+                                                  [100.78, 627.91, 207.19, 641.7]]),
+            box("4.11.3.", [63.84, 639.71, 93.81, 653.13]), box(mark, [473.9, 650.2, 482.77, 661.26]),
+            box("Ellenőrizni kell a varratvédő kamrák nyomásait. Nyomásemelkedés nem megengedett.",
+                [100.78, 650.96, 412.9, 676.15], [[100.78, 650.96, 412.9, 664.74], [100.78, 662.36, 159.67, 676.15]]),
+            box("4.11.4.", [63.84, 674.17, 93.81, 687.58]),
+            box("A 30RZ91,93,95S211,S212,S241,S242,S271 armatúrák köztes terének", [100.78, 685.41, 387.81, 699.2]),
+            box(mark, [473.9, 695.81, 482.77, 706.86]),
+            box("szivárgás ellenőrző csonkjaira felszerelt nyitott állapotú provizórikumon a szivárgást ellenőrizni.(RO)",
+                [100.78, 697.09, 400.27, 722.03], [[100.78, 697.09, 400.27, 710.51], [100.78, 708.62, 211.63, 722.03]]),
+            box("4.11.5.", [57.12, 708.74, 92.13, 722.15]), box(mark, [473.9, 718.37, 482.77, 729.42]),
+            box("A 30RZ91,93,95S211,S212,S241,S242,S271 armatúrák köztes teréből", [100.8, 719.92, 386.14, 733.71]),
+            box("szivárgás nem tapasztalható.(RO)", [100.8, 731.48, 235.42, 744.9])]
+    b = DL._table_block(t, segs, 0, None, "Times New Roman", 10, False)
+    got = _rows_text(b)
+    k = next(i for i, r in enumerate(got) if r[0] == ["4.11.5."])
+    assert got[k][2] == [] and got[k - 1][2] == [mark], got             # «□» 4.11.4 — строкой над 4.11.5, не у него
+    assert sum(len(r[2]) for r in got) == 4, got                        # все четыре «□» на месте
+
+
+def test_code_band_joins_the_text_that_covers_it_not_the_item_above():
+    """30RR2126GT л. 5 (прогон h13): номер «2.3.» стоит по середине своего текста в три строки — текст начат выше номера
+    и сам по себе полоса ниже. Полоса без текста встаёт к тексту, что её накрывает, а не к хвосту пункта 2.2 выше."""
+    import docx_layout as DL
+    t = _grid1([75, 130, 465, 500], 200, 340)
+    box = lambda text, bb, fr=None: {"id": 0, "page": 0, "text": text, "loc": {"bbox": bb, "size": 11, "bold": False,
+                                                                              "align": "left", "frags": fr or [bb]}}
+    segs = [box("2.2.", [81, 211, 101, 226]), box("O", [475, 211, 486, 226]),
+            box("− A tömörség ellenőrzést egyszerre csak egy visszacsapó szelepnél lehet elvégezni.", [137, 208, 400, 238],
+                [[137, 208, 400, 223], [137, 223, 300, 238]]),
+            box("2.3.", [81, 261, 101, 276]),
+            box("− A blokkvezénylő és a helyszín közötti közvetlen telefonkapcsolat rendelkezésre áll", [137, 255, 418, 301],
+                [[137, 255, 418, 270], [137, 270, 418, 285], [137, 286, 200, 301]]), box("O", [475, 274, 486, 289]),
+            box("2.4.", [81, 301, 101, 316]), box("− A teszt végrehajtásához", [137, 302, 428, 317]),
+            box("O", [475, 302, 486, 317])]
+    b = DL._table_block(t, segs, 0, None, "Times New Roman", 10, False)
+    assert [r[0] for r in _rows_text(b)] == [["2.2."], ["2.3."], ["2.4."]], _rows_text(b)
+    assert _rows_text(b)[1][1] == ["− A blokkvezénylő és a helyszín közötti közvetlen telefonkapcsolat rendelkezésre áll"]
+
+
+def test_code_without_text_does_not_stack_over_an_item_with_its_own_value():
+    """1SZ01 л. 90 (прогон h13): у 11SA10P101 своего текста нет (значения ушли в шапку), у 11SA10P501 — своё «11KF11» и
+    часть слитого «jelzés 11GB02 RM 2.1.». Весь текст 11SA10P501 полосу 11SA10P101 не накрывает — стопки нет:
+    стопкой «11KF11» вставало против чужого кода."""
+    import docx_layout as DL
+    t = _grid1([72, 140, 228, 300, 400, 540], 110, 185)
+    box = lambda text, bb, fr=None: {"id": 0, "page": 0, "text": text, "loc": {"bbox": bb, "size": 10, "bold": False,
+                                                                              "align": "left", "frags": fr or [bb]}}
+    segs = [box("11SA10P101", [78, 115, 137, 130]), box("11SA10P501", [78, 128, 137, 143]), box("11KF11", [157, 128, 195, 143]),
+            box("jelzés 11GB02 RM 2.1. -- --", [316, 115, 386, 166], [[316, 115 + 13 * k, 386, 128 + 13 * k] for k in range(4)]),
+            box("11SA10P801", [78, 141, 137, 156]), box("helyszín", [152, 141, 195, 156])]
+    b = DL._table_block(t, segs, 0, None, "Times New Roman", 10, False)
+    assert [r[0] for r in _rows_text(b)] == [["11SA10P101"], ["11SA10P501"], ["11SA10P801"]], _rows_text(b)
+
+
+def test_continuation_without_code_does_not_take_next_item_number():
+    """30THHAGT 4.23 (E9B_R2): строка продолжения пункта 4.22 без номера («30TH50B001 nyomása … bar ○ ○») задевает полосу
+    пункта 4.23 со своим текстом — граница остаётся: номер «4.23.» против своего «Nyitni …», а не против чужого давления."""
+    import docx_layout as DL
+    t = _grid1([80, 120, 530, 560], 370, 460)
+    box = lambda text, bb, fr=None: {"id": 0, "page": 0, "text": text, "loc": {"bbox": bb, "size": 12, "bold": False,
+                                                                              "align": "left", "frags": fr or [bb]}}
+    # геометрия листа 8 (orig): отметки «□ □» пункта 4.22 — один сегмент на две строки, задевает полосу 4.23
+    segs = [box("4.22.", [85, 382, 109, 398]), box("Rögzíteni az alábbi nyomásértéket:", [125, 382, 297, 398]),
+            box("30TH50B001 nyomása a 30TH50P101 alapján", [111, 409, 336, 426]),
+            box("○ ○", [540, 411, 550, 444], [[540, 411, 550, 426], [540, 429, 550, 444]]),
+            box("4.23.", [85, 429, 109, 445]), box("Nyitni a 30TH56S201, 30TH56S202-t", [125, 429, 312, 445])]
+    b = DL._table_block(t, segs, 0, None, "Times New Roman", 10, False)
+    assert _rows_text(b) == [
+        [["4.22."], ["Rögzíteni az alábbi nyomásértéket:"], []],
+        [[], ["30TH50B001 nyomása a 30TH50P101 alapján"], ["○ ○"]],
+        [["4.23."], ["Nyitni a 30TH56S201, 30TH56S202-t"], []]], _rows_text(b)
+
+
+def test_state_paragraph_does_not_glue_the_next_action_group():
+    """3SZ17 л. 7 (E9B_R2): состояние «Armatúrák ZÁRVA …» на четыре строки свисает до следующей группы действий — кодов
+    в ряду нет, граница остаётся: состояние не встаёт вровень с чужой командой «… NYITNI.»."""
+    import docx_layout as DL
+    t = _grid1([60, 320, 570], 265, 340)
+    box = lambda text, bb, fr=None: {"id": 0, "page": 0, "text": text, "loc": {"bbox": bb, "size": 10, "bold": False,
+                                                                              "align": "left", "frags": fr or [bb]}}
+    # геометрия листа 6: состояние на две строки — своя полоса между группами действий, задевает следующую
+    segs = [box("A 30UJ04D001 BÉNÍTANI, KISZAKASZOLNI.", [71, 274, 271, 290]),
+            box("Armatúrák ZÁRVA, KIKAPCSOLVA, LETILTVA", [323, 286, 528, 312], [[323, 286, 528, 299],
+                                                                                [323, 299, 528, 312]]),
+            box("A 30UJ04S007,S008,S016 NYITNI.", [71, 303, 238, 320])]
+    b = DL._table_block(t, segs, 0, None, "Times New Roman", 10, False)
+    assert _rows_text(b) == [
+        [["A 30UJ04D001 BÉNÍTANI, KISZAKASZOLNI."], []], [[], ["Armatúrák ZÁRVA, KIKAPCSOLVA, LETILTVA"]],
+        [["A 30UJ04S007,S008,S016 NYITNI."], []]], _rows_text(b)
+
+
+def test_items_with_own_text_stay_apart_under_a_hanging_paragraph():
+    """1SZ01 л. 120 «Üzemviteli korlátozások» (E9B_R2): условия пункта 1 на пять строк свисают до пункта 2 — у каждого
+    пункта свой номер и текст, граница остаётся (слитые «1.» и «2.» ставили условия пункта 1 против «Завершения»)."""
+    import docx_layout as DL
+    t = _grid1([60, 110, 250, 520], 90, 230)
+    segs = [_seg("1.", 70, 100, 100), _seg("A gyorszárók felmelegítése", 120, 100, 240, lines=2),
+            _seg("A felmelegítést akkor kell kezdeni, ha a gőznyomás p > 34 bar.", 260, 100, 510, lines=5),
+            _seg("2.", 70, 154, 100), _seg("Felmelegítés befejezése", 120, 154, 240),
+            _seg("A gyorszáró karimák külső falhőmérséklete nagyobb mint 170 °C.", 260, 154, 510)]
+    b = DL._table_block(t, segs, 0, None, "Times New Roman", 10, False)
+    assert [r[0] for r in _rows_text(b)] == [["1."], ["2."]], _rows_text(b)
+
+
+def test_codes_with_own_values_stay_apart_under_a_merged_value():
+    """1SZ01 л. 102, коды 11SE (E9B_R2): нарезка слила значения двух датчиков в один сегмент — у каждого кода своё место
+    («helyszín»), граница остаётся: склейка ставила значения стопкой с первой строки — «16 бар» у чужого кода."""
+    import docx_layout as DL
+    t = _grid1([60, 160, 260, 400], 90, 200)
+    segs = [_seg("11SE03P401", 70, 100, 150), _seg("helyszín", 170, 100, 250),
+            _seg("11SE03P402", 70, 112, 150), _seg("helyszín", 170, 112, 250),
+            _seg("1 ÷ 1,2 bar < 0,4 bar", 270, 100, 390, lines=2)]
+    b = DL._table_block(t, segs, 0, None, "Times New Roman", 10, False)
+    assert [r[0] for r in _rows_text(b)] == [["11SE03P401"], ["11SE03P402"]], _rows_text(b)
+
+
+def test_item_number_stays_at_its_own_text_under_a_two_line_item():
+    """01-02FMP0BIGT 4.13.1.2 (E9B_R2): текст пункта 4.13.1.1 в две строки задевает полосу 4.13.1.2 со своим текстом —
+    граница остаётся: номер не встаёт против второй строки чужого пункта."""
+    import docx_layout as DL
+    t = _grid1([60, 130, 520], 90, 200)
+    segs = [_seg("4.13.1.1", 70, 100, 120), _seg("- Tiszta kondenzátum beadása során a bórsav-koncentráció", 140, 100, 510,
+                                                lines=2),
+            _seg("4.13.1.2", 70, 120, 120), _seg("- Bármelyik mérés végrehajtása során a periódus", 140, 120, 510)]
+    b = DL._table_block(t, segs, 0, None, "Times New Roman", 10, False)
+    assert [r[0] for r in _rows_text(b)] == [["4.13.1.1"], ["4.13.1.2"]], _rows_text(b)
+
+
+def test_marks_of_list_items_stay_with_their_items():
+    """30RVRWTSBIGT л. 6 (E9B_R2): пункт «− 30YP25S601 …» в две строки задевает следующий пункт — кодов в первом столбце
+    нет, у каждого пункта своя «O»: граница остаётся (стопкой вторая «O» вставала против «обесточен)»)."""
+    import docx_layout as DL
+    t = _grid1([60, 110, 400, 430], 90, 200)
+    segs = [_seg("− 30YP25S601 mágnes szelep zárva (terhelő mágnes feszmentes)", 120, 100, 390, lines=2),
+            _seg("O", 410, 100, 418), _seg("− 30YP25S201 lefúvató szakaszoló szelep", 120, 120, 390),
+            _seg("O", 410, 120, 418)]
+    b = DL._table_block(t, segs, 0, None, "Times New Roman", 10, False)
+    assert [r[1:] for r in _rows_text(b)] == [
+        [["− 30YP25S601 mágnes szelep zárva (terhelő mágnes feszmentes)"], ["O"]],
+        [["− 30YP25S201 lefúvató szakaszoló szelep"], ["O"]]], _rows_text(b)
+
+
+def test_merged_values_do_not_jump_over_a_single_value():
+    """3PR10 л. 33 (E9B_R2): нарезка слила значения «4,5±0,25 bar 50-80 bar …» на несколько рядов, между ними — своё
+    «20-270 °C» у YA12÷62T103P. У каждого кода своё место («BSZ-2B», «GA01», «BSZG») — ряды не сливаются, и «20-270 °C»
+    остаётся у своего кода, а не после слитого абзаца."""
+    import docx_layout as DL
+    t = _grid1([60, 200, 300, 420], 90, 200)
+    segs = [_seg("YA13÷63P411, 441, 471", 70, 100, 190), _seg("BSZ-2B", 210, 100, 290),
+            _seg("YA12÷62T103P", 70, 112, 190), _seg("GA01", 210, 112, 290), _seg("20-270 °C", 310, 112, 410),
+            _seg("YA13P001", 70, 124, 190), _seg("BSZG", 210, 124, 290),
+            _seg("YA23P001", 70, 136, 190), _seg("BSZG", 210, 136, 290),
+            _seg("4,5±0,25 bar 50-80 bar 50-80 bar", 310, 100, 410, lines=4)]
+    b = DL._table_block(t, segs, 0, None, "Times New Roman", 10, False)
+    got = _rows_text(b)
+    assert [r[0] for r in got] == [["YA13÷63P411, 441, 471"], ["YA12÷62T103P"], ["YA13P001"], ["YA23P001"]], got
+    assert got[1][2] == ["20-270 °C"], got
+
+
+def test_sub_rows_marks_of_items_with_own_text_stay_apart():
+    """30RVRYTSBIGT_TU 4.2.3.8 (E9B_R2), путь разметки: абзац «BLÜGY …» в две строки задевает следующий пункт со своей
+    «O» — меток (кодов) в ряду нет, подстроки остаются: обе «O» стопкой оставляли следующий пункт без отметки."""
+    import docx_struct as D
+    cell = lambda *bl: {"blocks": list(bl), "th": False, "geom": {"page": 1, "top": 100, "bottom": 160, "x0": 70,
+                                                                  "x1": 100}}
+    two = _p("BLÜGY ellenőrzi a GFDP működését", 110, 120)
+    two["geom"] = dict(two["geom"], bottom=131.5, lines=2)                 # задевает следующий пункт на 1,5 pt
+    row = [cell(_p("4.2.3.8.", 100, 70)), cell(_p("Megjegyzés:", 100, 120), two, _p("A lefutás után", 130, 120)),
+           cell(_blank(), _p("O", 110, 480), _p("O", 130, 480))]
+    out = D.sub_rows([{"k": "table", "rows": [row]}])[0]["rows"]
+    text = lambda c: [D.text_of(x["runs"]) for x in c["blocks"]]
+    assert [[text(c) for c in r][1:] for r in out] == [
+        [["Megjegyzés:"], []], [["BLÜGY ellenőrzi a GFDP működését"], ["O"]], [["A lefutás után"], ["O"]]], \
+        [[text(c) for c in r] for r in out]

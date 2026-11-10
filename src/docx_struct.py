@@ -23,7 +23,7 @@ import geom as GM
 import patterns as PT
 import sids as SIDS
 import rows as RW
-from rows import FORM_MARK, bands
+from rows import FORM_MARK, bands, stack_bands
 
 HEAD = {"H1": 1, "H2": 2, "H3": 3, "H4": 4, "H5": 5, "H6": 6}
 SKIP = {"Artifact"}
@@ -475,6 +475,13 @@ def sub_rows(bs):
             spans = sorted((top(y), (y.get("geom") or {}).get("bottom") or top(y) + 10, ci, ci in labels)
                            for ci in cut for x in full[ci] for y in _flat_paras(x) if y["k"] == "p" and top(y) is not None)
             tops = [q[0] for q in bands(spans)]
+            # подстрока с меткой без своего текста, которую накрывает абзац, — в стопку меток при общем тексте (одно
+            # правило с полосами docx_layout._table_block — rows.stack_bands); прочие границы — как были
+            within = lambda t, k: (k == 0 or t >= tops[k] - 2) and (k == len(tops) - 1 or t < tops[k + 1] - 2)
+            own = [[(a, z) for a, z, ci, lab in spans if within(a, k) and not lab and ci not in marks]
+                   for k in range(len(tops))]
+            lab_in = [any(lab for a, _, _, lab in spans if within(a, k)) for k in range(len(tops))]
+            tops = stack_bands(tops + [float("inf")], own, lab_in)[:-1]
             if len(tops) < 2:
                 rows.append(r)
                 continue

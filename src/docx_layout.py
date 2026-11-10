@@ -788,6 +788,17 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields
             # наименьшей высотой не делилась на листы LibreOffice — уходила на следующий, полстраницы пусто (3SZ23)
             end = min(ys[r + 1], max(s[1] for s in strips) + 4) if r == len(grid) - 1 else ys[r + 1]
             cuts = [ys[r]] + [s[0] - 2 for s in strips[1:] if s[0] - 2 > ys[r] + 1] + [end]
+            # полоса с кодом без своего текста, которую накрывает абзац (нарезка слила условия YA-K7…K9 в один абзац,
+            # 3PR10 л. 22–23), — в стопку кодов при общем тексте (rows.stack_bands); прочие границы — как были
+            anc = set(rw.anchors)
+            is_code = lambda ci, s: ci == 0 and tuple((s["loc"].get("frags") or [s["loc"]["bbox"]])[0][:4]) in anc
+            mid = lambda s: (s["loc"]["bbox"][1] + s["loc"]["bbox"][3]) / 2
+            inb = [[(ci, s) for ci in range(len(cells)) for s in put.get((r, ci), [])
+                    if cuts[k] <= mid(s) < cuts[k + 1] or k == len(cuts) - 2 and mid(s) >= cuts[k + 1]]
+                   for k in range(len(cuts) - 1)]
+            own = [[(ink(s, True), ink(s, False)) for ci, s in b
+                    if not is_code(ci, s) and s["text"].strip() and not RW.mark_only(s["text"])] for b in inb]
+            cuts = RW.stack_bands(cuts, own, [any(is_code(ci, s) for ci, s in b) for b in inb])
             # полоса без текста — не ряд: якорь ниже начала абзаца соседней ячейки, абзац уходит в полосу своей
             # середины, а над якорем вставал пустой ряд («@0YATBEATL», 01-02FMP0BIGT л. 24; «0.» листов изменений)
             mids = [(s["loc"]["bbox"][1] + s["loc"]["bbox"][3]) / 2 for ci in range(len(cells))
