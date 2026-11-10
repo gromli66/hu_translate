@@ -1721,7 +1721,7 @@ def layout(src, blocks, segs, info):
     common = Counter(len(by_page[p]) for p in cand).most_common(1)[0][0] if cand else 0
     same = [p for p in cand if len(by_page[p]) == common]
     rep = same[len(same) // 2] if same else None
-    page_tok, num_start = None, None
+    page_tok, num_start, tok_at = None, None, None
     if rep is not None:
         for s in by_page[rep]:                               # число, растущее с листом: «Oldalszám: 7»
             m = re.search(r"\d+", s["text"])
@@ -1732,7 +1732,7 @@ def layout(src, blocks, segs, info):
             vals = Counter(int(re.search(r"\d+", t["text"]).group()) - t["page"] for t in same if re.search(r"\d+", t["text"]))
             # смещение номера от листа — одно у большинства (3PR42: нумерация сдвигается посреди документа)
             if len(same) >= 3 and vals and vals.most_common(1)[0][1] >= 0.6 * len(same):
-                page_tok = m.group()
+                page_tok, tok_at = m.group(), (s["id"], m.span())
                 # нумерация — с числа оригинала: у 3SZ19 первый лист PDF — «Oldalszám: 2» (титул не в файле); с титулом
                 # тело начинается со 2-го листа — и число его (раньше выходило на единицу меньше)
                 first = 1 if any(s["page"] == 0 for s in runs) else 2
@@ -1771,6 +1771,17 @@ def layout(src, blocks, segs, info):
             ints = {p: n for p, n in sheet_no.items() if isinstance(n, int)}     # вставной «56/1» — строкой
             m = min(ints)
             num_start = {"page": first, "value": ints.get(first, ints[m] - (m - first))}
+    # путь А не сработал, номер найден прежним поиском (число, растущее с листом): метка — на его цифрах в колонтитуле
+    # образца; поле PAGE ставится только по метке (docx_build._zone_text, E9b-S Z11: ветки «первое такое число
+    # перевода» больше нет)
+    old_mark = False
+    if page_tok is not None and not marked and tok_at is not None:
+        from docx_struct import PAGE_MARK
+        (sid, (a, b)) = tok_at
+        put = lambda z: [dict(t, text=t["text"][:a] + PAGE_MARK * (b - a) + t["text"][b:]) if t["id"] == sid else t
+                         for t in z]
+        headz, footz = put(headz), put(footz)
+        old_mark = any(t["id"] == sid for t in headz + footz)
     head = _grid(headz, bold) if headz else None
     foot = _grid(footz, bold) if footz else {"rows": [], "widths": [], "aligns": [], "inner": False, "box": False}
     if head:                                # шапка — шрифтом документа (стиль шапки по умолчанию — Tahoma, 3SZ19 — Courier)
@@ -1786,4 +1797,4 @@ def layout(src, blocks, segs, info):
             "stamp_font": info.get("font") or "Times New Roman", "stamp_size": info.get("size"),
             "stamp_box": foot["box"], "stamp_inner": False, "page_tok": page_tok, "num_start": num_start,
             "first_is_body": any(s["page"] == 0 for s in runs),    # колонтитулы и на 1-м листе — титула нет
-            **({"sheet_no": sheet_no, "page_marked": True} if marked else {})}
+            **({"sheet_no": sheet_no, "page_marked": True} if marked else {"page_marked": True} if old_mark else {})}

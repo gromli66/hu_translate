@@ -92,15 +92,23 @@ def _layout(pdf):
     0..1)}. Мера одна у оригинала и перевода — сравниваются числа листов."""
     import fitz
     with fitz.open(str(pdf)) as doc:
-        start = {}
+        seen = {}
         H = doc[0].rect.height if len(doc) else 842
         body = []                                   # (верх, низ) текста тела листа без колонтитулов
         for pno, pg in enumerate(doc):
-            for m in re.finditer(r"QZS(\d+)QZ", pg.get_text()):
-                start.setdefault(int(m.group(1)), pno)
+            # метка раздела — 1 pt; LibreOffice при печати обновляет оглавление, и заголовок с меткой входит в него
+            # кеглем оглавления — у документа с оглавлением началом раздела бралась страница оглавления (ÜFK I: 151
+            # раздел «на стр. 2–3», подгонка не видела ужатия и откатывала его; E9b-S 10.11). Есть метка ≤ 2 pt — берётся
+            # она, нет — любая, как прежде
+            for b in pg.get_text("dict")["blocks"]:
+                for ln in b.get("lines", []):
+                    for s in ln["spans"]:
+                        for m in re.finditer(r"QZS(\d+)QZ", s["text"]):
+                            seen.setdefault(int(m.group(1)), []).append((s["size"] > 2, pno))
             bs = [b for b in pg.get_text("blocks") if b[1] > 0.1 * H and b[3] < 0.93 * H and b[4].strip()]
             body.append((min(b[1] for b in bs), max(b[3] for b in bs)) if bs else None)
         total = len(doc)
+    start = {i: min(v)[1] for i, v in seen.items()}
     known = sorted((p, i) for i, p in start.items())
     out = {}
     for k, (p, i) in enumerate(known):

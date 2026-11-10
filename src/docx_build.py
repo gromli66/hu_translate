@@ -2431,8 +2431,10 @@ class Builder:
         return lines
 
     def _zone_text(self, p, txt, bold, page_tok, page_marked=False):
-        """Текст ячейки колонтитула: «N/NN» → PAGE/NUMPAGES (штамп UTS), число листа из колонтитула оригинала
-        («85. oldal», docx_struct._typical_page) → PAGE в переводе на том же месте; прочее — перевод."""
+        """Текст ячейки колонтитула: «N/NN» → PAGE/NUMPAGES (штамп UTS: счётчика нет вовсе), номер листа, помеченный
+        решателем (PAGE_MARK: docx_struct.layout, docx_layout.layout) → PAGE в переводе на том же месте; прочее —
+        перевод. Число без метки — текст (E9b-S Z11: ветка «первое такое число перевода — PAGE» снята, метку ставят
+        все виды)."""
         m = re.match(r"^(.*?)(\d+)\s*/\s*(\d+)\s*$", txt)
         # «число/число» — поле, только если счётчик листа в документе не нашёлся вовсе (штамп UTS); найден — номер
         # приходит меткой (ниже), а «1/1» титулов 30RL2126GT, 30RR0102ÁTJGT — текст: полем печаталось «1/<листов
@@ -2455,7 +2457,7 @@ class Builder:
             mm = (ms[k] if len(ms) == len(num.findall(txt)) else ms[-1]) if ms else None
         else:
             ru = (self.tr(txt) or getattr(self.tr, "zone", lambda t: None)(txt) or txt) if txt else ""
-            mm = num.search(ru) if num and num.search(txt) and not page_marked else None
+            mm = None
         if mm:
             r = p.add_run(ru[:mm.start()]); r.bold = bold
             cont = getattr(self, "_cont", None)             # продолжение листа-раздела: «N … (прод.)» текстом
@@ -3337,7 +3339,12 @@ def blocks_layout(pdf, segs, mode):
     blocks, _ = docx_struct.load(str(pdf))
     blocks = docx_struct.compose_figures(blocks, str(pdf))   # не в load: load зовёт и coverage при извлечении
     docx_struct.list_geo(blocks)
-    return blocks, dict(docx_struct.layout(str(pdf), blocks), sizes=True)    # кегль — из знаков PDF, точный
+    L = dict(docx_struct.layout(str(pdf), blocks), sizes=True)    # кегль — из знаков PDF, точный
+    # путь А и у размеченного (E9b-S Z9): номер листа оригинала известен или есть серии — лист — свой раздел, таблица и
+    # перечень режутся на границе листа, как у текстового слоя
+    if L.get("sheet_no") or L.get("variants"):
+        blocks = docx_struct.split_at_zones(blocks, L.get("variants"), docx_struct.sheet_closed(L, blocks))
+    return blocks, L
 
 
 def job_memory(segs, res):

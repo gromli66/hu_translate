@@ -639,8 +639,8 @@ def test_front_matter_section_and_page_numbers_restart(tmp_path):
     blocks = [p("ÜZEMELTETÉSI FELTÉTELEK", 1, 300), p("Módosítás Nyilvántartás", 2, 100), p("Bevezetés", 3, 100)]
     mem = B.Memory([("ÜZEMELTETÉSI FELTÉTELEK", "ПРЕДЕЛЫ"), ("Módosítás Nyilvántartás", "Лист изменений"),
                     ("Bevezetés", "Введение"), ("Tartalomjegyzék", "Содержание"), ("85. oldal", "Страница 85")])
-    L = dict(LAYOUT, stamp=[{"cells": ["85. oldal"], "bold": False}], stamp_widths=[400], stamp_aligns=["right"],
-             page_tok="85.", num_start={"page": 3, "value": 1},
+    L = dict(LAYOUT, stamp=[{"cells": [D.PAGE_MARK * 2 + ". oldal"], "bold": False}], stamp_widths=[400],
+             stamp_aligns=["right"], page_tok="85.", page_marked=True, num_start={"page": 3, "value": 1},
              front={"to": 2, "stamp": [{"cells": ["Tartalomjegyzék"], "bold": False}], "stamp_widths": [400],
                     "stamp_aligns": ["center"], "stamp_box": True, "stamp_inner": False})
     out = tmp_path / "f.docx"
