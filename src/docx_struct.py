@@ -456,7 +456,12 @@ def sub_rows(bs):
                 for t in hit:
                     if not near(t, tops):
                         tops = sorted(tops + [t])
-            if not pair or len(tops or []) < 2:
+            # ряд без меток режется по отметкам, только если у каждой отметки своя строка в паре: старая нарезка клеила
+            # коды в строку («30RZ31S201 zárva 30RZ31S202 zárva 30RZ31S203 zárva»), а «O» у каждого кода своя — подстрока
+            # строки росла на высоту стопки «O» (30RVRXTSBIGT_TU 4.2.3.2: 27 → 28 листов, печать 10.11); тогда — как прежде
+            many = not labels and marks and pair and sum(len(full[ci]) for ci in marks) > len(
+                [y for x in full[pair[0]] for y in _flat_paras(x) if y["k"] == "p"])
+            if not pair or len(tops or []) < 2 or many:
                 rows.append(r)
                 continue
             cut = labels + pair + [ci for ci in marks if ci not in labels + pair]
