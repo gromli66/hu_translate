@@ -1524,19 +1524,28 @@ class Builder:
             b.append(_el(f"w:{side}", w__val="single", w__sz=4, w__space=0, w__color=color))
         _tblpr_put(t, b)
 
-    def _cell_margins(self, t, fr):
+    def _cell_margins(self, t, fr, sub=False):
         """Ф11: поля ячеек по оригиналу: сверху и снизу — по таблице (до текста за вычетом межстрочного зазора шрифта),
-        слева и справа — обычные для документа (у таблицы с числами вправо левый зазор шире поля, даты переносились)."""
+        слева и справа — обычные для документа (у таблицы с числами вправо левый зазор шире поля, даты переносились).
+        sub — в таблице есть подстроки (c["cut"]: docx_struct.sub_rows, docx_layout._table_block): поля сверху и снизу —
+        нулевые, их значения (pt) возвращаются — отбивкой абзацев у настоящих границ ряда (table): LibreOffice поля
+        ячейки сверху и снизу (tcMar) не берёт, только таблицы — подстроки печатались с полями таблицы, 30RVRXTSBIGT_TU
+        27 → 31 листа (печать 10.11; с нулевыми полями таблицы — 26)."""
         tp = self.P.get("table") or {}
         m = _el("w:tblCellMar")
+        got = {}
         for side, key, cut in (("top", "pad_top", 2.0), ("left", "pad_left", 0), ("bottom", "pad_bottom", 2.0),
                                ("right", "pad_left", 0)):
             own = fr.get(key) if side in ("top", "bottom") else None
             v = own if own is not None and own < 12 else tp.get(key)
             if v is None:
                 continue
-            m.append(_el(f"w:{side}", w__w=max(0, round((v - cut) * 20)), w__type="dxa"))
+            w = max(0, round((v - cut) * 20))
+            if sub and side in ("top", "bottom"):
+                got[side], w = w / 20, 0
+            m.append(_el(f"w:{side}", w__w=w, w__type="dxa"))
         _tblpr_put(t, m)
+        return got
 
     def table(self, b, tgt=None):
         from docx.shared import Pt
@@ -1558,8 +1567,9 @@ class Builder:
                 self._no_borders(t)
             elif fr.get("line") and fr["line"] != "000000":
                 self._borders(t, fr["line"])
-            self._cell_margins(t, fr)
-        else:
+        # подстроки ряда (c["cut"]) — поля сверху и снизу отбивкой абзацев у настоящих границ ряда (_cell_margins)
+        rim = self._cell_margins(t, fr, sub=any(c.get("cut") for r in rows for c in r)) if b.get("borders", True) else {}
+        if not b.get("borders", True):
             self._no_borders(t)
         sizes = Counter(round(p["geom"]["size"]) for r in rows for c in r for p in c["blocks"] if p.get("geom"))
         small = bool(sizes) and sizes.most_common(1)[0][0] <= 9
@@ -1742,9 +1752,14 @@ class Builder:
             for g in ends:
                 grp = [q for q in ends if abs(q["x1"] - g["x1"]) <= 1.5]
                 mids = [(q["x0"] + q["x1"]) / 2 for q in grp]
+                x0s, x1s = [q["x0"] for q in grp], [q["x1"] for q in grp]
+                # коды почти одной ширины (EPM 30PR132GT л. 35: правые края — 444,7 у всех, левые — 390,5…394) середины
+                # разводят меньше чем на 10 pt; по центру разошлись бы на ту же величину и правые края, вправо — только
+                # левые (п. 11 просмотра DOCX 06.11; E9b-R)
+                right = max(x1s) - min(x1s) <= 0.5 and max(x0s) - min(x0s) >= 1.5 and len({round(x) for x in x0s}) >= 3
                 # и не меньше трёх разных начал: шапка «Megnevezés» по центру и два «A 203/3» одной ширины сходились
                 # правым краем в 1 pt (30PR132GT л. 25, 30)
-                if len(grp) >= 3 and max(mids) - min(mids) >= 10 and len({round(q["x0"] / 3) for q in grp}) >= 3:
+                if len(grp) >= 3 and (right or max(mids) - min(mids) >= 10 and len({round(x / 3) for x in x0s}) >= 3):
                     flush.update(id(q) for q in grp)
         for ri, row in enumerate(rows):
             if all("span" in c for c in row):               # ячейки по сетке линий (docx_layout) — места известны
@@ -1776,7 +1791,10 @@ class Builder:
             # высокая строка (больше трети поля тела по линиям оригинала) тоже рвётся: русский текст длиннее, строка не
             # помещалась после заголовка таблицы и уходила на следующий лист целиком (3PR10, листы 5–6, 28.10)
             tall_row = bool(row_cap) and len(row_ys) == len(rows) + 1 and row_ys[ri + 1] - row_ys[ri] > 0.35 * (row_cap + 60)
-            if size < 600 and not tall_row and not any("img" in r for c in row for x in c["blocks"] if x["k"] == "p" for r in x["runs"]):
+            # подстрока ряда (c["cut"]: sub_rows, полосы) — тоже: ряд оригинала лист рвал, а высокая неразрывная подстрока
+            # уходила на следующий лист целиком, низ листа пустел (30RVRXTSBIGT_TU 4.2.2.3: 27 → 28 листов, печать 10.11)
+            if size < 600 and not tall_row and not any(c.get("cut") for c in row) \
+                    and not any("img" in r for c in row for x in c["blocks"] if x["k"] == "p" for r in x["runs"]):
                 _trpr_put(t.rows[ri]._tr, _el("w:cantSplit"))
             # пустая строка (графы для подписей листов ознакомления ИН-1065) — не ниже, чем в оригинале: без текста
             # она схлопывалась в 6 pt, лист ознакомления выходил вдвое короче (19.10); высота — по линиям таблицы
@@ -1810,6 +1828,11 @@ class Builder:
                     else self._tab_base
                 if own_edges:
                     self._cell_borders(dc, cell["edges"], fr.get("line") or "000000")
+                elif cell.get("cut") and b.get("borders", True):
+                    # подстрока ряда в сетке Table Grid (у ячеек нет своих линий) — без линий по сторонам разреза: линия
+                    # под каждой строкой пункта (30RA+SGT TU 4.1.x, печать 10.11; в оригинале внутри пункта линий нет)
+                    self._cell_borders(dc, {s: s not in cell["cut"] for s in ("top", "bottom", "left", "right")},
+                                       fr.get("line") or "000000")
                 if cell.get("vcont"):                       # продолжение ячейки сверху (docx_struct.sub_rows)
                     continue
                 first = dc.paragraphs[0]
@@ -1835,10 +1858,12 @@ class Builder:
                     "top") is not None]
                 sheet_cell = bool(gs and self.L) and max(q["bottom"] for q in gs) - min(q["top"] for q in gs) \
                     >= 0.5 * self.L["H"]
-                prev_g = None
+                prev_g, listed = None, False
                 for x in cell["blocks"]:
                     if x["k"] == "list":
-                        self.list_(x, 0, dc); continue
+                        self.list_(x, 0, dc)
+                        listed = True
+                        continue
                     if x["k"] == "table":
                         # таблица в ячейке (листовка из Word свёрстана таблицей в таблице) — вложенной таблицей; раньше
                         # пропускалась вместе с текстом (№09 партии 2: 94 % слов, 22.10)
@@ -1849,7 +1874,11 @@ class Builder:
                         continue
                     if x["k"] != "p" or not x["runs"]:
                         continue
-                    if not used:
+                    # пустой начальный абзац ячейки стоит выше всего — абзац после списка в него нельзя: «Ha nem állnak…»
+                    # вставал над пунктом «− Az RVR …» своей подстроки (30RVRXTSBIGT_TU 1.15, печать 10.11); признак —
+                    # список в этой ячейке, а не число абзацев: у ячейки, объединённой с верхней, абзацы есть и так, и
+                    # начальный (текст ряда выше) потом удалялся как пустой (ÜFK I л. 147: −133 знака)
+                    if not used and not listed:
                         first.style = self.doc.styles[style]
                         if all("img" in r for r in x["runs"]):
                             for r in x["runs"]:
@@ -1926,8 +1955,15 @@ class Builder:
                     dc._tc.get_or_add_tcPr().append(_el("w:shd", w__val="clear", w__color="auto", w__fill=fill))
                 if cell.get("valign"):                              # отметка против нижней строки (docx_layout)
                     dc._tc.get_or_add_tcPr().append(_el("w:vAlign", w__val=cell["valign"]))
-                if cell.get("pad") and dc.paragraphs:               # зазор до следующей полосы (docx_layout)
-                    dc.paragraphs[-1].paragraph_format.space_after = Pt(cell["pad"])
+                # зазор до следующей полосы (docx_layout, docx_struct.sub_rows); в таблице с подстроками поля сверху и
+                # снизу — отбивкой у настоящих границ ряда, по сторонам разреза (c["cut"]) — ничего (_cell_margins)
+                cut = cell.get("cut") or ()
+                after = (cell.get("pad") or 0) + (rim.get("bottom", 0) if "bottom" not in cut else 0)
+                if after and dc.paragraphs:
+                    dc.paragraphs[-1].paragraph_format.space_after = Pt(after)
+                if rim.get("top") and "top" not in cut and dc.paragraphs:
+                    pf0 = dc.paragraphs[0].paragraph_format
+                    pf0.space_before = Pt((pf0.space_before.pt if pf0.space_before else 0) + rim["top"])
                 if tight is not None:                               # узкие поля ячейки — слово влезло целиком (см. выше)
                     tcpr = dc._tc.get_or_add_tcPr()
                     mar_el = _el("w:tcMar")

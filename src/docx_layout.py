@@ -465,14 +465,7 @@ def _rules(drawings):
     return _merge(hs), _merge(vs)
 
 
-def _cluster(vals, tol=2.0):
-    out = []
-    for v in sorted(vals):
-        if out and v - out[-1][-1] <= tol:
-            out[-1].append(v)
-        else:
-            out.append([v])
-    return [sum(g) / len(g) for g in out]
+_cluster = RW.cluster                                      # одно определение (rows, E9b-R R7)
 
 
 def _tables(hs, vs):
@@ -711,6 +704,24 @@ def _runs_of(group, bold, font, size, mono, right=None):
     return runs
 
 
+def _seg_frags(segs, size):
+    """Куски строк сегментов ({t, bbox, size}) — вход rows.Rows."""
+    return [{"t": s["text"], "bbox": tuple(f[:4]), "size": s["loc"].get("size") or size}
+            for s in segs for f in (s["loc"].get("frags") or [s["loc"]["bbox"]])]
+
+
+def _band_anchors(groups, size, rw):
+    """Якорь полосы (_table_block) для каждой строки ячейки groups = [(столбец, сегменты строки)] — якорь rows.Rows (по
+    кускам строк таблицы, rw; E9b-R R6): номер пункта или код (rows.is_anchor) в столбце, где такие куски преобладают, — и
+    в первом столбце: якорь Rows делит строки справа от себя, а полоса режет всю строку сетки, и ячейки левее якоря тоже
+    (код «30UJ57S201» в третьем столбце 3FI18 отрывал от ряда его «Tüzivíz gömbcsap hajtás» слева, пустые ряды).
+    Прежде своё правило — patterns.ROW_ANCHOR: «YA-K7 ⇥ …» (3PR10) не якоря — условия шли стопкой мимо своих кодов; «0.»
+    под шапкой «Módosítás sorszáma» (листы изменений) — якорь: полоса резалась на 2 pt выше даты рядом, пустой ряд."""
+    own = set(rw.anchors)
+    return [ci == 0 and tuple((group[0]["loc"].get("frags") or [group[0]["loc"]["bbox"]])[0][:4]) in own
+            for ci, group in groups]
+
+
 def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields=(), subs=()):
     """Блок таблицы (как у docx_struct): ячейки — по сетке, текст ячейки — сегменты с центром в ней, картинки
     (подпись от руки в форме) — в ячейку своего центра, после текста; subs — [(рамка, блок)] вложенных таблиц (_nested):
@@ -751,9 +762,10 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields
     # отметки съезжали друг относительно друга (31RDGT л. 1, 20.10), «Tevékenység | Állapot» — столбцами-стопками,
     # значение уезжало от своего кода (3SZ23, 3PR10, аудит 30.10). Полоса с текстом одной ячейки, у которой текст был
     # и в полосе выше, — продолжение той строки (рядом ничего, резать нечего); линий между подстроками нет.
-    # Метка пункта или код оборудования в первом столбце («1.1.», «31UJ21S601») — всегда своя полоса, даже если её
+    # Якорь ряда (номер пункта, код оборудования — _band_anchors, как при нарезке) — всегда своя полоса, даже если её
     # задел чужой абзац: значения столбца, слитые нарезкой в абзац на пять строк (3SZ23 INFO «-3,6 m … 9,6 m»),
     # склеивали все строки таблицы в одну — коды и места разъезжались; такой абзац — в полосу своей середины
+    rw = RW.Rows(_seg_frags([s for ss in put.values() for s in ss], size), ())
     bands = []
     for r, cells in enumerate(grid):
         # края абзаца — по «чернилам»: середина первой (последней) строки ∓ 0,4 кегля, а не рамка: рамка моноширинной
@@ -766,26 +778,26 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields
             sz = g["loc"].get("size") or (f[3] - f[1]) / 1.2
             mid = (f[1] + f[3]) / 2
             return min(mid - 0.4 * sz, f[1] + 0.5 * sz) if top else max(mid + 0.4 * sz, f[3] - 0.5 * sz)
-        spans = sorted((min(ink(g, True) for g in group), max(ink(g, False) for g in group), ci,
-                        ci == 0 and bool(PT.ROW_ANCHOR.fullmatch(" ".join(g["text"] for g in group).strip())))
-                       for ci in range(len(cells)) for group in _lines(sorted(
-                           put.get((r, ci), []), key=lambda s: (round(s["loc"]["bbox"][1] / 3), s["loc"]["bbox"][0]))))
-        strips = []                                             # [верх, низ, {ячейки}, метка]
-        for a, z, ci, anchor in spans:
-            # метка — своя полоса, если чужой абзац начался выше на полстроки метки, а не на 2 pt: по «чернилам»
-            # значок «□» кеглем 18 в той же строке начинается на 2,15 pt выше кода кеглем 12, и каждая строка
-            # сетки резалась на пустую полосу и строку с текстом (30KBFSZBIGT: 26 строк → 48, листы 9 → 11)
-            if strips and a < strips[-1][1] - 2 and not (anchor and a > strips[-1][0] + max(2.0, 0.5 * (z - a))):
-                strips[-1][1] = max(strips[-1][1], z)
-                strips[-1][2].add(ci)
-            else:
-                strips.append([a, z, {ci}, anchor])
-        strips = [s for k, s in enumerate(strips) if s[3] or not (k and len(s[2]) == 1 and s[2] <= strips[k - 1][2])]
+        groups = [(ci, group) for ci in range(len(cells)) for group in _lines(sorted(
+            put.get((r, ci), []), key=lambda s: (round(s["loc"]["bbox"][1] / 3), s["loc"]["bbox"][0])))]
+        spans = sorted((min(ink(g, True) for g in group), max(ink(g, False) for g in group), ci, anchor)
+                       for (ci, group), anchor in zip(groups, _band_anchors(groups, size, rw)))
+        strips = RW.bands(spans)                                # [верх, низ, {ячейки}, якорь] (rows.bands)
         if len(cells) >= 2 and len(strips) >= 2:
             # низ последней строки сетки — по тексту: рамка листа тянет её до низа листа, и подстрока с такой
             # наименьшей высотой не делилась на листы LibreOffice — уходила на следующий, полстраницы пусто (3SZ23)
             end = min(ys[r + 1], max(s[1] for s in strips) + 4) if r == len(grid) - 1 else ys[r + 1]
             cuts = [ys[r]] + [s[0] - 2 for s in strips[1:] if s[0] - 2 > ys[r] + 1] + [end]
+            # полоса без текста — не ряд: якорь ниже начала абзаца соседней ячейки, абзац уходит в полосу своей
+            # середины, а над якорем вставал пустой ряд («@0YATBEATL», 01-02FMP0BIGT л. 24; «0.» листов изменений)
+            mids = [(s["loc"]["bbox"][1] + s["loc"]["bbox"][3]) / 2 for ci in range(len(cells))
+                    for s in put.get((r, ci), [])] + [rect.y0 for ci in range(len(cells)) for rect, _ in inner.get((r, ci), [])]
+            k = 0
+            while len(cuts) > 2 and k < len(cuts) - 1:
+                if any(cuts[k] <= m < cuts[k + 1] or k == len(cuts) - 2 and m >= cuts[k + 1] for m in mids):
+                    k += 1
+                else:
+                    del cuts[k + 1 if k < len(cuts) - 2 else k]
             for k in range(len(cuts) - 1):
                 bands.append((r, cuts[k], cuts[k + 1], k == 0, k == len(cuts) - 2))
         else:
@@ -828,7 +840,11 @@ def _table_block(t, segs, pno, bold, font, size, mono, imgs=(), pua=None, fields
                           "first_x0": rect.x0, "size": size, "lines": 1}
                     geom = gs if geom is None else dict(geom, top=min(geom["top"], rect.y0), bottom=max(
                         geom["bottom"], rect.y1), x0=min(geom["x0"], rect.x0), x1=max(geom["x1"], rect.x1))
-            row.append({"blocks": paras, "th": False, "geom": geom, "edges": e, "span": z - a})
+            # строка сетки одна: у полосы нет полей ячейки по сторонам разреза (c["cut"], как подстроки
+            # docx_struct.sub_rows; docx_build — tcMar 0), зазор до следующей — pad ниже
+            cut = [side for side, on in (("top", not first), ("bottom", not last)) if on]
+            row.append({"blocks": paras, "th": False, "geom": geom, "edges": e, "span": z - a,
+                        **({"cut": cut} if cut else {})})
         # отметка («O», «□») против нижней строки многострочного абзаца соседней ячейки (перечень кодов 4.1.1
         # 30TKBSZ36BIGT): полоса абзац не рвёт — ячейка отметки по низу, как в оригинале, а не вверху (аудит 30.10)
         span = [(c["geom"]["top"], c["geom"]["bottom"]) for c in row if c.get("geom")]
@@ -875,8 +891,8 @@ def _grids(items, bold, font, size, mono, sign=None):
     """Сетка без линеек — таблицей без рамок: подряд от трёх строк из нескольких коротких кусков, куски которых встают в
     общие столбцы (перечень кодов 3PR42 л. 112: «04.TH10D001 ⇥ KM1/1 ⇥ 02.TK42D001 ⇥ …» в шесть столбцов). Строкой с
     табуляцией по месту оригинала последний столбец не влезал и переносился (кегль сборки крупнее), 17.10. Строка
-    оглавления (в конце — номер листа) — не сетка. sign(строка) — знак маркера пункта (тот же факт, что у роли строки)."""
-    from layout import code_line
+    оглавления (в конце — номер листа) — не сетка. sign(строка) — знак маркера пункта (тот же факт, что у роли строки).
+    Столбцы сетки — rows.grid_columns (E9b-R R7); здесь — таблица из них."""
 
     def row_ok(it):
         g = it[2]
@@ -893,14 +909,9 @@ def _grids(items, bold, font, size, mono, sign=None):
         while j < len(items) and row_ok(items[j]) and items[j][2][0]["page"] == items[i][2][0]["page"]:
             j += 1
         run = items[i:j] if j - i >= 3 else []
-        # столбец — края в пределах 20 pt (код «30BY07» под «04.TH10D001» сдвинут на 15 pt — тот же столбец)
-        cols = _cluster([x["loc"]["bbox"][0] for it in run for x in it[2]], 20) if run else []
-        col = lambda x: min(range(len(cols)), key=lambda k: abs(cols[k] - x["loc"]["bbox"][0]))
-        good = run and 2 <= len(cols) <= 8 and all(
-            len({col(x) for x in it[2]}) == len(it[2]) and all(abs(cols[col(x)] - x["loc"]["bbox"][0]) <= 20 for x in it[2])
-            for it in run) and all(sum(any(col(x) == k for x in it[2]) for it in run) >= 2 for k in range(len(cols))) \
-            and (len(cols) >= 3 or all(code_line(x["text"]) for it in run for x in it[2]))   # «подпись ⇥ текст» — не сетка
-        if not good:
+        cols = RW.grid_columns([[(x["loc"]["bbox"][0], x["text"]) for x in it[2]] for it in run]) if run else []
+        col = lambda x: RW.column_of(cols, x["loc"]["bbox"][0])
+        if not cols:
             out.append(items[i])
             i += 1
             continue

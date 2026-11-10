@@ -22,6 +22,8 @@ from collections import Counter
 import geom as GM
 import patterns as PT
 import sids as SIDS
+import rows as RW
+from rows import FORM_MARK, bands
 
 HEAD = {"H1": 1, "H2": 2, "H3": 3, "H4": 4, "H5": 5, "H6": 6}
 SKIP = {"Artifact"}
@@ -307,29 +309,6 @@ def _hanging_tab(chars):
             if abs(float(b["x0"]) - x) < 1.5 and float(b["x0"]) - float(a["x1"]) > 0.5 * float(a["size"])}
 
 
-def _tail_pairs(last, r):
-    """Хвост строки last на новом листе (см. _cut_rows) → [(столбец в last, ячейка хвоста)] или []."""
-    cell_t = lambda c: " ".join(text_of(x["runs"]) for x in c.get("blocks", []) if x["k"] == "p").strip()
-    page = lambda row: next((c["geom"]["page"] for c in row if c.get("geom")), None)
-    if not (last and r and len(r) <= len(last) and (page(r) or 0) > (page(last) or 0)) \
-            or any((c.get("attrs") or {}).get("ColSpan") for c in r):
-        return []
-    # продолжение списка: ячейка выше кончается списком, хвост начат списком («– MOD …» | «– ADD …», JPDS табл. 15)
-    lists = lambda d, c: bool(d.get("blocks") and c.get("blocks")) and d["blocks"][-1]["k"] == "list" \
-        and c["blocks"][0]["k"] == "list"
-    pairs = []
-    for c in r:
-        g = c.get("geom")
-        j = next((j for j, d in enumerate(last) if g and d.get("geom") and abs(d["geom"]["x0"] - g["x0"]) < 3), None)
-        t = cell_t(c)
-        # продолжение фразы — со строчной: «ячейка выше без точки» не годится — у шапок точек нет, и строка «1 | …»
-        # нового листа уходила в шапку (синтетика, 16.10)
-        if j is None or t and not t[0].islower() and not lists(last[j], c):
-            return []
-        pairs.append((j, c))
-    return pairs if any(cell_t(c) or lists(last[j], c) for j, c in pairs) else []
-
-
 def _cut_rows(rows):
     """Строка, разрезанная листом: Word переносит её хвост на следующий лист отдельной строкой — только с теми
     ячейками, где текст продолжается (шапка таблицы, начатая внизу листа: «…уровень» | «необходимо контроль» на
@@ -339,7 +318,7 @@ def _cut_rows(rows):
     out, glued = [], -1
     for r in rows:
         last = out[-1] if out else None
-        pairs = _tail_pairs(last, r) if last and glued != len(out) - 1 else []
+        pairs = RW.tail_pairs(last, r, text_of) if last and glued != len(out) - 1 else []
         if not pairs:
             out.append(r)
             continue
@@ -431,9 +410,14 @@ def sub_rows(bs):
     метки вставали стопкой вверху ячейки и уезжали от своих пунктов (а в переводе длина пунктов другая — отбивкой не
     выровнять, 19.10). Режутся ячейки-метки (короткие абзацы с пустыми между ними) и ячейка-пара, у которой абзацы
     начинаются на тех же высотах; прочие ячейки строки — одной ячейкой на все подстроки (c["vcont"] — продолжение
-    сверху). Линий между подстроками нет."""
+    сверху). Линий между подстроками нет.
+    Отметки бланка (rows.FORM_MARK: «O», «□») — справа от своих строк: ячейка отметок в Word одна на весь ряд, «O»
+    выровнены пустыми абзацами против строк пункта. Она была «прочей» — все «O» вставали стопкой в первую подстроку
+    (TU «Пакш»: п. 11 просмотра DOCX 06.11, SEG_QUALITY п. 3). Отметка на высоте абзаца пары — своя подстрока, ячейка
+    отметок режется вместе с парой; пара без меток — ячейка слева от отметок, чьи абзацы начаты на их высотах."""
     blank = lambda x: x["k"] == "p" and not text_of(x.get("runs") or []).strip()
     top = lambda x: (x.get("geom") or {}).get("top")
+    near = lambda t, ts: any(abs(t - u) < 2 for u in ts)
     for b in bs:
         for it in b.get("items") or []:
             sub_rows(it)
@@ -441,13 +425,15 @@ def sub_rows(bs):
             continue
         rows = []
         for r in b["rows"]:
+            full = [[x for x in c.get("blocks") or [] if not blank(x)] for c in r]
+            marks = [ci for ci, f in enumerate(full) if len(f) >= 2 and all(
+                x["k"] == "p" and top(x) is not None and FORM_MARK.match(text_of(x["runs"]).strip()) for x in f)]
             labels, tops = [], None
             for ci, c in enumerate(r):
                 bl = c.get("blocks") or []
-                full = [x for x in bl if not blank(x)]
-                if len(full) >= 2 and len(full) < len(bl) and all(x["k"] == "p" and top(x) is not None
-                                                                  and len(text_of(x["runs"]).strip()) <= 20 for x in full):
-                    ts = [top(x) for x in full]
+                if ci not in marks and len(full[ci]) >= 2 and len(full[ci]) < len(bl) and all(
+                        x["k"] == "p" and top(x) is not None and len(text_of(x["runs"]).strip()) <= 20 for x in full[ci]):
+                    ts = [top(x) for x in full[ci]]
                     if tops is None or len(ts) == len(tops) and all(abs(a - z) < 2 for a, z in zip(ts, tops)):
                         labels.append(ci)
                         tops = tops or ts
@@ -456,10 +442,42 @@ def sub_rows(bs):
             pair = [ci for ci, c in enumerate(r) if labels and ci == labels[0] + 1 and ci not in labels
                     and all(any(top(x) is not None and abs(top(x) - t) < 2 for x in c.get("blocks") or [] if not blank(x))
                             for t in tops)]
-            if not labels or not pair:
+            if not labels and marks:                    # пара отметок — ближайшая (слева, потом справа) ячейка с абзацами
+                pair = [next((ci for ci in sorted(range(len(r)), key=lambda k: (abs(k - marks[0]), k > marks[0]))
+                              if ci not in marks and any(
+                    y["k"] == "p" and top(y) is not None and near(top(y), [top(m) for m in full[marks[0]]])
+                    for x in full[ci] for y in _flat_paras(x))), None)]  # на их высотах (и пункты списков)
+                pair, tops = ([], None) if pair[0] is None else (pair, [])
+            if marks and pair:
+                at = [top(y) for x in full[pair[0]] for y in _flat_paras(x) if y["k"] == "p" and top(y) is not None]
+                hit = sorted({top(m) for ci in marks for m in full[ci] if near(top(m), at)})
+                if not labels and hit and at and min(at) < hit[0] - 2:
+                    hit = [min(at)] + hit               # текст пары выше первой отметки — своя первая подстрока
+                for t in hit:
+                    if not near(t, tops):
+                        tops = sorted(tops + [t])
+            # ряд без меток режется по отметкам, только если у каждой отметки своя строка в паре: старая нарезка клеила
+            # коды в строку («30RZ31S201 zárva 30RZ31S202 zárva 30RZ31S203 zárva»), а «O» у каждого кода своя — подстрока
+            # строки росла на высоту стопки «O» (30RVRXTSBIGT_TU 4.2.3.2: 27 → 28 листов, печать 10.11); тогда — как прежде
+            many = not labels and marks and pair and sum(len(full[ci]) for ci in marks) > len(
+                [y for x in full[pair[0]] for y in _flat_paras(x) if y["k"] == "p"])
+            if not pair or len(tops or []) < 2 or many:
                 rows.append(r)
                 continue
-            cut = labels + pair
+            cut = labels + pair + [ci for ci in marks if ci not in labels + pair]
+            # места разреза — полосы, как у _table_block (rows.bands, E9b-R R2): якоря — метки. Прежде — верхи
+            # меток и отметок с допуском 2 pt: «□» на 2,2 pt выше своей строки оставалась в подстроке выше (30RA+SGT TU),
+            # отметка на 2,4 pt ниже метки давала подстроку в 2,4 pt (31SDTÖMGT TU); текст ячейки-пары над первой меткой
+            # (заголовок раздела) стоял в одной подстроке с ней. Отметка — не якорь: своя полоса ей — только по своей
+            # строке; якорем каждая «○» без строки становилась подстрокой (три «○» строки кодов 4.2.3.2 — три подстроки,
+            # 30RVRXTSBIGT_TU 27 → 28 листов, печать 10.11)
+            # абзацы ячеек — и пункты списков: «O» против пунктов «− 30EV …» (30RVRXTSBIGT_TU 1.15) — свои подстроки
+            spans = sorted((top(y), (y.get("geom") or {}).get("bottom") or top(y) + 10, ci, ci in labels)
+                           for ci in cut for x in full[ci] for y in _flat_paras(x) if y["k"] == "p" and top(y) is not None)
+            tops = [q[0] for q in bands(spans)]
+            if len(tops) < 2:
+                rows.append(r)
+                continue
             n = len(tops)
 
             def share(c):
@@ -467,23 +485,43 @@ def sub_rows(bs):
                 предыдущим. Список («− 30YP15S101 zárva …» ячейки пп. 1.16–1.17 TU) своего верха не имеет, и отбор по
                 верху его выбрасывал: текст пропадал из DOCX (30RVRXTSBIGT_TU и ещё 3 документа, 30.10)."""
                 got, k = [[] for _ in range(n)], 0
+                at = lambda t: max(i for i in range(n) if i == 0 or t >= tops[i] - 2)
                 for x in c["blocks"]:
                     if blank(x):
                         continue
+                    if x["k"] == "list":                # список — по пунктам: пункт в подстроке своего верха
+                        parts = {}
+                        for it in x["items"]:
+                            t = next((q[1] for q in (_pos(y) for y in it) if q), None)
+                            k = at(t) if t is not None else k
+                            parts.setdefault(k, []).append(it)
+                        for kk, its in parts.items():
+                            got[kk].append(dict(x, items=its))
+                        continue
                     t = top(x) if x["k"] == "p" else (_pos(x) or (None, None))[1]
                     if t is not None:
-                        k = max(i for i in range(n) if i == 0 or t >= tops[i] - 2)
+                        k = at(t)
                     got[k].append(x)
                 return got
             parts = {ci: share(r[ci]) for ci in cut}
             edge = lambda c, k: dict(c.get("edges") or {}, **({"top": False} if k else {}),
                                      **({"bottom": False} if k < n - 1 else {}))
             for k in range(n):
+                # ряд оригинала один: внутри него у подстроки нет полей ячейки (c["cut"] — стороны разреза, docx_build),
+                # зазор до следующей подстроки — как в оригинале, не больше строки текста (как полосы
+                # docx_layout._table_block). С полями таблицы (TU: 6,7 + 10,2 pt) строка кода с «O» выходила втрое
+                # выше оригинала: 30RVRXTSBIGT_TU 27 → 32 листа (R2а, 09.11)
+                gs = [x["geom"] for ci in cut for x in parts[ci][k] if x["k"] == "p" and (x.get("geom") or {}).get("bottom")]
+                gap = tops[k + 1] - max(g["bottom"] for g in gs) if gs and k < n - 1 else 0
+                line = min((g["bottom"] - g["top"]) / max(g.get("lines") or 1, 1) for g in gs) if gs else 0
+                side = {"cut": [s for s, on in (("top", k > 0), ("bottom", k < n - 1)) if on],
+                        **({"pad": round(min(gap, line), 1)} if gap >= 2 else {})}
                 row = []
                 for ci, c in enumerate(r):
                     if ci in cut:
                         g = dict(c.get("geom") or {}, top=tops[k]) if c.get("geom") else None
-                        row.append(dict(c, blocks=parts[ci][k], geom=g, **({"edges": edge(c, k)} if "edges" in c else {})))
+                        row.append(dict(c, blocks=parts[ci][k], geom=g, **side,
+                                        **({"edges": edge(c, k)} if "edges" in c else {})))
                     elif k == 0:
                         row.append(dict(c, **({"edges": edge(c, 0)} if "edges" in c else {})))
                     else:
@@ -494,50 +532,12 @@ def sub_rows(bs):
     return bs
 
 
-def _xs(t):
-    """Рамка столбцов таблицы (frame.xs): линии листа (docx_layout, row_lines), вертикали размеченного PDF (docx_struct),
-    сетка выравнивания (docx_layout._grids); нет — пусто."""
-    return (t.get("frame") or {}).get("xs") or []
-
-
-def _same_cols(a, b, tol=3.0):
-    """Две таблицы с рамкой столбцов — с теми же столбцами (на тех же местах: выравнивание столбцов склеенной таблицы
-    голосует по рамке первой части, docx_build._col_align): лист 2, начатый другой таблицей с тем же числом столбцов, —
-    не продолжение (ред-тим 20.10). Таблица без рамки столбцов — не проверяется. До E9.6 сравнивались только таблицы по
-    линиям листа (frame.row_lines): размеченный PDF и сетки выравнивания склеивались и с другой сеткой."""
-    xa, xb = _xs(a), _xs(b)
-    if not (xa and xb):
-        return True
-    return len(xa) == len(xb) and all(abs(p - q) <= tol for p, q in zip(xa, xb))
-
-
-def _other_grid(a, b):
-    """Таблицы с рамкой столбцов — с разным числом столбцов: это разные таблицы, даже если шапка повторена (30BOXFELTEL:
-    форма на 36 листов — таблицы по 10, 12, 18 столбцов с одной шапкой; склеенные, они делили сетку первой, и ширин не
-    было — столбцы поровну, описание в 40 pt, ячейка с галочкой на весь остаток). До E9.6 — только по линиям листа."""
-    xa, xb = _xs(a), _xs(b)
-    return bool(xa and xb and len(xa) != len(xb))
-
-
-def _last_page(t):
-    """Последний лист таблицы (склеенной из частей) — по листам её ячеек; без них — лист таблицы."""
-    return max((c["geom"]["page"] for r in t["rows"] for c in r if c.get("geom") and c["geom"].get("page")),
-               default=(t.get("geom") or {}).get("page", 0))
-
-
 def join_tables(bs):
     """Таблица, которую Word при экспорте разрезал по листам (продолжение — отдельная таблица сразу за ней, без шапки,
     с тем же числом столбцов, на следующем листе), — снова одна: в DOCX она переносится сама и повторяет шапку
     (UTS стр. 75–78: разрыв с пустой строкой и без шапки, 16.10). Продолжение, начатое повтором шапки (строки
     «Повторять как заголовок» Word печатает на каждом листе), — тоже она: повтор прочь (синтетика, 16.10)."""
     cell_t = lambda c: " ".join(text_of(x["runs"]) for x in c.get("blocks", []) if x["k"] == "p").strip()
-    row_t = lambda r: [cell_t(c) for c in r]
-
-    def head_n(t):                          # число строк-шапок в начале таблицы
-        n = 0
-        while n < len(t["rows"]) and all(c["th"] for c in t["rows"][n]):
-            n += 1
-        return n
     out = []
     for b in bs:
         if b["k"] == "list":
@@ -549,22 +549,9 @@ def join_tables(bs):
         if b["k"] == "p" and PT.CONT_MARK.fullmatch(text_of(b.get("runs") or [])):
             continue
         prev = out[-1] if out else None
-        rep = 0
-        if prev is not None and prev["k"] == "table" and b["k"] == "table" and prev["rows"] and b["rows"]:
-            n = head_n(b)
-            if n and n < len(b["rows"]) and n <= head_n(prev) \
-                    and [row_t(r) for r in b["rows"][:n]] == [row_t(r) for r in prev["rows"][:n]]                     and any(any(row_t(r)) for r in b["rows"][:n]):
-                rep = n                     # повтор шапки на новом листе
-            elif len(b["rows"]) > 1 and row_t(b["rows"][0]) == row_t(prev["rows"][0]) and all(row_t(b["rows"][0])):
-                rep = 1                     # шапка без TH (JPDS), дословный повтор первой строки
-        if prev is not None and prev["k"] == "table" and b["k"] == "table" and prev["rows"] and b["rows"] \
-                and (rep or not all(c["th"] for c in b["rows"][0]) or _tail_pairs(prev["rows"][-1], b["rows"][0])) \
-                and (rep or max(map(len, b["rows"])) == max(map(len, prev["rows"]))
-                     or _tail_pairs(prev["rows"][-1], b["rows"][0])) \
-                and ((rep and not _other_grid(prev, b)) or (not rep and _same_cols(prev, b))) \
-                and (b.get("geom") or {}).get("page", 0) > _last_page(prev):
-            # продолжение — на листе после ПОСЛЕДНЕГО листа уже склеенной таблицы (E9.6: по первому листу другая
-            # таблица на листе 2 приклеивалась к таблице листов 1–2)
+        tables = prev is not None and prev["k"] == "table" and b["k"] == "table" and prev["rows"] and b["rows"]
+        rep = RW.header_repeat(prev, b, text_of) if tables else 0
+        if tables and RW.continues(prev, b, rep, text_of):
             # пустые строки в конце части, после строк с текстом, — рамка бланка до низа листа (INFO 3PR10
             # «Hőcserélők»: 7 строк сведений и 9 пустых на каждом листе): в склеенной таблице они вставали посередине, а
             # пустые строки последней части уезжали хвостом на новый лист. Часть без текста в теле — пустой бланк (лист
@@ -574,7 +561,7 @@ def join_tables(bs):
             rows0, k = prev["rows"], len(prev["rows"])
             while k and blank(rows0[k - 1]):
                 k -= 1
-            if max(head_n(prev), prev.get("repeat_rows", 0), 1) < k < len(rows0):
+            if max(RW.head_rows(prev), prev.get("repeat_rows", 0), 1) < k < len(rows0):
                 fr = prev.get("frame") or {}
                 ys0 = fr.get("ys") or []
                 prev = dict(prev, rows=rows0[:k], **({"frame": dict(fr, ys=ys0[:k + 1])} if len(ys0) == len(rows0) + 1
@@ -793,6 +780,60 @@ def _flat_paras(b):
     return [y for it in b["items"] for x in it for y in _flat_paras(x)]
 
 
+def _text_grid(rows):
+    """Сетка таблицы разметки по тексту ячеек — одна для adopt и _cell_pictures (E9b-R R5: «точка листа → ячейка» была
+    написана дважды, с разными источниками). span[i] — (лист, верх, низ) текста ряда i на первом его листе: значки — не в
+    счёт (Word кладёт значки нескольких строк в первую ячейку продолжения таблицы, и они растягивали её строку на соседние,
+    JPDS табл. 65, 18.10); cols — {число ячеек ряда: {столбец: (лево, право)}} мест блоков ячеек."""
+    icon = lambda y: y["k"] == "p" and not text_of(y.get("runs") or []).strip() and any(
+        "img" in q for q in y.get("runs") or [])
+
+    def places(bs_, text=False):
+        for y in bs_:
+            if y["k"] == "list":
+                for it in y["items"]:
+                    yield from places(it, text)
+            elif not (text and icon(y)) and (y.get("geom") or {}).get("bottom") and y["geom"].get("x1") is not None:
+                yield y["geom"]
+    span = []
+    for r in rows:
+        gs = [g for c in r for g in places(c.get("blocks", []), True)]
+        pn = min((g["page"] for g in gs), default=None)
+        gs = [g for g in gs if g["page"] == pn]
+        span.append((pn, min(g["top"] for g in gs), max(g["bottom"] for g in gs)) if gs else None)
+    cols = {}
+    for r in rows:
+        for k, c in enumerate(r):
+            gc = list(places(c.get("blocks", [])))
+            if gc:
+                lo, hi = cols.setdefault(len(r), {}).get(k, (gc[0]["x0"], gc[0]["x1"]))
+                cols[len(r)][k] = (min([lo] + [g["x0"] for g in gc]), max([hi] + [g["x1"] for g in gc]))
+    return span, cols
+
+
+def _row_band(span, i, edge):
+    """Полоса ряда i по высоте (_text_grid): от середин зазоров с соседними рядами того же листа; у крайнего ряда листа —
+    edge(span[i]) → (верх, низ)."""
+    s = span[i]
+    prev = next((span[j] for j in range(i - 1, -1, -1) if span[j]), None)
+    nxt = next((span[j] for j in range(i + 1, len(span)) if span[j]), None)
+    e0, e1 = edge(s)
+    return ((prev[2] + s[1]) / 2 if prev and prev[0] == s[0] else e0,
+            (s[2] + nxt[1]) / 2 if nxt and nxt[0] == s[0] else e1)
+
+
+def _col_bounds(cols, n, lo, hi):
+    """Границы столбцов ряда из n ячеек (_text_grid) — середины промежутков; столбец без текста ни в одном ряду —
+    между соседями (lo, hi — края крайних)."""
+    cs = dict(cols.get(n, {}))
+    for k in range(n):
+        if k not in cs:
+            a = cs[k - 1][1] + 1 if k - 1 in cs else lo
+            z = next((cs[q][0] for q in range(k + 1, n) if q in cs), hi) - 1
+            cs[k] = (a, max(a, z))
+    return [(cs[k][1] + cs[k + 1][0]) / 2 for k in range(n - 1)]
+
+
 def adopt(bs):
     """Абзац вне таблицы, что на листе лежит внутри её строки: Word разметил надписи и подложки ячеек (образцы «Текст
     строки» в таблице 16 ТЭ357) отдельными абзацами до таблицы — печатались строкой над рисунком, ячейки пустые
@@ -816,43 +857,14 @@ def adopt(bs):
                     out += far
     for t in [b for b in out if b["k"] == "table"]:
         rows = t["rows"]
-
-        def places(bs_):                                    # места блоков ячейки (геометрия ячейки — до evict)
-            for y in bs_:
-                if y["k"] == "list":
-                    for it in y["items"]:
-                        yield from places(it)
-                elif (y.get("geom") or {}).get("bottom") and y["geom"].get("x1") is not None:
-                    yield y["geom"]
-        cg = [[list(places(c["blocks"])) for c in r] for r in rows]
-        # (лист, верх, низ) текста строки на первом её листе: значки — не в счёт (Word кладёт значки нескольких строк
-        # в первую ячейку продолжения таблицы, и они растягивали её строку на соседние, JPDS табл. 65, 18.10)
-        icon = lambda y: y["k"] == "p" and not text_of(y.get("runs") or []).strip() and any(
-            "img" in q for q in y.get("runs") or [])
-
-        def texts(bs_):
-            for y in bs_:
-                if y["k"] == "list":
-                    for it in y["items"]:
-                        yield from texts(it)
-                elif not icon(y) and (y.get("geom") or {}).get("bottom") and y["geom"].get("x1") is not None:
-                    yield y["geom"]
-        span = []
-        for r in rows:
-            gs = [g for c in r for g in texts(c["blocks"])]
-            pn = min((g["page"] for g in gs), default=None)
-            gs = [g for g in gs if g["page"] == pn]
-            span.append((pn, min(g["top"] for g in gs), max(g["bottom"] for g in gs)) if gs else None)
-        cols = {}                                           # число ячеек строки → {столбец: (лево, право)}
-        for r, gr in zip(rows, cg):
-            for k, gc in enumerate(gr):
-                if gc:
-                    lo, hi = cols.setdefault(len(r), {}).get(k, (gc[0]["x0"], gc[0]["x1"]))
-                    cols[len(r)][k] = (min([lo] + [g["x0"] for g in gc]), max([hi] + [g["x1"] for g in gc]))
+        span, cols = _text_grid(rows)
         if not cols:
             continue
         X0 = min(v[0] for cs in cols.values() for v in cs.values())
         X1 = max(v[1] for cs in cols.values() for v in cs.values())
+        icon = lambda y: y["k"] == "p" and not text_of(y.get("runs") or []).strip() and any(
+            "img" in q for q in y.get("runs") or [])
+
         def place(x):
             """(строка, столбец) таблицы, в которой лежит на листе блок x, или None."""
             g = x.get("geom") or {}
@@ -861,28 +873,11 @@ def adopt(bs):
             cx, cy = (g["x0"] + g["x1"]) / 2, (g["top"] + g["bottom"]) / 2
             if not X0 - 2 <= cx <= X1 + 2:
                 return None
-            row = None
-            for i, s in enumerate(span):
-                if not s or s[0] != g["page"]:
-                    continue
-                prev = next((span[j] for j in range(i - 1, -1, -1) if span[j]), None)
-                nxt = next((span[j] for j in range(i + 1, len(span)) if span[j]), None)
-                y0 = (prev[2] + s[1]) / 2 if prev and prev[0] == s[0] else s[1] - 2
-                y1 = (s[2] + nxt[1]) / 2 if nxt and nxt[0] == s[0] else s[2] + 2
-                if y0 <= cy < y1:
-                    row = i
-                    break
+            row = next((i for i, s in enumerate(span) if s and s[0] == g["page"]
+                        and (lambda y0, y1: y0 <= cy < y1)(*_row_band(span, i, lambda s: (s[1] - 2, s[2] + 2)))), None)
             if row is None or len(rows[row]) < 1:
                 return None
-            r = rows[row]
-            cs = dict(cols.get(len(r), {}))
-            for k in range(len(r)):                         # столбец без места — между соседями
-                if k not in cs:
-                    lo = cs[k - 1][1] + 1 if k - 1 in cs else X0
-                    hi = next((cs[q][0] for q in range(k + 1, len(r)) if q in cs), X1) - 1
-                    cs[k] = (lo, max(lo, hi))
-            bounds = [(cs[k][1] + cs[k + 1][0]) / 2 for k in range(len(r) - 1)]
-            return row, sum(cx >= b for b in bounds)
+            return row, sum(cx >= b for b in _col_bounds(cols, len(rows[row]), X0, X1))
 
         def put(x, row, k):
             g = x["geom"]
@@ -1520,13 +1515,24 @@ def load(path):
         # граница столбца — вертикаль хотя бы на половину высоты таблицы на листе: линия вложенной таблички в одной
         # строке («⚠ + текст» в «Описании» JPDS табл. 15) давала таблице лишний столбец, текст сжимался (19.10)
         span = max(1.0, min(float(g.get("bottom") or 0), bot) - max(float(g["top"]), top))
-        cover = lambda x: sum(float(o["height"]) for o in vert if abs((float(o["x0"]) + float(o["x1"])) / 2 - x) <= 3)
-        if len(xs) > 2:
-            xs = [x for i, x in enumerate(xs) if i in (0, len(xs) - 1) or cover(x) >= 0.5 * span]
+        at = lambda x: [o for o in vert if abs((float(o["x0"]) + float(o["x1"])) / 2 - x) <= 3]
+        cover = lambda x: sum(float(o["height"]) for o in at(x))
         ys = []
         for y in sorted((float(o["top"]) + float(o["bottom"])) / 2 for o in horiz):
             if not ys or y - ys[-1] > 2:
                 ys.append(y)
+        # …или через три ряда и больше (E9b-R R1): вложенная таблица на много рядов — столбцы, хоть и короче половины
+        # (30BOXVILGT_TU л. 3: «Megnevezés | Állapot | Ellenőrzés» ×2 в ячейке «Megnevezés» на 16 рядов — рамка в два
+        # столбца, fit_rows сворачивал ряд в одну ячейку «30XL11S201 ЗАКРЫТО 30XL53S201 ЗАКРЫТО», отметки «□» пропадали)
+        # — если и ячеек Word столько хотя бы в трёх рядах: рамка примечания на 4 ряда (ÜFK I л. 147 «*A szolgálatvezetőknek
+        # …», ячеек в три столбца — один ряд) столбцом всей таблицы ломала двухъячеечные ряды — значения «Létszám» уходили
+        # в ячейку, объединённую сверху («Численность1 чел.1 чел.», печать 10.11)
+        rows_at = lambda x: sum(1 for y in ys if min(float(o["top"]) for o in at(x)) - 1 <= y
+                                <= max(float(o["bottom"]) for o in at(x)) + 1) - 1
+        if len(xs) > 2:
+            half = [x for i, x in enumerate(xs) if i in (0, len(xs) - 1) or cover(x) >= 0.5 * span]
+            wide = sum(1 for r in rows if len(r) > len(half) - 1) >= 3
+            xs = [x for i, x in enumerate(xs) if x in half or wide and rows_at(x) >= 3]
         hexcol = lambda col: GM.hex_rgb(_rgb(col)) if _rgb(col) else None
         out = {"xs": [round(x, 1) for x in xs], "ys": [round(y, 1) for y in ys]}   # линии строк — высота пустых строк
         if vert:
@@ -2280,22 +2286,12 @@ def _cell_pictures(t, doc, blocks):
     одной картинкой области листа (img["clip"], как compose_figures). Задевает длинный текст ячейки — как было."""
     import fitz
     rows = t["rows"]
-    span = []                                               # (лист, верх, низ) содержимого строки
-    for r in rows:
-        gs = [c["geom"] for c in r if c.get("geom") and c["geom"].get("bottom")]
-        span.append((gs[0]["page"], min(g["top"] for g in gs), max(g["bottom"] for g in gs)) if gs else None)
-    cols = {}                                               # число ячеек строки → [(лево, право)] столбцов
-    for r in rows:
-        for k, c in enumerate(r):
-            g = c.get("geom")
-            if g and g.get("x1") is not None:
-                lo, hi = cols.setdefault(len(r), {}).get(k, (g["x0"], g["x1"]))
-                cols[len(r)][k] = (min(lo, g["x0"]), max(hi, g["x1"]))
+    span, cols = _text_grid(rows)                           # ряды и столбцы — как у adopt (E9b-R R5)
     pages, rep = {}, None
     for i, r in enumerate(rows):
         if span[i] is None or len(r) < 2:
             continue
-        pn, top, bot = span[i]
+        pn = span[i][0]
         if pn not in pages:
             page = doc[pn - 1]
             shown = _img_rects(blocks, pn)
@@ -2317,20 +2313,12 @@ def _cell_pictures(t, doc, blocks):
         if not imgs and not fills:
             continue
         H = page.rect.height
-        prev = next((span[j] for j in range(i - 1, -1, -1) if span[j] and span[j][0] == pn), None)
-        nxt = next((span[j] for j in range(i + 1, len(rows)) if span[j] and span[j][0] == pn), None)
         # первая и последняя строки таблицы на листе — не до краёв листа (шапка, подвал, фигура над таблицей)
-        y0 = (prev[2] + top) / 2 if prev else max(top - 40, 0.05 * H)
-        y1 = (bot + nxt[1]) / 2 if nxt else min(bot + 60, 0.95 * H)
-        cs = dict(cols.get(len(r), {}))
-        if not cs:
+        y0, y1 = _row_band(span, i, lambda s: (max(s[1] - 40, 0.05 * H), min(s[2] + 60, 0.95 * H)))
+        if not cols.get(len(r)):
             continue
-        for k in range(len(r)):     # столбец без текста ни в одной строке (цветные ячейки легенды JPDS) — между соседями
-            if k not in cs:
-                lo = cs[k - 1][1] + 1 if k - 1 in cs else 0
-                hi = next((cs[q][0] for q in range(k + 1, len(r)) if q in cs), page.rect.width) - 1
-                cs[k] = (lo, max(lo, hi))
-        bounds = [(cs[k][1] + cs[k + 1][0]) / 2 for k in range(len(r) - 1)]
+        # столбец без текста ни в одной строке (цветные ячейки легенды JPDS) — между соседями
+        bounds = _col_bounds(cols, len(r), 0, page.rect.width)
         for k, c in enumerate(r):
             x0 = bounds[k - 1] if k else 0
             x1 = bounds[k] if k < len(bounds) else page.rect.width
