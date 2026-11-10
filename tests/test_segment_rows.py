@@ -345,3 +345,16 @@ def test_item_label_is_one_definition():
     toc = [_fr("a)", (93, 238, 104, 250)), _fr("Az első pont címe", (145, 238, 300, 250)),
            _fr("b)", (93, 251, 104, 263)), _fr("A második pont címe", (145, 251, 310, 263))]
     assert "A második pont címe" in _texts(toc)
+
+
+def test_next_line_is_one_definition_of_line_below():
+    """Строка ниже — следующая (rows.next_line, E9N N4): зазор рамок от −0,35 до 0,6 кегля; рамки выше шага (моноширинный
+    3SZ17: 15 pt при шаге 10) — верх ниже на шаг при перекрытии до 0,7 кегля; рамки ещё выше (3SZ23: 19 pt при шаге 11) —
+    только когда фраза продолжается (cont). Та же строка (верх рядом) и строка через пустую — нет."""
+    import rows as RW
+    assert RW.next_line((0, 100, 200, 112), (0, 113, 200, 125), 10)
+    assert RW.next_line((0, 100, 200, 115), (0, 110, 200, 125), 10)                     # 3SZ17: перекрытие 5 при шаге 10
+    assert not RW.next_line((0, 100, 200, 115), (0, 102, 200, 117), 10)                 # та же строка
+    tall_a, tall_b = (0, 100, 200, 119), (0, 111, 200, 130)                             # 3SZ23: перекрытие 8, шаг 11
+    assert not RW.next_line(tall_a, tall_b, 10) and RW.next_line(tall_a, tall_b, 10, cont=True)
+    assert not RW.next_line((0, 100, 200, 112), (0, 125, 200, 137), 10)                 # через пустую строку

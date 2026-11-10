@@ -10,7 +10,7 @@ import bisect
 import re
 import fitz
 from lines import hyphen_break, join_lines, mid_phrase     # перенос слова — одна функция для всех читателей (E4)
-from rows import ANCHOR, Rows, code_cells, code_line, _right_limit, _vrule_in     # граница ряда таблицы — до склейки строк в абзацы (E5)
+from rows import ANCHOR, Rows, code_cells, code_line, next_line, _right_limit, _vrule_in     # граница ряда таблицы — до склейки строк в абзацы (E5)
 
 GAP = 30.0          # выключка по ширине в узких ячейках даёт пробелы до ~25 pt
 
@@ -394,13 +394,9 @@ def group(frags, hs, vs=(), form=False, rows=None):
         прочих признаков: другое начертание (жирный остаток «TANI,»), короткая строка, номер пункта против второй
         строки и выше рамки (17 pt при кегле 9 и шаге 10, 3SZ17) слово пополам не режут; не пускает только граница ряда
         (линейка между строками, якорь другой строки таблицы)."""
-        last = q["frags"][-1]["bbox"]
-        x0, y0, x1, y1 = f["bbox"]
         size = max(q["size"], f["size"])
-        gap = y0 - last[3]
         if not (hyphen_break(q["frags"][-1]["t"], f["t"]) and aligned(q, f) and abs(q["size"] - f["size"]) <= 1.5
-                and (-0.35 * size <= gap <= 0.6 * size
-                     or (gap < 0 and 0.85 * size <= (y0 + y1 - last[1] - last[3]) / 2 <= 1.8 * size))):
+                and next_line(q["frags"][-1]["bbox"], f["bbox"], size, cont=True)):
             return False
         return not rows.apart(q["frags"][-1], f, soft=False)
 
@@ -432,12 +428,13 @@ def group(frags, hs, vs=(), form=False, rows=None):
 
     def continues(f):
         """Предыдущая строка этого же столбца оборвана на середине фразы, начинается без номера и выровнена с этой."""
-        x0, y0 = f["bbox"][0], f["bbox"][1]
+        x0 = f["bbox"][0]
         for q in near(f):
             last = q["frags"][-1]["bbox"]
             size = max(q["size"], f["size"])
-            if -0.35 * size <= y0 - last[3] <= 0.6 * size and min(f["bbox"][2], q["bbox"][2]) - max(x0, q["bbox"][0]) > 0:
-                return abs(x0 - last[0]) < 3 and mid_phrase(q["frags"][-1]["t"], f["t"]) and not labeled(q["frags"][0]["bbox"])
+            cont = abs(x0 - last[0]) < 3 and mid_phrase(q["frags"][-1]["t"], f["t"])
+            if next_line(last, f["bbox"], size, cont) and min(f["bbox"][2], q["bbox"][2]) - max(x0, q["bbox"][0]) > 0:
+                return cont and not labeled(q["frags"][0]["bbox"])
         return False
 
     def numbered(bb):
@@ -473,20 +470,14 @@ def group(frags, hs, vs=(), form=False, rows=None):
                     continue
                 px0, py0, px1, py1 = p["bbox"]
                 last = p["frags"][-1]["bbox"]
-                gap = y0 - last[3]
                 size = max(p["size"], f["size"])
-                # рамка строки выше шага строк (моноширинный шрифт 3SZ17: рамка 15 pt при шаге 10 pt) — рамки соседних
-                # строк перекрываются; строка ниже верха предыдущей на шаг — продолжение, а не та же строка
-                tall = gap < 0 and -0.7 * size <= gap and y0 - last[1] >= 0.85 * size
                 plast = p["frags"][-1]["t"]
                 if qty and is_mark(f["t"], plast):
                     continue
                 tail = abs(x0 - last[0]) < 3 and orphan_tail(plast, f["t"])
                 cont = (abs(x0 - last[0]) < 3 and mid_phrase(plast, f["t"])) or tail
-                # рамки ещё выше (жирный моноширинный: 19 pt при кегле 10 и шаге 11, 3SZ23): середины строк — через шаг
-                # строк, а фраза явно продолжается; заголовок и шапка таблицы под ним (оба прописные) так не склеятся
-                tall = tall or (cont and gap < 0 and 0.85 * size <= (y0 + y1 - last[1] - last[3]) / 2 <= 1.8 * size)
-                if not (-0.35 * size <= gap <= 0.6 * size or tall):
+                # следующая строка под последней строкой абзаца — по зазору рамок и шагу середин (rows.next_line)
+                if not next_line(last, f["bbox"], size, cont):
                     continue
                 if min(x1, px1) - max(x0, px0) <= 0:
                     continue
