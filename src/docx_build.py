@@ -1524,19 +1524,28 @@ class Builder:
             b.append(_el(f"w:{side}", w__val="single", w__sz=4, w__space=0, w__color=color))
         _tblpr_put(t, b)
 
-    def _cell_margins(self, t, fr):
+    def _cell_margins(self, t, fr, sub=False):
         """Ф11: поля ячеек по оригиналу: сверху и снизу — по таблице (до текста за вычетом межстрочного зазора шрифта),
-        слева и справа — обычные для документа (у таблицы с числами вправо левый зазор шире поля, даты переносились)."""
+        слева и справа — обычные для документа (у таблицы с числами вправо левый зазор шире поля, даты переносились).
+        sub — в таблице есть подстроки (c["cut"]: docx_struct.sub_rows, docx_layout._table_block): поля сверху и снизу —
+        нулевые, их значения (pt) возвращаются — отбивкой абзацев у настоящих границ ряда (table): LibreOffice поля
+        ячейки сверху и снизу (tcMar) не берёт, только таблицы — подстроки печатались с полями таблицы, 30RVRXTSBIGT_TU
+        27 → 31 листа (печать 10.11; с нулевыми полями таблицы — 26)."""
         tp = self.P.get("table") or {}
         m = _el("w:tblCellMar")
+        got = {}
         for side, key, cut in (("top", "pad_top", 2.0), ("left", "pad_left", 0), ("bottom", "pad_bottom", 2.0),
                                ("right", "pad_left", 0)):
             own = fr.get(key) if side in ("top", "bottom") else None
             v = own if own is not None and own < 12 else tp.get(key)
             if v is None:
                 continue
-            m.append(_el(f"w:{side}", w__w=max(0, round((v - cut) * 20)), w__type="dxa"))
+            w = max(0, round((v - cut) * 20))
+            if sub and side in ("top", "bottom"):
+                got[side], w = w / 20, 0
+            m.append(_el(f"w:{side}", w__w=w, w__type="dxa"))
         _tblpr_put(t, m)
+        return got
 
     def table(self, b, tgt=None):
         from docx.shared import Pt
@@ -1558,8 +1567,9 @@ class Builder:
                 self._no_borders(t)
             elif fr.get("line") and fr["line"] != "000000":
                 self._borders(t, fr["line"])
-            self._cell_margins(t, fr)
-        else:
+        # подстроки ряда (c["cut"]) — поля сверху и снизу отбивкой абзацев у настоящих границ ряда (_cell_margins)
+        rim = self._cell_margins(t, fr, sub=any(c.get("cut") for r in rows for c in r)) if b.get("borders", True) else {}
+        if not b.get("borders", True):
             self._no_borders(t)
         sizes = Counter(round(p["geom"]["size"]) for r in rows for c in r for p in c["blocks"] if p.get("geom"))
         small = bool(sizes) and sizes.most_common(1)[0][0] <= 9
@@ -1931,16 +1941,20 @@ class Builder:
                     dc._tc.get_or_add_tcPr().append(_el("w:shd", w__val="clear", w__color="auto", w__fill=fill))
                 if cell.get("valign"):                              # отметка против нижней строки (docx_layout)
                     dc._tc.get_or_add_tcPr().append(_el("w:vAlign", w__val=cell["valign"]))
-                if cell.get("pad") and dc.paragraphs:               # зазор до следующей полосы (docx_layout)
-                    dc.paragraphs[-1].paragraph_format.space_after = Pt(cell["pad"])
-                if tight is not None or cell.get("cut"):            # узкие поля ячейки — слово влезло целиком (см. выше);
-                    tcpr = dc._tc.get_or_add_tcPr()                 # подстрока ряда — без полей по сторонам разреза
-                    mar_el = _el("w:tcMar")                         # (docx_struct.sub_rows)
-                    for side_name in ("top", "left", "bottom", "right"):
-                        if side_name in (cell.get("cut") or ()):
-                            mar_el.append(_el(f"w:{side_name}", w__w=0, w__type="dxa"))
-                        elif tight is not None and side_name in ("left", "right"):
-                            mar_el.append(_el(f"w:{side_name}", w__w=round(tight * 20), w__type="dxa"))
+                # зазор до следующей полосы (docx_layout, docx_struct.sub_rows); в таблице с подстроками поля сверху и
+                # снизу — отбивкой у настоящих границ ряда, по сторонам разреза (c["cut"]) — ничего (_cell_margins)
+                cut = cell.get("cut") or ()
+                after = (cell.get("pad") or 0) + (rim.get("bottom", 0) if "bottom" not in cut else 0)
+                if after and dc.paragraphs:
+                    dc.paragraphs[-1].paragraph_format.space_after = Pt(after)
+                if rim.get("top") and "top" not in cut and dc.paragraphs:
+                    pf0 = dc.paragraphs[0].paragraph_format
+                    pf0.space_before = Pt((pf0.space_before.pt if pf0.space_before else 0) + rim["top"])
+                if tight is not None:                               # узкие поля ячейки — слово влезло целиком (см. выше)
+                    tcpr = dc._tc.get_or_add_tcPr()
+                    mar_el = _el("w:tcMar")
+                    for side_name in ("left", "right"):
+                        mar_el.append(_el(f"w:{side_name}", w__w=round(tight * 20), w__type="dxa"))
                     after = next((c for c in tcpr if c.tag in {W + n for n in ("textDirection", "tcFitText", "vAlign", "hideMark")}), None)
                     after.addprevious(mar_el) if after is not None else tcpr.append(mar_el)
             for ci, cell in enumerate(row):

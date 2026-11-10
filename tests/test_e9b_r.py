@@ -1,5 +1,6 @@
 # E9b-R «ряд в сборке» (E9_DESIGN.md §6): одно определение ряда, ячейки и столбца для сборки — тест на шаг.
 from docx import Document
+from docx.shared import Pt
 
 import docx_build as B
 from test_struct_docx import LAYOUT, PROFILE, W, png
@@ -105,15 +106,20 @@ def test_sub_rows_have_no_cell_margins_inside_their_row(tmp_path):
     assert [[c.get("cut"), c.get("pad")] for c in (r[1] for r in tab["rows"])] == [
         [["bottom"], 10], [["top", "bottom"], None], [["top"], None]]
     out = tmp_path / "t.docx"
-    B.Builder(B.Memory([]), lambda img: png(), PROFILE).build([tab], str(out), dict(LAYOUT, first_is_body=True))
+    prof = dict(PROFILE, table=dict(PROFILE.get("table") or {}, pad_top=8.7, pad_bottom=12.2))   # поля TU
+    B.Builder(B.Memory([]), lambda img: png(), prof).build([tab], str(out), dict(LAYOUT, first_is_body=True))
     tb = Document(str(out)).tables[0]
 
-    def mar(ri, ci):
-        m = tb.rows[ri].cells[ci]._tc.tcPr.find(W + "tcMar")
-        return {} if m is None else {el.tag.split("}")[1]: el.get(W + "w") for el in m}
-    assert [mar(ri, 1) for ri in range(3)] == [{"bottom": "0"}, {"top": "0", "bottom": "0"}, {"top": "0"}]
-    assert [mar(ri, 2) for ri in range(3)] == [{"bottom": "0"}, {"top": "0", "bottom": "0"}, {"top": "0"}]
-    assert tb.rows[0].cells[1].paragraphs[-1].paragraph_format.space_after.pt == 10
+    # LibreOffice поля ячейки сверху и снизу (tcMar) не берёт (печать 10.11: 30RVRXTSBIGT_TU 27 → 31 листа): поля таблицы
+    # сверху и снизу — нулевые, отбивка — у настоящих границ ряда, по сторонам разреза — нет
+    m = {el.tag.split("}")[1]: el.get(W + "w") for el in tb._tbl.tblPr.find(W + "tblCellMar")}
+    assert m["top"] == m["bottom"] == "0"
+    sp = lambda ri, ci: ((tb.rows[ri].cells[ci].paragraphs[0].paragraph_format.space_before or Pt(0)).pt,
+                         (tb.rows[ri].cells[ci].paragraphs[-1].paragraph_format.space_after or Pt(0)).pt)
+    top, bot = sp(0, 2)[0], sp(2, 2)[1]
+    assert top > 0 and bot > 0
+    for ci in (1, 2):                                       # зазор оригинала до следующей подстроки — 10 pt
+        assert [sp(ri, ci) for ri in range(3)] == [(top, 10), (0, 0), (0, bot)], ci
 
 
 def _grid1(xs, y0, y1):
