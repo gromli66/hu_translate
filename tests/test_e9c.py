@@ -63,3 +63,58 @@ def test_short_right_line_still_votes_right():
     xs = [70.0, 112.7, 430.0]
     rows = [[_cell(94.5, 112.0), _cell(120.0, 300.0)] for _ in range(4)]
     assert B._col_align(rows, xs, 5)[("body", 0)] == "right"
+
+
+def _p(page, top, text, bottom=None, x0=85.0, x1=520.0):
+    return {"k": "p", "runs": [{"t": text, "x": x0, "x1": x1, "top": top, "size": 12.0}],
+            "geom": {"page": page, "top": top, "bottom": bottom or top + 12, "x0": x0, "x1": x1}}
+
+
+def _pic(page, top, bottom, x0, x1):
+    return {"k": "p", "runs": [{"img": {"x0": x0, "x1": x1, "top": top, "bottom": bottom}}],
+            "geom": {"page": page, "top": top, "bottom": bottom, "x0": x0, "x1": x1}}
+
+
+def test_list_item_keeps_no_blocks_from_later_sheets():
+    """JPDS л. 20: Word вложил подписи «Рисунок 7, 9–13» листов 21–25 в последний пункт списка листа 20 — они
+    печатались стопкой посреди текста листа 20. Блок пункта с более позднего листа, чем сам пункт, — в поток на своё
+    место по листу (как «чужое в ячейке» у таблицы); пункт и его текст на своём листе — на месте."""
+    cap7, cap9 = _p(21, 275.0, "Рисунок 7 – Ярлык для запуска программы"), _p(22, 395.0, "Рисунок 9 – Элементы формы")
+    lst = {"k": "list", "items": [[_p(20, 317.0, "- виртуальная машина Java")],
+                                  [_p(20, 333.0, "- офисное приложение (Excel)"), cap7, cap9]]}
+    tbl = {"k": "table", "rows": [[{"blocks": [_pic(21, 184.0, 250.0, 164.0, 230.0)], "geom": {"page": 21}}]],
+           "geom": {"page": 21, "top": 184.0}}
+    flow = [lst, _p(20, 377.0, "2.2 Подготовка к работе"), tbl, _p(21, 297.0, "При успешном запуске"),
+            _pic(22, 81.0, 390.0, 100.0, 500.0), _p(22, 417.0, "Таблица 3 – Элементы")]
+    out = D.evict(flow)
+    texts = [B.text_of(b["runs"]) if b["k"] == "p" else b["k"] for b in out]
+    assert texts == ["list", "2.2 Подготовка к работе", "table", "Рисунок 7 – Ярлык для запуска программы",
+                     "При успешном запуске", "", "Рисунок 9 – Элементы формы", "Таблица 3 – Элементы"], texts
+    assert [len(it) for it in out[0]["items"]] == [1, 1]
+
+
+def test_list_item_paragraph_on_next_sheet_before_flow_stays():
+    """Пункт, переходящий на следующий лист (абзац пункта вверху листа 21, выше блока после списка), — на месте."""
+    lst = {"k": "list", "items": [[_p(20, 700.0, "- первый абзац пункта"), _p(21, 60.0, "его продолжение")]]}
+    out = D.evict([lst, _p(21, 100.0, "Следующий абзац")])
+    assert [len(it) for it in out[0]["items"]] == [2] and len(out) == 2
+
+
+def test_cell_icon_in_gap_of_its_line_goes_into_that_item():
+    """JPDS л. 142, табл. 62, «Кнопки:»: значки (x 157–179,5) стоят в строке пункта между маркером «- » и
+    « – добавить файл;», а Word разметил их рисунками после списка ячейки — печатались стопкой в конце ячейки, три — на
+    листе «(прод.)». Значок в просвете строки — в этот пункт, в начало его текста."""
+    def item(top, tail):
+        return {"k": "p", "geom": {"page": 142, "top": top, "bottom": top + 12.07, "x0": 149.66, "x1": 270.0},
+                "runs": [{"t": "- ", "x": 149.66, "x1": 153.656, "top": top, "size": 12.0},
+                         {"t": tail, "x": 179.42, "x1": 270.0, "top": top + 0.07, "size": 12.0}]}
+    cell = [_p(142, 656.2, "Кнопки:", x0=149.66, x1=192.2),
+            {"k": "list", "items": [[item(681.22, " – добавить файл;")], [item(731.4, " – обновить данные;")]]},
+            _pic(142, 668.14, 690.64, 156.98, 179.48), _pic(142, 718.33, 740.83, 156.98, 179.48),
+            _pic(142, 760.0, 790.0, 300.0, 340.0)]                          # не в просвете строки — как было
+    tbl = {"k": "table", "rows": [[{"blocks": cell}]]}
+    out = D.inline_pictures([tbl])[0]["rows"][0][0]["blocks"]
+    assert len(out) == 3 and out[2]["runs"][0]["img"]["x0"] == 300.0
+    for it in out[1]["items"]:
+        rs = it[0]["runs"]
+        assert rs[0]["t"] == "- " and "img" in rs[1] and not rs[1].get("at_tab") and rs[2]["t"].startswith(" –")

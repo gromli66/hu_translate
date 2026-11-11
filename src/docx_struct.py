@@ -912,31 +912,33 @@ def evict(bs):
     """Чужое в ячейке: Word вкладывает в список последней ячейки таблицы текст со следующего листа (подпись «Рисунок 1
     – …» листа 13 — в ячейке таблицы листов 11–12, JPDS 16.10), и в DOCX он пропадал. Блок ячейки, стоящий на листе
     ниже того, что идёт после таблицы, — прочь из таблицы, в поток на своё место по листу. Хвост разрезанной строки
-    стоит вверху следующего листа, выше всего после таблицы, и остаётся."""
+    стоит вверху следующего листа, выше всего после таблицы, и остаётся.
+    Пункт списка — так же, но только с более позднего листа, чем сам пункт: подписи «Рисунок 7, 9–13» листов 21–25 Word
+    вложил в последний пункт списка листа 20, и они печатались стопкой посреди текста листа 20 (JPDS, E9B-S п. 2)."""
     out = list(bs)
     i = 0
     while i < len(out):
         t = out[i]
-        if t["k"] != "table":
+        if t["k"] not in ("table", "list"):
             i += 1
             continue
         after = [q for q in (_pos(x) for x in out[i + 1:]) if q]
         lim = min(after) if after else None
         moved = []
 
-        def clean(blocks, cpage, prev):
+        def clean(blocks, cpage, prev, near=True):
             keep = []
             for x in blocks:
                 q = _pos(x)
                 # и на более позднем листе, чем сама ячейка, или на том же, но между ним и прошлым блоком ячейки — то,
                 # что идёт после таблицы (подпись «Рисунок 60» под рисунком — в последней ячейке таблицы над ним, JPDS
                 # л. 69: печаталась в таблице, 17.10)
-                if lim and q and q > lim and (q[0] > cpage or prev[0] and prev[0][0] == q[0] and any(
+                if lim and q and q > lim and (q[0] > cpage or near and prev[0] and prev[0][0] == q[0] and any(
                         a[0] == q[0] and prev[0][1] <= a[1] < q[1] for a in after)):
                     moved.extend(_flat_paras(x))
                     continue
                 if x["k"] == "list":
-                    items = [clean(it, cpage, prev) for it in x["items"]]
+                    items = [clean(it, cpage, prev, near) for it in x["items"]]
                     items = [it for it in items if it]
                     if not items:
                         continue
@@ -945,12 +947,17 @@ def evict(bs):
                     prev[0] = (q[0], x["geom"]["bottom"])
                 keep.append(x)
             return keep
-        rows = [[dict(c, blocks=clean(c.get("blocks", []), (c.get("geom") or {}).get("page") or 0, [None])) for c in r]
-                for r in t["rows"]]
+        if t["k"] == "table":
+            rows = [[dict(c, blocks=clean(c.get("blocks", []), (c.get("geom") or {}).get("page") or 0, [None]))
+                     for c in r] for r in t["rows"]]
+        else:
+            items = [clean(it, (next((q for q in map(_pos, it) if q), None) or (1e9,))[0], [None], near=False)
+                     for it in t["items"]]
         if not moved:
             i += 1
             continue
-        out[i] = dict(t, rows=rows)
+        # у пункта остаётся хотя бы первый блок: он и задаёт лист пункта
+        out[i] = dict(t, rows=rows) if t["k"] == "table" else dict(t, items=[it for it in items if it])
         for m in moved:                                 # на место по листу среди блоков после таблицы
             q = _pos(m)
             j = i + 1
@@ -1947,6 +1954,43 @@ def unlist_captions(bs):
     return out
 
 
+def _cell_icons(blocks):
+    """Значок ячейки, что на листе стоит в строке её абзаца, в просвете между кусками строки («- [значок] – добавить
+    файл;», «Кнопки:» таблицы 62 JPDS л. 142): Word разметил значки рисунками после списка ячейки, и они печатались
+    стопкой в её конце, часть — одна на листе «(прод.)» (E9B-S п. 2), — в этот абзац на это место. Перед значком
+    только маркер пункта — значок в начале текста пункта; иначе — как значок на табуляции (inline_pictures)."""
+    paras = [y for x in blocks for y in _flat_paras(x) if y["k"] == "p" and text_of(y.get("runs") or []).strip()]
+
+    def spot(im, page):
+        for p in paras:
+            if (p.get("geom") or {}).get("page") != page:
+                continue
+            rs = p["runs"]
+            for k in range(len(rs) - 1):
+                a, b = rs[k], rs[k + 1]
+                if a.get("x1") is None or b.get("x") is None or a.get("top") is None or b.get("top") is None:
+                    continue
+                sz = b.get("size") or 10
+                # в просвете по ширине; по высоте — на строке b (значок выше строки: низ — от её середины до низа)
+                if a["x1"] - 2 <= im["x0"] and im["x1"] <= b["x"] + 2 and abs(a["top"] - b["top"]) < 3 \
+                        and b["top"] + 0.5 * sz <= im["bottom"] <= b["top"] + 1.2 * sz + 2:
+                    return p, k
+        return None
+    keep = []
+    for x in blocks:
+        runs = x.get("runs") or []
+        g = x.get("geom") or {}
+        im = runs[0]["img"] if x["k"] == "p" and len(runs) == 1 and "img" in runs[0] else None
+        hit = spot(im, g.get("page")) if im and im.get("x0") is not None and im.get("bottom") is not None else None
+        if hit:
+            p, k = hit
+            lead = not re.search(r"\w", text_of(p["runs"][:k + 1]))
+            p["runs"].insert(k + 1, {"img": im} if lead else {"img": im, "at_tab": True})
+            continue
+        keep.append(x)
+    return keep
+
+
 def inline_pictures(bs):
     """Значок в строке абзаца, который Word разметил отдельным рисунком после абзаца (клавиша ESC в ИН-1065: в тексте
     на его месте табуляция с позицией у края значка, значок шёл отдельным абзацем под текстом, 17.10), — в абзац на
@@ -1956,6 +2000,10 @@ def inline_pictures(bs):
     for b in bs:
         for it in b.get("items") or []:
             it[:] = inline_pictures(it)
+        for r in b.get("rows") or []:
+            for c in r:
+                if c.get("blocks"):
+                    c["blocks"] = _cell_icons(c["blocks"])
         prev = out[-1] if out else None
         g, pg = b.get("geom") or {}, (prev or {}).get("geom") or {}
         runs = b.get("runs") or []
