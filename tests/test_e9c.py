@@ -39,3 +39,27 @@ def test_without_path_a_sheet_count_stays_numpages_field():
     p2 = Doc().add_paragraph()
     bld._zone_text(p2, D.PAGE_MARK + "/24", False, "7", page_marked=True)
     assert "NUMPAGES" not in p2._p.xml and " PAGE" in p2._p.xml and p2.text.endswith("/24")
+
+
+def _cell(x0, x1, lines=1, page=5, th=False):
+    return {"th": th, "blocks": [], "geom": {"page": page, "x0": x0, "x1": x1, "lines": lines}}
+
+
+def test_full_width_line_is_no_vote_for_right():
+    """30RR2126GT л. 5, столбец «Feltétel, művelet, ellenőrzés» (319 pt): единственная однострочная ячейка — заголовок
+    «2. A TESZT ELŐKÉSZÍTÉS INTÉZKEDÉSEI» во всю ширину (слева 25,7 pt — отступ столбца, справа 4,6) — голосовала «вправо»
+    и прижимала вправо всю прозу столбца (16 абзацев). Строка во всю ширину — не голос за «вправо»."""
+    xs = [65.5, 113.5, 432.5, 526.1]
+    rows = [[_cell(75.2, 103.4, th=True), _cell(208.1, 340.3, th=True), _cell(458.0, 500.0, th=True)],
+            [_cell(81.2, 100.6), _cell(139.2, 427.9), _cell(508.2, 516.0)],
+            [_cell(81.2, 100.6), _cell(136.8, 409.6, lines=2), _cell(508.2, 516.0)]]
+    al = B._col_align(rows, xs, 5, any_page=True)
+    assert ("body", 1) not in al, al
+
+
+def test_short_right_line_still_votes_right():
+    """Номера пунктов, прижатые вправо в узком столбце (30RTKIT: «4.3.» в столбце 42,7 pt, слева 24,5, справа 0,7) — как
+    прежде «вправо»: строка не во всю ширину."""
+    xs = [70.0, 112.7, 430.0]
+    rows = [[_cell(94.5, 112.0), _cell(120.0, 300.0)] for _ in range(4)]
+    assert B._col_align(rows, xs, 5)[("body", 0)] == "right"

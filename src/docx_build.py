@@ -396,6 +396,11 @@ def _col_align(rows, xs, page, any_page=False):
                 continue
             left, right = g["x0"] - xs[ci], xs[ci + 1] - g["x1"]
             v = "center" if abs(left - right) < 4 and left > 8 else "right" if right < 10 < left - 8 else "left"
+            # строка во всю ширину столбца (от 85 %) — не голос «вправо»: у правого края она потому, что длинная, а не
+            # выключкой. Заголовок «2. A TESZT ELŐKÉSZÍTÉS INTÉZKEDÉSEI» 30RR2126GT (слева 25,7 pt — отступ столбца,
+            # справа 4,6 pt) был единственной однострочной ячейкой столбца и прижимал вправо всю его прозу (11.11)
+            if v == "right" and g["x1"] - g["x0"] >= 0.85 * (xs[ci + 1] - xs[ci]):
+                continue
             votes.setdefault((key, ci), []).append(v)
     out = {}
     for k, v in votes.items():
