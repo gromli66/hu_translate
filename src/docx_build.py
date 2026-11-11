@@ -396,6 +396,11 @@ def _col_align(rows, xs, page, any_page=False):
                 continue
             left, right = g["x0"] - xs[ci], xs[ci + 1] - g["x1"]
             v = "center" if abs(left - right) < 4 and left > 8 else "right" if right < 10 < left - 8 else "left"
+            # строка во всю ширину столбца (от 85 %) — не голос «вправо»: у правого края она потому, что длинная, а не
+            # выключкой. Заголовок «2. A TESZT ELŐKÉSZÍTÉS INTÉZKEDÉSEI» 30RR2126GT (слева 25,7 pt — отступ столбца,
+            # справа 4,6 pt) был единственной однострочной ячейкой столбца и прижимал вправо всю его прозу (11.11)
+            if v == "right" and g["x1"] - g["x0"] >= 0.85 * (xs[ci + 1] - xs[ci]):
+                continue
             votes.setdefault((key, ci), []).append(v)
     out = {}
     for k, v in votes.items():
@@ -2470,7 +2475,13 @@ class Builder:
             m2 = re.match(r"(\s*(?:/|of|из|von|de|di|z)\s*)(\d+)", rest, re.I)   # «20/57», «4 of 13» — и число листов полем
             if m2:
                 r = p.add_run(m2.group(1)); r.bold = bold
-                f = _field(p, "NUMPAGES", m2.group(2)); f.bold = bold
+                # путь А (номер — лист оригинала): и число листов — оригинала, текстом. Полем NUMPAGES LibreOffice
+                # печатал свои листы вместе с невыводимыми пустыми при перезапуске нумерации: «10/36» при 30 листах
+                # перевода и 24 оригинала (OAH 1.1, UTS; E9B-S, отдельный п. 1)
+                if (self.L or {}).get("sheet_no"):
+                    r = p.add_run(m2.group(2)); r.bold = bold
+                else:
+                    f = _field(p, "NUMPAGES", m2.group(2)); f.bold = bold
                 rest = rest[m2.end():]
             r = p.add_run(rest + (" (прод.)" if cont else "")); r.bold = bold
         else:
