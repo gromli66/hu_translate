@@ -2470,7 +2470,13 @@ class Builder:
             m2 = re.match(r"(\s*(?:/|of|из|von|de|di|z)\s*)(\d+)", rest, re.I)   # «20/57», «4 of 13» — и число листов полем
             if m2:
                 r = p.add_run(m2.group(1)); r.bold = bold
-                f = _field(p, "NUMPAGES", m2.group(2)); f.bold = bold
+                # путь А (номер — лист оригинала): и число листов — оригинала, текстом. Полем NUMPAGES LibreOffice
+                # печатал свои листы вместе с невыводимыми пустыми при перезапуске нумерации: «10/36» при 30 листах
+                # перевода и 24 оригинала (OAH 1.1, UTS; E9B-S, отдельный п. 1)
+                if (self.L or {}).get("sheet_no"):
+                    r = p.add_run(m2.group(2)); r.bold = bold
+                else:
+                    f = _field(p, "NUMPAGES", m2.group(2)); f.bold = bold
                 rest = rest[m2.end():]
             r = p.add_run(rest + (" (прод.)" if cont else "")); r.bold = bold
         else:
