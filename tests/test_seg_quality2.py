@@ -191,6 +191,6 @@ def test_tesseract_words_do_not_glue_number_ranges():
     «118-10135772» не сверялось с чтением портала и пропадало (титулы-сканы 30HU*75GT, 30SZBV*, 30GF*: −8 знаков на
     документ). Диапазоны — только для строк текстового слоя (lines.glue(ranges=True)); перенос слова — как прежде."""
     import segments as S
-    w = lambda t, line: {"t": t, "line": line, "key": (1, 1)}
+    w = lambda t, line: {"t": t, "line": line, "key": (1, 1), "box": [0, 0, 10, 5]}       # у слова Tesseract рамка есть всегда
     assert [x["t"] for x in S._dehyphen([w("118-", (1, 1, 1)), w("10135772", (1, 1, 2))])] == ["118-", "10135772"]
     assert [x["t"] for x in S._dehyphen([w("végre-", (1, 1, 1)), w("hajtani", (1, 1, 2))])] == ["végrehajtani"]
