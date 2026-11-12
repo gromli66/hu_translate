@@ -180,6 +180,11 @@ def snapshot(name):
             prj[k] = str((config.PROJECTS / name / src[k]).resolve())
     if src.get("domain"):
         prj["domain"] = src["domain"]
+    # прочие настройки проекта (пара языков "pair", review_autofix) — как в проекте: без "pair" снимок ru_en шёл как hu-ru —
+    # сканы читались венгерским Tesseract, проверка и суффикс файла — под русский (архив RU→EN, 12.11)
+    for k, v in src.items():
+        if k not in ("glossary", "terms", "tm", "conventions", "rules", "doc_terms", "domain"):
+            prj[k] = v
     pj.write_text(json.dumps(prj, ensure_ascii=False, indent=1), encoding="utf-8")
     return ver, pj
 

@@ -27,6 +27,17 @@ def demo(env):
     return ids
 
 
+def test_snapshot_keeps_language_pair(env):
+    """Снимок без "pair" шёл как hu-ru: русские сканы читались венгерским Tesseract, файлы _RU (ru_en, 12.11)."""
+    import langs as L
+    (config.PROJECTS / "demo" / "project.json").write_text(
+        json.dumps({"pair": "ru-en", "review_autofix": False, "glossary": "g.md", "domain": "RU→EN"}), encoding="utf-8")
+    _, pj = GD.snapshot("demo")
+    prj = P.load_project(pj)
+    assert L.pair_of(prj) == ("ru", "en") and prj["review_autofix"] is False and prj["domain"] == "RU→EN"
+    assert Path(prj["glossary"]).name == "customer.md"                    # файлы глоссария — версии, не проекта
+
+
 def entries_of(tr):
     return [(e.hu, e.ru, e.note, e.section) for e in tr.entries]
 
