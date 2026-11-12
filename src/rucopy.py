@@ -457,9 +457,9 @@ class Builder:
         png, wpt, hpt = crop_rect(self.page, r, rings if ink else None)
         shape = self.picture(run, png, wpt, cap, alt)
         par = run._parent
+        self.inked = self.inked or ink                     # и в ячейке: печать листа уже стоит — «[штамп]» не нужен
         if ink and not isinstance(par._parent, _Cell):
             float_shape(shape, r.x0 - self.page.rect.x0, r.y0 - self.page.rect.y0, rel=("page", "page"))
-            self.inked = True
         elif not par.text.strip() and not isinstance(par._parent, _Cell):
             # картинка своей строкой — у того края, что на скане (QR справа, логотип слева)
             mid, W = (r.x0 + r.x1) / 2 - self.page.rect.x0, self.page.rect.width
