@@ -58,9 +58,11 @@ def read_text(pdf, pno):
     return r.get("text") or "", r.get("error")
 
 
-BOX_PROMPT = """На картинке — страница документа ({w}×{h} пикселей). Найди на ней: {names}.
-Для каждого — одна строка: название: x0, y0, x1, y1 — рамка в пикселях этой картинки (x вправо, y вниз от левого
-верхнего угла); несколько одинаковых — каждый своей строкой, сверху вниз и слева направо. Чего нет — название: нет.
+# рамка — в тысячных долях листа: так портал отвечает и без просьбы (на просьбу «в пикселях» QR в правом верхнем
+# углу пришёл как 866, 28, 982, 108 при картинке 1240×1754 — Декларация о соответствии 12.11)
+BOX_PROMPT = """На картинке — страница документа. Найди на ней: {names}.
+Для каждого — одна строка: название: x0, y0, x1, y1 — рамка в тысячных долях страницы (0–1000; x — от левого края,
+y — от верхнего); несколько одинаковых — каждый своей строкой, сверху вниз и слева направо. Чего нет — название: нет.
 Больше ничего не пиши."""
 
 
@@ -72,7 +74,7 @@ def read_boxes(pdf, pno, alts):
     from llm import chat, img_b64
     with fitz.open(str(pdf)) as doc:
         pix = doc[pno].get_pixmap(dpi=DPI_READ)
-    r = chat([{"role": "user", "content": BOX_PROMPT.format(w=pix.width, h=pix.height, names=", ".join(alts))}],
+    r = chat([{"role": "user", "content": BOX_PROMPT.format(names=", ".join(alts))}],
              images=[img_b64(pix.tobytes("png"))], max_tokens=1000, tag=f"boxes{pno}")
     out = []
     num = r"(\d+(?:\.\d+)?)"
@@ -81,7 +83,7 @@ def read_boxes(pdf, pno, alts):
         if not m:
             continue
         x0, y0, x1, y1 = (float(v) for v in m.groups()[1:])
-        fr = (min(x0, x1) / pix.width, min(y0, y1) / pix.height, max(x0, x1) / pix.width, max(y0, y1) / pix.height)
+        fr = (min(x0, x1) / 1000, min(y0, y1) / 1000, max(x0, x1) / 1000, max(y0, y1) / 1000)
         if 0 <= fr[0] < fr[2] <= 1.02 and 0 <= fr[1] < fr[3] <= 1.02:
             out.append((m.group(1).strip().strip("*").lower(), tuple(min(v, 1.0) for v in fr)))
     return out, r.get("error"), r.get("text") or ""
