@@ -28,9 +28,14 @@ CODE = re.compile(r"\w+(?:[./-]\w+){2,}")
 
 # имя из программы одним словом или перечнем: «get_ stat_name», «Char16», «MarkTrigger», «real*4», «mf_load(loa, meas)» — не текст к
 # переводу: модель делала из них «реал*4», «цел.*4», «Рутин Check_clients», «Промышленность» (ПО тренажёра IS_reko_09, 29.10)
-_ID = (r"(?:[A-Za-z]\w*_\w*|[A-Za-z]+\d+\w*|\w*[a-z][A-Z]\w*|(?i:int|integer|real|float|char|character)(?:\*\d+)?"
-       r"|BYTE|DOUBLE|BOOLEAN|DWORD|byte|double|boolean|dword|[A-Za-z]\w*\.(?:dat|txt|inc|lis|doc|sql|exe|bmp|log|cfg|ini|xls|c|h)|(?:\w+\\)+\w+)"
-       r"(?:\[\d*\])?(?:\([^)]*\))?;?")
+# Имя — атомарная группа до конца слова (?!\w): «DIN186» разбиралось [A-Za-z]+\d+\w* тремя способами, и перечень из 30 кодов
+# с обычным числом в конце перебирал 3^30 вариантов — задание висело часами («Крепеж сертификат», ru-en, 12.11). Смысл тот же:
+# после имени слово продолжаться не может; первыми — имена длиннее слова (файл, путь, тип*N); «;» берут разделитель и хвост
+# (сверка на 47 581 сегменте 85 заданий: расхождений 0)
+_ID = (r"(?>(?:[A-Za-z]\w*\.(?:dat|txt|inc|lis|doc|sql|exe|bmp|log|cfg|ini|xls|c|h)|(?:\w+\\)+\w+"
+       r"|(?i:int|integer|real|float|char|character)(?:\*\d+)?"
+       r"|[A-Za-z]\w*_\w*|[A-Za-z]+\d+\w*|\w*[a-z][A-Z]\w*|BYTE|DOUBLE|BOOLEAN|DWORD|byte|double|boolean|dword)(?!\w))"
+       r"(?:\[\d*\])?(?:\([^)]*\))?")
 IDENT_ONLY = re.compile(rf"[\s{{}}]*\*?{_ID}(?:[\s,;/]+\*?{_ID})*[\s,;:{{}}]*")
 
 # слово из прописных, которым документ сам строит имена из кода (RUN в RUN_XSTEP, TRIGGER в TRIGGER03, NAME в get_stat_name):

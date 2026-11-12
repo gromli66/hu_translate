@@ -102,6 +102,20 @@ def test_needs_translation():
     assert S.needs_translation("Szelep zárva")
 
 
+def test_ident_only_long_code_list_is_fast():
+    # перечень стандартов с числом в конце: старая регулярка перебирала 3^30 вариантов и вешала задание (12.11)
+    import time
+    t = ", ".join(f"DIN{n}" for n in range(186, 216)) + ", 1804014, 1504017."
+    t0 = time.perf_counter()
+    assert not S.IDENT_ONLY.fullmatch(t)
+    assert time.perf_counter() - t0 < 1
+    for name in ("get_ stat_name", "Char16", "MarkTrigger", "real*4", "integer*4", "mf_load(loa, meas)", "INT*4, CHAR",
+                 "abc_def.txt", "a_b;c_d", "char TRIG_ID[3];", "*ptr_x, *ptr_y", "DIN186, DIN188"):
+        assert S.IDENT_ONLY.fullmatch(name), name
+    for text in ("real*4x", "Szelep zárva", "DIN186, 1804014"):
+        assert not S.IDENT_ONLY.fullmatch(text), text
+
+
 # ------------------------------------------------------------------ конвейер
 def test_memory_key_keeps_tabs_and_breaks():
     # схлопывание табуляций давало колонтитулам чужую раскладку (560 строк [TAB]/[BR], v4 05.10)
