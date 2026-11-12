@@ -76,6 +76,7 @@ def test_run_writes_copy_per_pdf_without_translation(tmp_path, monkeypatch):
     (src / "notes.docx").write_bytes(b"x")
     monkeypatch.setattr(RC, "read_page", lambda f, pno, lang: (HTML, 595, 1000, None))
     monkeypatch.setattr(RC, "read_text", lambda f, pno: ("Декларация", None))
+    monkeypatch.setattr(RC, "read_boxes", lambda f, pno, alts: ([], None, ""))
     n = RC.run(src, tmp_path / "work", "ru")
     assert n >= 5 and [f.name for f in (tmp_path / "work" / "out").iterdir()] == ["Декларация.docx"]
     rd = tmp_path / "work" / "copy_read" / "Декларация"                        # оба чтения — для сверки
@@ -194,3 +195,19 @@ def test_borderless_table_keeps_cell_align_and_widths(tmp_path):
     assert [c.paragraphs[0].alignment for c in head.rows[0].cells] == [None, 1, 2] or         [c.paragraphs[0].alignment for c in head.rows[0].cells] == [0, 1, 2]
     w = [c.width.pt for c in head.rows[0].cells]
     assert abs(w[1] - 2 * w[0]) < 2 and abs(w[0] - w[2]) < 2
+
+
+def test_logo_taken_by_portal_box(tmp_path):
+    # логотип из букв поиск по скану не находит; рамка портала — находит (Информационное письмо 12.11)
+    def draw(img):
+        img[60:110, 60:110] = 10                                       # ромб — его поиск видит
+        for col in range(60, 200, 9):
+            img[115:122, col:col + 6] = 30                             # надпись логотипа — буквы, «текст»
+    pdf = page_with(tmp_path, draw)
+    html = '<body><table style="border: none"><tr><td><img alt="логотип"></td><td>ООО</td></tr></table></body>'
+    out = tmp_path / "c.docx"
+    RC.build(pdf, [(html, 595, 1000, None)], out, boxes=[[("логотип", (55 / 595, 55 / 1000, 205 / 595, 125 / 1000))]])
+    doc = Document(str(out))
+    assert len(doc.inline_shapes) == 1
+    w = doc.inline_shapes[0].width.pt
+    assert w > 120                                                     # ромб и надпись, а не один ромб (50 pt)
