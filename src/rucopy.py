@@ -301,10 +301,11 @@ def crop_strokes(page, frac, letter):
     return png, rgba.shape[1] / k, rgba.shape[0] / k, (clip.x0 - r.x0 + cx0 / k, clip.y0 - r.y0 + cy0 / k)
 
 
-def float_shape(shape, x, y, rel=("column", "paragraph")):
+def float_shape(shape, x, y, rel=("column", "paragraph"), wrap=False):
     """Картинка в строке → поверх текста без обтекания (wp:anchor): x, y в pt от rel (по умолчанию — от левого края
     колонки и верха абзаца; ("page", "page") — от края листа). Печать и подпись на скане стоят поверх текста и места не
-    занимают; в строке они раздвигали лист (Декларация 1 → 2)."""
+    занимают; в строке они раздвигали лист (Декларация 1 → 2). wrap — текст обтекает картинку (логотип по рамке
+    портала, которому нет места в разметке: поверх текста он закрывал строки, Крепеж сертификат 12.11)."""
     from docx.oxml import parse_xml
     from docx.oxml.ns import nsdecls
     inl = shape._inline
@@ -316,7 +317,8 @@ def float_shape(shape, x, y, rel=("column", "paragraph")):
         f'<wp:positionV relativeFrom="{rel[1]}"><wp:posOffset>{emu(y)}</wp:posOffset></wp:positionV></wp:anchor>')
     anc.append(inl.extent)
     anc.append(parse_xml(f'<wp:effectExtent {nsdecls("wp")} l="0" t="0" r="0" b="0"/>'))
-    anc.append(parse_xml(f'<wp:wrapNone {nsdecls("wp")}/>'))
+    anc.append(parse_xml(f'<wp:wrapSquare {nsdecls("wp")} wrapText="bothSides"/>' if wrap else
+                         f'<wp:wrapNone {nsdecls("wp")}/>'))
     for el in list(inl):
         anc.append(el)                                      # docPr, cNvGraphicFramePr, graphic
     inl.getparent().replace(inl, anc)
@@ -348,9 +350,9 @@ def figures(page, dpi=100):
     """Печати, штампы, подписи, логотипы, гербы, QR, фото на скане → [(вид, рамка в pt, круги печатей в ней)] по
     высоте листа.
     - «цвет»: явная цветная краска (синяя, фиолетовая, красная: max−min ≥ 60) — не оттенок бумаги бланка и не шум у
-      чёрных букв; куски ближе 6 pt — одна вырезка; шире 0,6 листа или выше 0,45 листа — фон бланка, не печать
-      (прежде порог 260 pt: печать, штамп «ЗАВЕРЕНО» и синяя печать подряд — 262 pt, и вырезка шла кусками, Письмо о
-      гарантии 12.11);
+      чёрных букв; куски ближе 6 pt — одна вырезка; шире 0,85 листа или выше 0,45 листа — фон бланка (рамка
+      лицензии — 0,96), не печать (прежде порог 260 pt: печать, штамп «ЗАВЕРЕНО» и синяя печать подряд — 262 pt, и
+      вырезка шла кусками, Письмо о гарантии; подпись, штамп и печать подряд — 0,6 листа, Отказное письмо 2, 12.11);
     - «круг»: круглая печать любой краски (серая на ксерокопии) — краска лежит по ободу и её нет чуть внутри и снаружи
       (иначе окружность «находится» в таблице с текстом);
     - «фото»: сплошь не белое от 60×60 pt (фото изделия, заливка);
@@ -371,7 +373,7 @@ def figures(page, dpi=100):
     n, _, st, _ = cv2.connectedComponentsWithStats(cv2.dilate(color, np.ones((int(6 * k), int(6 * k)), np.uint8)), 8)
     for i in range(1, n):
         x, y, w, h, _ = st[i]
-        if 15 * k < w < 0.6 * W and 10 * k < h < 0.45 * H and color[y:y + h, x:x + w].sum() > 40 * k * k:
+        if 15 * k < w < 0.85 * W and 10 * k < h < 0.45 * H and color[y:y + h, x:x + w].sum() > 40 * k * k:
             found.append(("цвет", fitz.Rect(x / k, y / k, (x + w) / k, (y + h) / k)))
 
     def ring(cx, cy, r):
@@ -499,6 +501,7 @@ class Builder:
         self.figs, self.used, self.slots = list(figs), set(), []      # slots: (абзац, рамка)
         self.inked = False                                             # печать листа уже вставлена
         self.last = None                                               # последний абзац листа
+        self.first = None                                              # первый абзац листа
 
     def text_width_pt(self):
         s = self.doc.sections[-1]
@@ -617,10 +620,14 @@ class Builder:
                 continue
             self.bused.add(j)
             png, wpt, hpt, (x, y) = got
-            shape = self.picture(self.last.add_run(), png, wpt, None, n)
-            float_shape(shape, x, y, rel=("page", "page"))
+            # логотип — с обтеканием у первого абзаца листа (он в шапке; у последнего абзаца обтекание сдвигало бы
+            # чужой лист), подпись — поверх текста, как печати
+            logo = n != "подпись"
+            par = self.first if logo else self.last
+            shape = self.picture(par.add_run(), png, wpt, None, n)
+            float_shape(shape, x, y, rel=("page", "page"), wrap=logo)
             pr = self.page.rect
-            self.slots.append((self.last, type(pr)(pr.x0 + x, pr.y0 + y, pr.x0 + x + wpt, pr.y0 + y + hpt)))
+            self.slots.append((par, type(pr)(pr.x0 + x, pr.y0 + y, pr.x0 + x + wpt, pr.y0 + y + hpt)))
 
     def covered(self, fr):
         """Рамка (доли листа) больше чем на треть — на уже вставленной картинке листа."""
@@ -676,6 +683,7 @@ class Builder:
                 r.font.size = size
         self.paras += 1
         self.last = par
+        self.first = self.first or par
         return par
 
     def blocks(self, container, node, fmt=None, cap=None, align=None):

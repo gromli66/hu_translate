@@ -137,18 +137,21 @@ def column(lines, hmed):
 
 # ------------------------------------------------------------------ решения по листу
 def plan_page(us, lines, dpi):
-    """Куски листа + строки Surya → ({номер куска: решение}, [связки кусков одной строки]).
+    """Куски листа + строки Surya → ({номер куска: решение}, [связки кусков одной строки], [куски — текст штампа]).
     Решение: {"align": 0|1|2|None, "left": pt|None, "first": pt|None}; связка: [(номер куска, ("left"|"right", pt))]
-    — первый кусок с позицией None."""
+    — первый кусок с позицией None. Текст штампа — кусок, все строки которого помечены "stamp" (copycheck.stamp_lines:
+    краска штампа в рамке «штамп» портала): штамп уже стоит в копии вырезкой скана, а набранный порталом его текст
+    («КОПИЯ ВЕРНА» → «TRUE COPY», «ГЕНЕРАЛЬНЫЙ ДИРЕКТОР … ЭНЕРГОКОМПЛЕКС» с тремя разными ФИО в переводе) — дубль,
+    и надписи печатей не переводятся (Максим, 12.11)."""
     ls = [ln for ln in lines if len(norm(ln.get("t") or "")) >= 2]
     if len(ls) < 5:
-        return {}, []
+        return {}, [], []
     ls, _ = deskew(ls)
     hmed = st.median(ln["rb"][3] - ln["rb"][1] for ln in ls)
     left, right, x0s = column(ls, hmed)
     width = right - left
     if width <= 0:
-        return {}, []
+        return {}, [], []
     tol = max(0.8 * hmed, 0.012 * width)
     pt = 72.0 / dpi
     rows = rows_of(ls)
@@ -217,6 +220,16 @@ def plan_page(us, lines, dpi):
             continue
         ok[k] = [[min(ln["rb"][0] for ln in r), min(ln["rb"][1] for ln in r), max(ln["rb"][2] for ln in r),
                   max(ln["rb"][3] for ln in r)] for r in rr]
+    drops = [k for k in ok if not us[k]["cell"] and all(ln.get("stamp") for ln in order if ln["u"] == k)]
+    # портал пишет штамп одним <p> с переносами: строка, которую Surya не сопоставила («ООО ТД «ЭНЕРГОКОМПЛЕКС»»), и
+    # без чёрного текста — тоже текст штампа (Отказное письмо)
+    for k in list(drops):
+        for j, v in enumerate(us):
+            if v["p"] is us[k]["p"] and j not in drops and v["t"].strip() \
+                    and not any(ln["u"] == j and not ln.get("stamp") for ln in order):
+                drops.append(j)
+    for k in drops:
+        ok.pop(k, None)
     stop = lambda x: sum(abs(x - u) <= 0.8 * hmed for u in x0s) >= 4   # «табулятор»: край, общий у 4+ строк листа
     sides = lambda lg, rg: lg > 2 * tol and rg > 2 * tol and abs(lg - rg) <= max(tol, 0.03 * width)
     dec = {}
@@ -294,7 +307,7 @@ def plan_page(us, lines, dpi):
         for k in ks[1:]:
             dec.pop(k, None)
         links.append(link)
-    return dec, links
+    return dec, links, drops
 
 
 WP = "{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}"
@@ -411,17 +424,18 @@ def text_width(doc, p):
 
 def apply(doc, surya_pages, dpi):
     """Раскладка копии по строкам Surya на месте. surya_pages — {лист: [{"t", "box", "poly"}]} (строки листа в px при
-    dpi). → (кусков с раскладкой со скана, связок кусков одной строки)."""
+    dpi). → (кусков с раскладкой со скана, связок кусков одной строки, [снятый текст штампов])."""
     from docx.enum.text import WD_TAB_ALIGNMENT
     from docx.oxml import OxmlElement
     from docx.shared import Pt
     from docx.text.paragraph import Paragraph
     n_dec = n_link = 0
+    dropped = []
     for page, us in units(doc).items():
-        dec, links = plan_page(us, surya_pages.get(page) or [], dpi)
-        if not dec and not links:
+        dec, links, drops = plan_page(us, surya_pages.get(page) or [], dpi)
+        if not dec and not links and not drops:
             continue
-        touched = set(dec) | {k for link in links for k, _ in link}
+        touched = set(dec) | {k for link in links for k, _ in link} | set(drops)
         # абзацы с несколькими кусками, где хоть одному что-то ставится, — делятся по переносам
         el_of, split_done = {}, {}
         for k, u in enumerate(us):
@@ -469,4 +483,17 @@ def apply(doc, surya_pages, dpi):
                 else:
                     pf.tab_stops.add_tab_stop(Pt(min(pos, (tw or pos + 20) - 20)), WD_TAB_ALIGNMENT.LEFT)
             n_link += 1
-    return n_dec, n_link
+        # текст штампа — прочь; картинки, привязанные к его абзацу (печати поверх текста), — в соседний абзац
+        for k in drops:
+            el = el_of[k]
+            if ends_page(el) or el.getparent() is None:
+                continue
+            to = next((x for x in el.itersiblings(preceding=True) if x.tag == W + "p"), None)
+            to = to if to is not None else next((x for x in el.itersiblings() if x.tag == W + "p"), None)
+            if to is None:
+                continue
+            for r in [r for r in el.iter(W + "r") if r.find(f".//{W}drawing") is not None]:
+                to.append(r)
+            dropped.append("".join(pieces(el)).strip())
+            el.getparent().remove(el)
+    return n_dec, n_link, dropped

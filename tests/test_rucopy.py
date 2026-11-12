@@ -282,5 +282,8 @@ def test_logo_box_without_placeholder_floats(tmp_path):
     anchors = list(doc.element.body.iter(qn("wp:anchor")))
     descr = sorted(a.find(qn("wp:docPr")).get("descr") for a in anchors)
     assert descr == ["логотип — не переводить", "печать — не переводить"], descr          # пустая рамка — мимо
+    logo = next(a for a in anchors if a.find(qn("wp:docPr")).get("descr").startswith("логотип"))
+    assert logo.find(qn("wp:wrapSquare")) is not None                       # текст обтекает, а не закрыт логотипом
+    assert logo.getparent().getparent().getparent() is doc.paragraphs[0]._p  # у первого абзаца листа
     assert RC.box_names(["подпись", "штамп"]) == ["подпись", "штамп", "логотип"]
     assert RC.box_names(["QR", "подпись"]) == ["QR", "подпись"]                             # как прежде — из кэша

@@ -63,7 +63,7 @@ def words(doc):
 def test_layout_from_scan():
     doc = make_doc()
     before = words(doc)
-    laid, linked = CL.apply(doc, {0: page_lines()}, DPI)
+    laid, linked, dropped = CL.apply(doc, {0: page_lines()}, DPI)
     ps = doc.paragraphs
     assert [p.text for p in ps] == ["Информационное письмо", LONG, "Данное решение обусловлено рядом причин:",
                                     "- защита канала поставки от санкционных рисков,", "- разделение направлений бизнеса,",
@@ -82,7 +82,7 @@ def test_layout_from_scan():
     tab = list(pf.tab_stops)
     assert len(tab) == 1 and tab[0].alignment == WD_TAB_ALIGNMENT.LEFT and abs(tab[0].position.pt - 700 * PT) < 0.2
     assert ps[7].alignment == 1                                           # «(noint» не сопоставилось — как у портала
-    assert (laid, linked) == (7, 1)
+    assert (laid, linked, dropped) == (7, 1, [])
 
 
 def test_skewed_sheet_same_layout():
@@ -117,7 +117,7 @@ def test_half_read_line_left_as_portal():
 
 def test_no_lines_nothing_changes():
     doc = make_doc()
-    assert CL.apply(doc, {0: []}, DPI) == (0, 0)
+    assert CL.apply(doc, {0: []}, DPI) == (0, 0, [])
     assert len(doc.paragraphs) == 7 and doc.paragraphs[2].text.count("\n") == 2
 
 
@@ -143,3 +143,32 @@ def test_layout_then_check(tmp_path):
     f = tmp_path / "c.docx"
     doc.save(f)
     assert Document(str(f)).paragraphs[6].text == "(подпись)\tСливкин Д.Н."
+
+
+def test_stamp_text_dropped_picture_kept():
+    """Набранный порталом текст штампа (строки краски штампа, "stamp") снимается — штамп стоит вырезкой; картинка,
+    привязанная к его абзацу, переезжает в соседний абзац."""
+    from docx.oxml import OxmlElement
+    doc = make_doc()
+    stamp = doc.add_paragraph("КОПИЯ ВЕРНА")
+    r = OxmlElement("w:r"); r.append(OxmlElement("w:drawing")); stamp._p.append(r)
+    lines = page_lines() + [dict(ln("КОПИЯ ВЕРНА", 1100, 900, 1400), stamp=True)]
+    laid, linked, dropped = CL.apply(doc, {0: lines}, DPI)
+    assert dropped == ["КОПИЯ ВЕРНА"]
+    assert [p.text for p in doc.paragraphs][-1] == "Директор"
+    assert doc.paragraphs[-1]._p.find(".//" + CL.W + "drawing") is not None
+
+
+def test_stamp_paragraph_dropped_whole():
+    """Штамп одним абзацем с переносами: строка, которую Surya не сопоставила, снимается вместе с остальными."""
+    doc = make_doc()
+    p = doc.add_paragraph("ГЕНЕРАЛЬНЫЙ ДИРЕКТОР")
+    p.add_run().add_break()
+    p.add_run("ООО ТД «ЭНЕРГОКОМПЛЕКС»")
+    p.add_run().add_break()
+    p.add_run("Гавришенков Д.А.")
+    lines = page_lines() + [dict(ln("Генеральный директор", 1100, 900, 1400), stamp=True),
+                            dict(ln("Гавришенков Д.А.", 1100, 980, 1400), stamp=True)]
+    _, _, dropped = CL.apply(doc, {0: lines}, DPI)
+    assert sorted(dropped) == sorted(["ГЕНЕРАЛЬНЫЙ ДИРЕКТОР", "ООО ТД «ЭНЕРГОКОМПЛЕКС»", "Гавришенков Д.А."])
+    assert doc.paragraphs[-1].text == "Директор"
