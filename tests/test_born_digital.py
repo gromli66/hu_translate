@@ -48,6 +48,15 @@ def test_curve_text_still_counts_as_missing():
     assert share > 0.15
 
 
+
+def test_russian_scan_page_counts_as_missing():
+    # лист скана без текстового слоя и без единого латинского слова (лицензия RU→EN, 12.11): прежде доля 0 — не распознавался
+    doc = fitz.open(); page = doc.new_page()
+    words = [word(w, (50 + i * 60, 100, 100 + i * 60, 110)) for i, w in
+             enumerate(["Перечень", "выполняемых", "работ", "рамках", "деятельности", "Лицензиат", "обязан"])]
+    share, _ = S.page_missing_share(page, words)
+    assert share == 1.0
+
 def test_hidden_text_under_full_page_image_is_skipped():
     doc = fitz.open(); page = doc.new_page()
     page.insert_text((50, 800), "Létesítmény: Paksi Atomerőmű", fontsize=9)       # под фоном
