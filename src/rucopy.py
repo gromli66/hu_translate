@@ -89,6 +89,11 @@ def read_boxes(pdf, pno, alts):
     return out, r.get("error"), r.get("text") or ""
 
 
+def box_names(alts):
+    """Что спросить в read_boxes: заглушки листа; нет среди них логотипа, герба, QR, фото — и «логотип»."""
+    return list(alts) if any(a.lower() in DARK_ALT for a in alts) else list(alts) + ["логотип"]
+
+
 def placeholders(html):
     """Подписи заглушек картинок (<img alt>) HTML листа по порядку."""
     out = []
@@ -187,11 +192,12 @@ def crop_rect(page, rect, ink=None):
                        (rect.x1 - r.x0) / r.width, (rect.y1 - r.y0) / r.height), ink)
 
 
-def crop(page, frac, ink=None):
+def crop(page, frac, ink=None, pos=False):
     """Вырезка скана по рамке (доли листа) с запасом 5 %, поджатая по краске → (PNG, ширина и высота в pt).
     ink — круги печатей в pt (может быть пустым): вырезка печати, штампа, подписи — только цветная краска и то, что
     внутри круга печати, остальное белое: иначе в копию шёл и текст оригинала под печатью и рядом с ней («(подпись)»,
-    «Регистрационный номер…», Декларация 12.11). None — как есть (логотип, фото)."""
+    «Регистрационный номер…», Декларация 12.11). None — как есть (логотип, фото). pos — и левый верхний угол вырезки
+    на листе в pt (картинка поверх текста там же, где на скане)."""
     import fitz
     import numpy as np
     r = page.rect
@@ -229,10 +235,70 @@ def crop(page, frac, ink=None):
         # бумага — прозрачная: печать ложится поверх текста краской, а не белым кругом, закрывающим строки
         alpha = np.where(a.min(2) > 225, 0, 255).astype(np.uint8)
         rgba = np.ascontiguousarray(np.dstack([a, alpha]))
-        return (fitz.Pixmap(fitz.csRGB, rgba.shape[1], rgba.shape[0], rgba.tobytes(), True).tobytes("png"),
-                clip.width, clip.height)
-    a = np.ascontiguousarray(a)
-    return fitz.Pixmap(fitz.csRGB, a.shape[1], a.shape[0], a.tobytes(), False).tobytes("png"), clip.width, clip.height
+        out = (fitz.Pixmap(fitz.csRGB, rgba.shape[1], rgba.shape[0], rgba.tobytes(), True).tobytes("png"),
+               clip.width, clip.height)
+    else:
+        a = np.ascontiguousarray(a)
+        out = fitz.Pixmap(fitz.csRGB, a.shape[1], a.shape[0], a.tobytes(), False).tobytes("png"), clip.width, clip.height
+    return out + ((clip.x0 - r.x0, clip.y0 - r.y0),) if pos else out
+
+
+def letter_pt(page, dpi=100):
+    """Высота букв листа в pt — медиана высот тёмных пятен 3–40 px (как в figures)."""
+    import cv2
+    import fitz
+    import numpy as np
+    pix = page.get_pixmap(dpi=dpi, colorspace=fitz.csGRAY)
+    g = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width)
+    n, _, st, _ = cv2.connectedComponentsWithStats((g < 110).astype(np.uint8), 8)
+    hs = sorted(st[i][3] for i in range(1, n) if 3 <= st[i][3] <= 40 and st[i][2] <= 40)
+    return (hs[len(hs) // 2] if hs else 10) * 72 / dpi
+
+
+def crop_strokes(page, frac, letter):
+    """Подпись от руки по рамке портала: только крупные штрихи — больше 2,5 высоты буквы и не прямая линейка; буквы
+    текста и скобки «(подпись)», линейка под подписью (если росчерк её не пересёк) и цветная краска (её берёт вырезка
+    печати) — прочь. Серая подпись ксерокопии светлее букв: порог краски 185, не 140 (Декларация о соответствии). Чёрную подпись поиск печатей (figures: цвет и круги) не находит: в
+    копии её не было ни на одном листе первых документов (проверка глазами 12.11). Рамка портала на напечатанном
+    тексте («В.В. Ерофеев», Крепеж сертификат) штрихов не даёт. → (PNG, ширина, высота, (x, y) в pt) или None."""
+    import cv2
+    import fitz
+    import numpy as np
+    r = page.rect
+    x0, y0, x1, y1 = frac
+    clip = fitz.Rect(r.x0 + x0 * r.width, r.y0 + y0 * r.height, r.x0 + x1 * r.width, r.y0 + y1 * r.height) & r
+    if clip.is_empty:
+        return None
+    pix = page.get_pixmap(dpi=DPI_CROP, clip=clip)
+    a = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width, pix.n)[:, :, :3].copy()
+    k = DPI_CROP / 72
+    L = letter * k
+    mx, mn = a.max(2).astype(np.int16), a.min(2).astype(np.int16)
+    dark = ((mn < 185) & (mx - mn < 25)).astype(np.uint8)
+    # прямые линейки (под подписью, рамки граф) — прочь до разбора пятен: буквы «В.В. Ерофеев» стоят на линейке и с
+    # нею были одним крупным пятном (в копию шёл кусок «роф», Крепеж сертификат); линейка — прямая от 8 высот буквы:
+    # с 3 высотами уходили и пологие росчерки подписи (Информационное письмо)
+    ln = int(8 * L)
+    lines = cv2.morphologyEx(dark, cv2.MORPH_OPEN, np.ones((1, ln), np.uint8))
+    lines |= cv2.morphologyEx(dark, cv2.MORPH_OPEN, np.ones((ln, 1), np.uint8))
+    dark = dark & (1 - lines)
+    n, lab, st, _ = cv2.connectedComponentsWithStats(dark, 8)
+    keep = np.zeros(dark.shape, bool)
+    for i in range(1, n):
+        w, h = st[i][2], st[i][3]
+        if min(w, h) > 0.3 * L and max(w, h) >= 2.5 * L:
+            keep |= lab == i
+    if keep.sum() < 3 * L * L:
+        return None
+    ys, xs = np.nonzero(keep)
+    pad = 4
+    cx0, cx1, cy0, cy1 = max(xs.min() - pad, 0), xs.max() + pad + 1, max(ys.min() - pad, 0), ys.max() + pad + 1
+    a[~keep] = 255
+    a = np.ascontiguousarray(a[cy0:cy1, cx0:cx1])
+    alpha = np.where(a.min(2) > 225, 0, 255).astype(np.uint8)
+    rgba = np.ascontiguousarray(np.dstack([a, alpha]))
+    png = fitz.Pixmap(fitz.csRGB, rgba.shape[1], rgba.shape[0], rgba.tobytes(), True).tobytes("png")
+    return png, rgba.shape[1] / k, rgba.shape[0] / k, (clip.x0 - r.x0 + cx0 / k, clip.y0 - r.y0 + cy0 / k)
 
 
 def float_shape(shape, x, y, rel=("column", "paragraph")):
@@ -282,7 +348,9 @@ def figures(page, dpi=100):
     """Печати, штампы, подписи, логотипы, гербы, QR, фото на скане → [(вид, рамка в pt, круги печатей в ней)] по
     высоте листа.
     - «цвет»: явная цветная краска (синяя, фиолетовая, красная: max−min ≥ 60) — не оттенок бумаги бланка и не шум у
-      чёрных букв; куски ближе 6 pt — одна вырезка; больше 260 pt — фон бланка, не печать;
+      чёрных букв; куски ближе 6 pt — одна вырезка; шире 0,6 листа или выше 0,45 листа — фон бланка, не печать
+      (прежде порог 260 pt: печать, штамп «ЗАВЕРЕНО» и синяя печать подряд — 262 pt, и вырезка шла кусками, Письмо о
+      гарантии 12.11);
     - «круг»: круглая печать любой краски (серая на ксерокопии) — краска лежит по ободу и её нет чуть внутри и снаружи
       (иначе окружность «находится» в таблице с текстом);
     - «фото»: сплошь не белое от 60×60 pt (фото изделия, заливка);
@@ -303,7 +371,7 @@ def figures(page, dpi=100):
     n, _, st, _ = cv2.connectedComponentsWithStats(cv2.dilate(color, np.ones((int(6 * k), int(6 * k)), np.uint8)), 8)
     for i in range(1, n):
         x, y, w, h, _ = st[i]
-        if 15 * k < w < 260 * k and 10 * k < h < 260 * k and color[y:y + h, x:x + w].sum() > 40 * k * k:
+        if 15 * k < w < 0.6 * W and 10 * k < h < 0.45 * H and color[y:y + h, x:x + w].sum() > 40 * k * k:
             found.append(("цвет", fitz.Rect(x / k, y / k, (x + w) / k, (y + h) / k)))
 
     def ring(cx, cy, r):
@@ -528,6 +596,37 @@ class Builder:
             self.used.add(i)
             if fig[0] in ("цвет", "круг") and self.last is not None:
                 self.place(self.last.add_run(), fig, "печать", None)
+        if self.page is None or self.last is None:
+            return
+        # по рамкам портала (read_boxes), которым место в разметке не досталось, — поверх текста там же, где на скане:
+        # подпись от руки — только штрихи; логотип, герб, QR — вырезкой как есть, если в рамке краска и она не на
+        # вставленной уже картинке (логотип «ПромТех» листов 3–5 сертификата портал в HTML не назвал, а на вопрос о
+        # рамках находит, Крепеж сертификат 12.11)
+        letter = None
+        for j, (n, fr) in enumerate(self.boxes):
+            if j in self.bused:
+                continue
+            got = None
+            if n == "подпись":
+                letter = letter or letter_pt(self.page)
+                got = crop_strokes(self.page, fr, letter)
+            elif n in DARK_ALT - {"фото"} and fr[2] - fr[0] <= 0.45 and fr[3] - fr[1] <= 0.2 \
+                    and has_ink(self.page, fr) and not self.covered(fr):
+                got = crop(self.page, fr, pos=True)
+            if got is None:
+                continue
+            self.bused.add(j)
+            png, wpt, hpt, (x, y) = got
+            shape = self.picture(self.last.add_run(), png, wpt, None, n)
+            float_shape(shape, x, y, rel=("page", "page"))
+            pr = self.page.rect
+            self.slots.append((self.last, type(pr)(pr.x0 + x, pr.y0 + y, pr.x0 + x + wpt, pr.y0 + y + hpt)))
+
+    def covered(self, fr):
+        """Рамка (доли листа) больше чем на треть — на уже вставленной картинке листа."""
+        r = self.page.rect
+        box = type(r)(r.x0 + fr[0] * r.width, r.y0 + fr[1] * r.height, r.x0 + fr[2] * r.width, r.y0 + fr[3] * r.height)
+        return any((box & s).get_area() > box.get_area() / 3 for _, s in self.slots)
 
     def inline(self, par, node, fmt, cap=None):
         """Строчное содержимое узла → прогоны абзаца (b/i/u/sup/sub, br, img)."""
@@ -828,10 +927,12 @@ def run(in_dir, work, lang, progress=None):
         with ThreadPoolExecutor(4) as ex:
             pages = list(ex.map(lambda p: read_page(up, p, L.NAME_RU.get(lang, lang)), range(cnt)))
             texts = list(ex.map(lambda p: read_text(up, p), range(cnt)))
-            # рамки картинок — только у листов с заглушками логотипа, герба, QR, фото (печати поиск находит сам)
+            # рамки картинок — у листов с заглушками (печати поиск находит сам): чёрную подпись от руки и логотип,
+            # который портал в HTML не назвал, — только по рамкам (Крепеж сертификат, декларации 12.11); лист с
+            # заглушкой логотипа спрашивается как прежде (ответ — из кэша), без неё — и о логотипе
             alts = [placeholders(html) for html, *_ in pages]
-            asked = list(ex.map(lambda p: read_boxes(up, p, alts[p]) if any(a.lower() in DARK_ALT for a in alts[p])
-                                else ([], None, ""), range(cnt)))
+            asked = list(ex.map(lambda p: read_boxes(up, p, box_names(alts[p])) if alts[p] else ([], None, ""),
+                                range(cnt)))
         # оба чтения и путь к листам (выпрямленным) — для сверки копии (copycheck): Surya читает те же листы
         rd = Path(work) / "copy_read" / f.stem.rstrip(". ")      # «X..pdf»: папку с точкой на конце Windows не открывает
         rd.mkdir(parents=True, exist_ok=True)
