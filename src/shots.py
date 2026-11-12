@@ -783,6 +783,8 @@ DOC = "word/document.xml"
 _R = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 _BLIP = "{http://schemas.openxmlformats.org/drawingml/2006/main}blip"
 _VML_IMG = "{urn:schemas-microsoft-com:vml}imagedata"
+_WP = "{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}"
+NO_TRANSLATE = "не переводить"          # пометка в замещающем тексте картинки (rucopy.NO_TRANSLATE)
 _SVG_BLIP = "{http://schemas.microsoft.com/office/drawing/2016/SVG/main}svgBlip"
 RASTER = {".png": "PNG", ".jpg": "JPEG", ".jpeg": "JPEG", ".bmp": "BMP", ".tif": "TIFF", ".tiff": "TIFF"}
 MIN_PX = 4000              # меньше (в пикселях) — значок или маркер, не рисунок с надписями
@@ -813,7 +815,13 @@ def docx_pictures(path):
                 continue
             seen.add(name)
             ext = Path(name).suffix.lower()
-            if el.tag == _BLIP and next(el.iter(_SVG_BLIP), None) is not None:
+            # замещающий текст «… — не переводить»: печать, подпись, логотип копии скана (rucopy) идут как есть —
+            # надписи печати портал верно не перескажет, перерисовка испортила бы её (Максим, 12.11)
+            box = next((a for a in el.iterancestors() if a.tag in (_WP + "inline", _WP + "anchor")), None)
+            pr = box.find(_WP + "docPr") if box is not None else None
+            if pr is not None and NO_TRANSLATE in (pr.get("descr") or ""):
+                skipped[name] = f"помечена «{NO_TRANSLATE}»: {pr.get('descr')}"[:200]
+            elif el.tag == _BLIP and next(el.iter(_SVG_BLIP), None) is not None:
                 skipped[name] = "векторная (SVG; PNG — запасная, Word её не показывает)"
             elif ext not in RASTER:
                 skipped[name] = f"векторная ({ext[1:].upper()})" if ext in (".emf", ".wmf", ".emz", ".wmz", ".svg") \
