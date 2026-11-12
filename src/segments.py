@@ -140,6 +140,11 @@ def run_sig(r):
     va = rpr.find(W + "vertAlign")
     if va is not None and va.get(W + "val") in ("superscript", "subscript"):
         sig.append(va.get(W + "val"))
+    # выделение цветом — своей группой: перевод выделенного ложится в выделенный прогон. Прежде выделение по группам не
+    # делилось и в переводе пропадало; сомнительные места копии скана (copycheck) Максим правит именно в переводе (12.11)
+    hl = rpr.find(W + "highlight")
+    if hl is not None and hl.get(W + "val") not in (None, "none"):
+        sig.append("highlight")
     return tuple(sig)
 
 

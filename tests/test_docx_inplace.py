@@ -52,6 +52,17 @@ def test_highlighted_first_word_does_not_paint_whole_paragraph(tmp_path):
         ("", ["highlight"]), ("printed form. Documentation shall be prepared in Microsoft Word.", [])]
 
 
+def test_highlight_is_own_group_and_stays_on_its_words(tmp_path):
+    # выделение цветом — своя группа (сомнительное место копии скана, copycheck 12.11): перевод с метками — выделены
+    # ровно переведённые слова; без меток — весь текст в основной прогон, абзац не желтеет (случай выше)
+    body = ('<w:p><w:r><w:t>аттестат № </w:t></w:r><w:r><w:rPr><w:highlight w:val="yellow"/></w:rPr>'
+            '<w:t>РОСС RU.32248.04СЕ10.1.15</w:t></w:r><w:r><w:t>, сроком действия до 01.02.2025 года.</w:t></w:r></w:p>')
+    assert "<f2>РОСС RU.32248.04СЕ10.1.15</f2>" in S.docx_segments(_docx(tmp_path, body))[0]["text"]
+    assert _runs_after(tmp_path, body, "<f1>certificate No. </f1><f2>ROSS RU.32248.04SE10.1.15</f2>"
+                                       "<f3>, valid until 01.02.2025.</f3>") == [
+        ("certificate No. ", []), ("ROSS RU.32248.04SE10.1.15", ["highlight"]), (", valid until 01.02.2025.", [])]
+
+
 def test_leading_tab_in_other_size_does_not_shrink_line(tmp_path):
     # табуляция кеглем 11 перед текстом кеглем по умолчанию — прежде вся строка печаталась кеглем табуляции
     body = ('<w:p><w:r><w:rPr><w:sz w:val="22"/></w:rPr><w:tab/></w:r>'

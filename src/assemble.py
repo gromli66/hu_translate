@@ -20,7 +20,10 @@ from segments import W, STAYS, _own_runs, run_text
 TAG = re.compile(r"</?f\d+>")
 
 
-def _split_groups(ru, n):
+def _split_groups(ru, n, sizes=None):
+    """Перевод по группам оформления (<f1>…</f1>…). Меток нет или они сбиты — весь текст в самую длинную по исходнику
+    группу (sizes), прежде — в первую: выделенное цветом первое слово красило весь абзац, когда выделение стало своей
+    группой (copycheck, 12.11; тот же случай — ТЗ тренажёра 20.10)."""
     if n <= 1:
         return [TAG.sub("", ru)]
     parts = re.findall(r"<f(\d+)>(.*?)</f\1>", ru, re.S)
@@ -28,7 +31,9 @@ def _split_groups(ru, n):
     if sorted(nums) == list(range(1, n + 1)):
         d = {int(k): t for k, t in parts}
         return [d[k] for k in range(1, n + 1)]
-    return [TAG.sub("", ru)] + [""] * (n - 1)
+    out = [""] * n
+    out[max(range(n), key=lambda k: sizes[k]) if sizes else 0] = TAG.sub("", ru)
+    return out
 
 
 def _pad(texts, groups, runs):
@@ -132,7 +137,8 @@ def build_docx(src, out, segs, res):
                     done.add(p)
                     runs = _own_runs(p)
                     groups = s["loc"]["groups"]
-                    texts = _pad(_split_groups(ru, len(groups)), groups, runs)
+                    sizes = [len("".join(run_text(runs[ri]) for ri in g)) for g in groups]
+                    texts = _pad(_split_groups(ru, len(groups), sizes), groups, runs)
                     texts[0] = s["loc"].get("lead", "") + texts[0]
                     # абзац с полем (номер страницы, версия): конечный пробел перед полем — как в оригинале, модель его
                     # срезает («Версия 1.0.7» → «Version1.0.7», 22.10)

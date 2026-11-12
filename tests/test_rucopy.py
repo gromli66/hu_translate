@@ -75,8 +75,12 @@ def test_run_writes_copy_per_pdf_without_translation(tmp_path, monkeypatch):
     (src / "Декларация.pdf").write_bytes(pdf.read_bytes())
     (src / "notes.docx").write_bytes(b"x")
     monkeypatch.setattr(RC, "read_page", lambda f, pno, lang: (HTML, 595, 1000, None))
+    monkeypatch.setattr(RC, "read_text", lambda f, pno: ("Декларация", None))
     n = RC.run(src, tmp_path / "work", "ru")
     assert n >= 5 and [f.name for f in (tmp_path / "work" / "out").iterdir()] == ["Декларация.docx"]
+    rd = tmp_path / "work" / "copy_read" / "Декларация"                        # оба чтения — для сверки
+    assert (rd / "p0000.html").read_text(encoding="utf-8") == HTML and (rd / "p0000.txt").exists()
+    assert json.loads((rd / "pages.json").read_text(encoding="utf-8"))["pages"] == 1
 
 
 def test_page_not_read_is_marked_loudly(tmp_path, capsys):

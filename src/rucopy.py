@@ -9,6 +9,7 @@
 Копию смотрит человек (и правит в Word), потом она переводится обычным заданием по пути DOCX.
 Прежний путь перевода сканов не меняется."""
 import io
+import json
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -41,6 +42,19 @@ def read_page(pdf, pno, lang):
     r = chat([{"role": "user", "content": prompt(lang, pix.width, pix.height)}],
              images=[img_b64(pix.tobytes("png"))], max_tokens=12000, tag=f"copy{pno}")
     return r.get("text") or "", pix.width, pix.height, r.get("error")
+
+
+def read_text(pdf, pno):
+    """Второе чтение листа — простым текстом, тем же запросом, что OCR-путь перевода (segments.pdf_segments: серый
+    лист 200 dpi, ocr_prompt): листы, уже читанные переводом, берутся из кэша. Нужно сверке (copycheck): чтение HTML
+    путало Н/И, Т/Г, а простое — нет («Авангард-НСК», «СИТИ-СЕРТ», Декларация 12.11). → (текст, ошибка или None)."""
+    import fitz
+    from llm import chat, img_b64
+    import segments as S
+    with fitz.open(str(pdf)) as doc:
+        png = doc[pno].get_pixmap(dpi=200, colorspace=fitz.csGRAY).tobytes("png")
+    r = chat([{"role": "user", "content": S.ocr_prompt()}], images=[img_b64(png)], max_tokens=8000, tag=f"ocr{pno}")
+    return r.get("text") or "", r.get("error")
 
 
 # ------------------------------------------------------------------ HTML → дерево
@@ -621,8 +635,19 @@ def run(in_dir, work, lang, progress=None):
         progress("копия", 0, total)
     for f, up, cnt in with_pages:
         t0 = time.time()
+        S.SRC_LANG = lang                               # ocr_prompt — по языку источника
         with ThreadPoolExecutor(4) as ex:
             pages = list(ex.map(lambda p: read_page(up, p, L.NAME_RU.get(lang, lang)), range(cnt)))
+            texts = list(ex.map(lambda p: read_text(up, p), range(cnt)))
+        # оба чтения и путь к листам (выпрямленным) — для сверки копии (copycheck): Surya читает те же листы
+        rd = Path(work) / "copy_read" / f.stem
+        rd.mkdir(parents=True, exist_ok=True)
+        for pno, ((html, *_), (txt, terr)) in enumerate(zip(pages, texts)):
+            (rd / f"p{pno:04d}.html").write_text(html, encoding="utf-8")
+            (rd / f"p{pno:04d}.txt").write_text(txt, encoding="utf-8")
+            if terr:
+                print(f"копия: {f.name}, лист {pno + 1} — второе чтение не получено: {terr}"[:300], flush=True)
+        (rd / "pages.json").write_text(json.dumps({"pdf": str(up), "pages": cnt}, ensure_ascii=False), encoding="utf-8")
         done += cnt
         if progress:
             progress("копия", done, total)
