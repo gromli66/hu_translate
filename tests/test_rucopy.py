@@ -178,3 +178,19 @@ def test_div_text_align_is_inherited(tmp_path):
     RC.build(scan(tmp_path), [(html, 595, 1000, None)], out)
     al = {p.text: p.alignment for p in Document(str(out)).paragraphs if p.text}
     assert al["ЕВРАЗИЙСКИЙ ЭКОНОМИЧЕСКИЙ СОЮЗ"] == al["ДЕКЛАРАЦИЯ О СООТВЕТСТВИИ"] == 1 and al["Заявитель"] is None
+
+
+def test_borderless_table_keeps_cell_align_and_widths(tmp_path):
+    html = ('<body><table width="100%" style="border: none;"><tr>'
+            '<td width="25%" align="left" style="border: none;">АВАНГАРД</td>'
+            '<td width="50%" align="center" style="border: none;">ООО «Авангард – НСК»<br>ИНН 5407471468</td>'
+            '<td width="25%" align="right">PLANET</td></tr></table>'
+            '<table border="1"><tr><td>Цвет</td><td>белый</td></tr></table></body>')
+    out = tmp_path / "c.docx"
+    RC.build(scan(tmp_path), [(html, 595, 1000, None)], out)
+    doc = Document(str(out))
+    head, grid = doc.tables
+    assert head.style.name != "Table Grid" and grid.style.name == "Table Grid"
+    assert [c.paragraphs[0].alignment for c in head.rows[0].cells] == [None, 1, 2] or         [c.paragraphs[0].alignment for c in head.rows[0].cells] == [0, 1, 2]
+    w = [c.width.pt for c in head.rows[0].cells]
+    assert abs(w[1] - 2 * w[0]) < 2 and abs(w[0] - w[2]) < 2

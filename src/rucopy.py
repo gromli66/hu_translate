@@ -559,14 +559,38 @@ class Builder:
                 ci += cs
         ncols = max(c for _, c in occ) + 1
         t = container.add_table(rows=len(rows), cols=ncols)
-        t.style = "Table Grid"
-        cw = (cap or self.text_width_pt()) / ncols
+        # рамки — только у таблицы с линейками: шапку бланка портал даёт таблицей с «border: none», и копия рисовала
+        # рамки, которых на скане нет (Информационное письмо 12.11); ничего не сказано — с рамками, как прежде
+        style = (node.attrs.get("style") or "").replace(" ", "").lower()
+        border = node.attrs.get("border")
+        if border is not None and border.strip() not in ("", "0"):
+            t.style = "Table Grid"
+        elif not re.search(r"border:(none|0)", style):
+            t.style = "Table Grid"
+        full = cap or self.text_width_pt()
+        # ширины столбцов — из width="25%" ячеек без colspan (первая такая в столбце), прочие поровну
+        pct = {}
+        for ri, ci, cs, rs, c in placed:
+            m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*%\s*", c.attrs.get("width") or "")
+            if cs == 1 and m and ci not in pct:
+                pct[ci] = float(m.group(1)) / 100
+        rest = [j for j in range(ncols) if j not in pct]
+        left = max(1 - sum(pct.values()), 0)
+        widths = [full * (pct[j] if j in pct else (left / len(rest) if rest else 0)) for j in range(ncols)]
+        if pct and all(w > 0 for w in widths):
+            from docx.shared import Pt as _Pt
+            t.autofit = False
+            for row in t.rows:
+                for j, cell in enumerate(row.cells):
+                    cell.width = _Pt(widths[j])
+        else:
+            widths = [full / ncols] * ncols
         for ri, ci, cs, rs, c in placed:
             cell = t.cell(ri, ci)
             if cs > 1 or rs > 1:
                 cell = cell.merge(t.cell(ri + rs - 1, ci + cs - 1))
             box = _Cell(cell)
-            self.blocks(box, c, {"b": True} if c.tag == "th" else {}, cap=cw * cs)
+            self.blocks(box, c, {"b": True} if c.tag == "th" else {}, cap=sum(widths[ci:ci + cs]), align=own_align(c))
             for p in cell.paragraphs:
                 for r in p.runs:
                     r.font.size = Pt(max(self.size - 2, 7))
