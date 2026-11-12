@@ -244,6 +244,9 @@ def host_path(p):
     return data / Path(p).relative_to("/app/data") if str(p).startswith("/app/data") else Path(p)
 
 
+SURYA_DPI = 200
+
+
 def run_surya(pdf, pages, python):
     """Листы PDF (200 dpi) → Surya в отдельном питоне (tools/surya_read.py). → {лист: строки}."""
     import fitz
@@ -252,7 +255,7 @@ def run_surya(pdf, pages, python):
         with fitz.open(str(pdf)) as d:
             for p in range(pages):
                 f = Path(td) / f"p{p:04d}.png"
-                d[p].get_pixmap(dpi=200).save(str(f))
+                d[p].get_pixmap(dpi=SURYA_DPI).save(str(f))
                 pngs.append(str(f))
         out = Path(td) / "surya.json"
         r = subprocess.run([python, "-I", str(Path(__file__).resolve().parent.parent / "tools" / "surya_read.py"),
@@ -270,14 +273,19 @@ def main(copy_docx, read_dir, out_docx, surya_python):
     plain = {p: (rd / f"p{p:04d}.txt").read_text(encoding="utf-8") for p in range(meta["pages"])
              if (rd / f"p{p:04d}.txt").exists()}
     sur = run_surya(host_path(meta["pdf"]), meta["pages"], surya_python)
+    import copylayout
     doc = Document(str(copy_docx))
+    # раскладка по строкам Surya — до сверки текста: деление абзацев по переносам не сдвигает её правок
+    laid, linked = copylayout.apply(doc, sur, SURYA_DPI)
     fixed, marked = check(doc, plain, sur)
     doc.save(str(out_docx))
-    print(f"сверка: {Path(copy_docx).name} — исправлено {fixed}, выделено {marked}")
+    print(f"сверка: {Path(copy_docx).name} — раскладка со скана {laid}, в одну строку {linked}, "
+          f"исправлено {fixed}, выделено {marked}")
     return fixed, marked
 
 
 if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).resolve().parent))         # и под python -I (свои модули — рядом)
     if len(sys.argv) != 5:
         sys.exit("usage: copycheck.py <копия.docx> <work/copy_read/<имя>> <выход.docx> <python с Surya>")
     main(*sys.argv[1:5])
