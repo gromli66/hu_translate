@@ -147,8 +147,34 @@ def test_placeholders_without_box_take_scan_figures_and_skip_translation(tmp_pat
     assert len(anchors) == 1 and "Директор" in doc.paragraphs[-1].text
     assert anchors[0].getparent().getparent().getparent() is doc.paragraphs[-1]._p
     x = int(anchors[0].find(qn("wp:positionH"))[0].text) / 12700
-    assert abs(x - (450 - 62 - 56.7)) < 15                                        # левый край печати, что на скане
+    assert anchors[0].find(qn("wp:positionH")).get("relativeFrom") == "page"
+    assert abs(x - (450 - 62)) < 15                                               # левый край печати, что на скане
     descr = [d.get("descr") for d in body.iter(qn("wp:docPr"))]
     assert descr == ["логотип — не переводить", "подпись — не переводить"]
     pics, skipped = shots.docx_pictures(out)
     assert not pics and all("не переводить" in v for v in skipped.values())     # надписи печатей не переводятся
+
+
+def test_align_of_scan_line():
+    R = fitz.Rect
+    body = [(w, R(50 + 70 * i, 100 + 14 * k, 110 + 70 * i, 110 + 14 * k), (1, k, 1))
+            for k in range(5) for i, w in enumerate("слово текста основного абзаца листа ровно семь".split())]
+    # заголовок, разорванный Tesseract на две строки и слегка наклонённый; мусор логотипа слева
+    title = [("FA", R(54, 30, 70, 50), (9, 1, 1)), ("ЕВРАЗИЙСКИЙ", R(150, 30, 260, 42), (9, 1, 2)),
+             ("ЭКОН,", R(265, 31, 300, 43), (9, 1, 2)), ("ОМИЧЕСКИЙ", R(300, 33, 380, 45), (9, 2, 1)),
+             ("СОЮЗ", R(385, 34, 430, 46), (9, 2, 1)),
+             ("(Ф.И.О.", R(420, 700, 470, 710), (9, 3, 1)), ("заявителя)", R(472, 700, 530, 710), (9, 3, 1))]
+    words = body + title
+    assert RC.align_of("ЕВРАЗИЙСКИЙ ЭКОНОМИЧЕСКИЙ СОЮЗ", words) == "center"
+    assert RC.align_of("(Ф.И.О. заявителя)", words) == "right"
+    assert RC.align_of("слово текста основного абзаца листа ровно семь", words) is None
+    assert RC.align_of("Совсем другой текст, которого на листе нет", words) is None
+
+
+def test_div_text_align_is_inherited(tmp_path):
+    html = ('<body><div style="display: flex"><img alt="логотип" src="x.png"><div style="text-align: center; flex-grow: 1">'
+            '<h1>ЕВРАЗИЙСКИЙ ЭКОНОМИЧЕСКИЙ СОЮЗ</h1><h2>ДЕКЛАРАЦИЯ О СООТВЕТСТВИИ</h2></div></div><p>Заявитель</p></body>')
+    out = tmp_path / "c.docx"
+    RC.build(scan(tmp_path), [(html, 595, 1000, None)], out)
+    al = {p.text: p.alignment for p in Document(str(out)).paragraphs if p.text}
+    assert al["ЕВРАЗИЙСКИЙ ЭКОНОМИЧЕСКИЙ СОЮЗ"] == al["ДЕКЛАРАЦИЯ О СООТВЕТСТВИИ"] == 1 and al["Заявитель"] is None

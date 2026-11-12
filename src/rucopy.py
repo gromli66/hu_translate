@@ -8,6 +8,7 @@
 обычный Word на языке оригинала: текст абзацами, таблицы — таблицами Word, печати, подписи, логотипы — вырезками скана.
 Копию смотрит человек (и правит в Word), потом она переводится обычным заданием по пути DOCX.
 Прежний путь перевода сканов не меняется."""
+import difflib
 import io
 import json
 import re
@@ -173,9 +174,10 @@ def crop(page, frac, ink=None):
     return fitz.Pixmap(fitz.csRGB, a.shape[1], a.shape[0], a.tobytes(), False).tobytes("png"), clip.width, clip.height
 
 
-def float_shape(shape, x, y):
-    """Картинка в строке → поверх текста без обтекания (wp:anchor): x — от левого края колонки, y — от верха абзаца, pt.
-    Печать и подпись на скане стоят поверх текста и места не занимают; в строке они раздвигали лист (Декларация 1 → 2)."""
+def float_shape(shape, x, y, rel=("column", "paragraph")):
+    """Картинка в строке → поверх текста без обтекания (wp:anchor): x, y в pt от rel (по умолчанию — от левого края
+    колонки и верха абзаца; ("page", "page") — от края листа). Печать и подпись на скане стоят поверх текста и места не
+    занимают; в строке они раздвигали лист (Декларация 1 → 2)."""
     from docx.oxml import parse_xml
     from docx.oxml.ns import nsdecls
     inl = shape._inline
@@ -183,8 +185,8 @@ def float_shape(shape, x, y):
     anc = parse_xml(
         f'<wp:anchor {nsdecls("wp")} distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="251659264" '
         f'behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/>'
-        f'<wp:positionH relativeFrom="column"><wp:posOffset>{emu(x)}</wp:posOffset></wp:positionH>'
-        f'<wp:positionV relativeFrom="paragraph"><wp:posOffset>{emu(y)}</wp:posOffset></wp:positionV></wp:anchor>')
+        f'<wp:positionH relativeFrom="{rel[0]}"><wp:posOffset>{emu(x)}</wp:posOffset></wp:positionH>'
+        f'<wp:positionV relativeFrom="{rel[1]}"><wp:posOffset>{emu(y)}</wp:posOffset></wp:positionV></wp:anchor>')
     anc.append(inl.extent)
     anc.append(parse_xml(f'<wp:effectExtent {nsdecls("wp")} l="0" t="0" r="0" b="0"/>'))
     anc.append(parse_xml(f'<wp:wrapNone {nsdecls("wp")}/>'))
@@ -232,7 +234,9 @@ def figures(page, dpi=100):
     k, W, H = dpi / 72, pix.width, pix.height
     gray = cv2.cvtColor(np.ascontiguousarray(a), cv2.COLOR_RGB2GRAY)
     mx, mn = a.max(2).astype(np.int16), a.min(2).astype(np.int16)
-    color = cv2.morphologyEx(((mx - mn >= 60) & (mx >= 100) & (mn <= 200)).astype(np.uint8), cv2.MORPH_OPEN,
+    # краска (не бумага: min ≤ 200) хоть немного цветная: у бледной печати на ксерокопии цвет едва виден (у половины
+    # её краски max−min 19–25), у чёрного текста — 0 (Декларация о соответствии, 12.11; прежде порог 60 её терял)
+    color = cv2.morphologyEx(((mx - mn >= 25) & (mn <= 200)).astype(np.uint8), cv2.MORPH_OPEN,
                              np.ones((2, 2), np.uint8))
     found = []
     n, _, st, _ = cv2.connectedComponentsWithStats(cv2.dilate(color, np.ones((int(6 * k), int(6 * k)), np.uint8)), 8)
@@ -245,7 +249,8 @@ def figures(page, dpi=100):
         t = np.linspace(0, 2 * np.pi, 180, endpoint=False)
         xs = np.clip((cx + r * np.cos(t)).astype(int), 0, W - 1)
         ys = np.clip((cy + r * np.sin(t)).astype(int), 0, H - 1)
-        return float(np.mean([gray[max(y - 1, 0):y + 2, max(x - 1, 0):x + 2].min() < 160 for x, y in zip(xs, ys)]))
+        return float(np.mean([gray[max(y - 1, 0):y + 2, max(x - 1, 0):x + 2].min() < 160
+                              or color[max(y - 1, 0):y + 2, max(x - 1, 0):x + 2].any() for x, y in zip(xs, ys)]))
     cs = cv2.HoughCircles(cv2.medianBlur(gray, 5), cv2.HOUGH_GRADIENT, dp=1.2, minDist=int(60 * k), param1=100,
                           param2=45, minRadius=int(35 * k), maxRadius=int(80 * k))
     for cx, cy, r in (cs[0] if cs is not None else []):
@@ -274,12 +279,74 @@ def figures(page, dpi=100):
         x, y, w, h, _ = st[i]
         if h >= 20 * k and w >= 20 * k:
             found.append(("тёмное", fitz.Rect(x / k, y / k, (x + w) / k, (y + h) / k)))
-    order = ["фото", "круг", "цвет", "тёмное"]
-    kind = lambda R: min((kd for kd, r in found if R.intersects(r)), key=order.index, default="тёмное")
     rings = lambda R: [((r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2, r.width / 2) for kd, r in found
                        if kd == "круг" and R.contains(fitz.Point((r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2))]
-    return sorted(((kind(R), R, rings(R)) for R in _merge([r for _, r in found])),
+
+    def qr(R):
+        """QR-код: квадрат из множества мелких тёмных пятен (у логотипа ЕАС их три)."""
+        x0, y0, x1, y1 = (int(v * k) for v in R)
+        cnt = cv2.connectedComponents((gray[y0:y1, x0:x1] < 110).astype(np.uint8), connectivity=8)[0] - 1
+        return 0.8 <= R.width / max(R.height, 1) <= 1.25 and cnt >= 30
+    # печати сливаются с печатями, картинки — с картинками: фото изделия на обложке не съедает печати под ним
+    ink = [("круг" if any(kd == "круг" and R.intersects(r) for kd, r in found) else "цвет", R)
+           for R in _merge([r for kd, r in found if kd in ("цвет", "круг")])]
+    pics = [("фото" if any(kd == "фото" and R.intersects(r) for kd, r in found) else "qr" if qr(R) else "тёмное", R)
+            for R in _merge([r for kd, r in found if kd in ("фото", "тёмное")])]
+    # тёмное внутри печати (середина серой печати «М.П.») — часть печати, не логотип
+    pics = [(kd, R) for kd, R in pics if not any((R & I).get_area() > 0.5 * R.get_area() for _, I in ink)]
+    return sorted(((kd, R, rings(R) if kd in ("цвет", "круг") else []) for kd, R in ink + pics),
                   key=lambda f: (f[1].y0 + f[1].y1) / 2)
+
+
+def text_lines(page):
+    """Слова скана по Tesseract: [(слово, рамка в pt, строка)] — выравнивание абзацев копии по листу (портал
+    выравнивание указывает не всегда: заголовок «ЕВРАЗИЙСКИЙ ЭКОНОМИЧЕСКИЙ СОЮЗ» вышел слева, Декларация о соответствии
+    12.11). Нет Tesseract — пусто (выравнивание — только от портала)."""
+    import tempfile
+    import fitz
+    import segments as S
+    with tempfile.TemporaryDirectory() as td:
+        f = Path(td) / "p.png"
+        page.get_pixmap(dpi=150, colorspace=fitz.csGRAY).save(str(f))
+        try:
+            ws = S._tess_words(f, 150)
+        except FileNotFoundError:
+            return []
+    return [(w["t"], fitz.Rect(w["box"]), w["line"]) for w in ws if w["c"] >= 40]
+
+
+def align_of(text, words):
+    """Выравнивание короткого абзаца (до 12 слов) по скану: края — по первому и последнему его слову на скане (лист
+    бывает повёрнут на пару градусов, и Tesseract рвёт заголовок на две строки, а к строке липнет мусор логотипа), поля —
+    по словам листа. По центру — поля слева и справа равны; вправо — прижат к правому краю; иначе None."""
+    norm = lambda t: re.sub(r"\s+", " ", t.lower()).strip()
+    toks = norm(text).split()
+    if not toks or len(toks) > 12 or not words:
+        return None
+    if len(words) < 20:
+        return None
+    # поля — по всем словам листа (5-й и 95-й процентили): строки Tesseract рвёт на куски, и края «длинных строк»
+    # уходили внутрь текста (правый 474 pt вместо 555, Декларация о соответствии); QR и мусор — в хвостах
+    x0s, x1s = sorted(r.x0 for _, r, _ in words), sorted(r.x1 for _, r, _ in words)
+    left, right = x0s[len(x0s) // 20], x1s[len(x1s) * 19 // 20]
+    W = right - left
+
+    def best(tok):
+        sc = lambda w: difflib.SequenceMatcher(None, norm(w[0]), tok).ratio()
+        w = max(words, key=sc)
+        return w if sc(w) >= 0.7 else None
+    first, last = best(toks[0]), best(toks[-1])
+    if W <= 0 or first is None or last is None:
+        return None
+    h = max(first[1].height, last[1].height)
+    if abs(first[1].y0 - last[1].y0) > 2.5 * h or last[1].x1 <= first[1].x0:
+        return None
+    lg, rg = first[1].x0 - left, right - last[1].x1
+    if lg > 0.08 * W and abs(lg - rg) < 0.08 * W:
+        return "center"
+    if rg < 0.04 * W and lg > 0.3 * W:
+        return "right"
+    return None
 
 
 # ------------------------------------------------------------------ дерево → Word
@@ -288,11 +355,19 @@ BLOCK = {"p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "table", "ul", "ol", "l
 ALIGN = {"center": 1, "right": 2, "justify": 3}           # WD_ALIGN_PARAGRAPH: 1 центр, 2 право, 3 по ширине
 
 
+def own_align(node):
+    """Выравнивание узла: атрибут align или text-align в style; нет — None."""
+    m = re.search(r"text-align\s*:\s*(\w+)", node.attrs.get("style") or "")
+    a = (m.group(1) if m else node.attrs.get("align") or "").lower()
+    return a if a in ALIGN or a == "left" else None
+
+
 class Builder:
-    def __init__(self, doc, page, w, h, figs=(), size=11):
-        self.doc, self.page, self.w, self.h, self.size = doc, page, w, h, size
+    def __init__(self, doc, page, w, h, figs=(), size=11, lines=()):
+        self.doc, self.page, self.w, self.h, self.size, self.lines = doc, page, w, h, size, list(lines)
         self.paras = 0
-        self.figs, self.used, self.slots = list(figs), set(), []      # slots: (абзац, рамка, сдвиг y или None)
+        self.figs, self.used, self.slots = list(figs), set(), []      # slots: (абзац, рамка)
+        self.inked = False                                             # печать листа уже вставлена
         self.last = None                                               # последний абзац листа
 
     def text_width_pt(self):
@@ -309,10 +384,11 @@ class Builder:
     def margin_pt(self):
         return self.doc.sections[-1].left_margin / 12700
 
-    def place(self, run, fig, alt, cap, y=None):
-        """Картинка скана в абзац прогона: печать, штамп, подпись (краска) — поверх текста там же по горизонтали, что на
-        скане (y — сдвиг от верха абзаца; по умолчанию серединой на строке); логотип, фото — в строке. В ячейке
-        таблицы — в строке: поверх текста ячейки она уехала бы из ячейки."""
+    def place(self, run, fig, alt, cap):
+        """Картинка скана в абзац прогона. Печать, штамп, подпись (краска) — поверх текста там же на листе, что на скане
+        (от края листа: копия кеглем вписана лист в лист, и место печати по абзацу-заглушке уводило её на чужие строки,
+        Декларация о соответствии 12.11). Логотип, фото, QR — в строке, у того края, что на скане. В ячейке таблицы — в
+        строке: поверх текста ячейки она уехала бы из ячейки."""
         from docx.table import _Cell
         kd, r, rings = fig
         ink = kd in ("цвет", "круг")
@@ -320,13 +396,13 @@ class Builder:
         shape = self.picture(run, png, wpt, cap, alt)
         par = run._parent
         if ink and not isinstance(par._parent, _Cell):
-            w = min(wpt, cap or self.text_width_pt())
-            h = hpt * w / wpt
-            y = 6 - h / 2 if y is None else y
-            float_shape(shape, max(r.x0 - self.margin_pt(), 0), y)
-            self.slots.append((par, r, y))
-        else:
-            self.slots.append((par, r, None))
+            float_shape(shape, r.x0 - self.page.rect.x0, r.y0 - self.page.rect.y0, rel=("page", "page"))
+            self.inked = True
+        elif not par.text.strip() and not isinstance(par._parent, _Cell):
+            # картинка своей строкой — у того края, что на скане (QR справа, логотип слева)
+            mid, W = (r.x0 + r.x1) / 2 - self.page.rect.x0, self.page.rect.width
+            par.alignment = 0 if mid < W / 3 else 2 if mid > 2 * W / 3 else 1
+        self.slots.append((par, r))
 
     def image(self, run, node, width_cap=None):
         """Заглушка портала (<img alt="печать">) → вырезка скана: по рамке портала, если дал, иначе — первая по
@@ -342,34 +418,31 @@ class Builder:
                           r.x0 + frac[2] * r.width, r.y0 + frac[3] * r.height)
             hit = [i for i, f in enumerate(self.figs) if f[1].intersects(box)]      # та же печать — не второй раз
             self.used.update(hit)
-            self.slots.append((run._parent, box, None))
+            self.slots.append((run._parent, box))
             return
-        dark = alt.lower() in DARK_ALT
-        i = next((i for i, f in enumerate(self.figs) if i not in self.used
-                  and ((f[0] in ("тёмное", "фото")) == dark)), None)
+        a = alt.lower()
+        want = ("qr",) if a == "qr" else ("тёмное", "фото") if a in DARK_ALT else ("цвет", "круг")
+        i = next((i for i, f in enumerate(self.figs) if i not in self.used and f[0] in want), None)
         if i is None or self.page is None:
-            run.text = f"[{alt}]"; run.italic = True
+            if not (self.inked and want == ("цвет", "круг")):    # печати листа уже стоят одной склеенной вырезкой
+                run.text = f"[{alt}]"; run.italic = True
             return
         self.used.add(i)
         self.place(run, self.figs[i], alt, width_cap)
 
     def finish(self, container):
-        """Картинки скана, которым портал места не дал: печать — поверх текста у вставленной ближайшей по высоте (с тем
-        же сдвигом, что на скане) или у последнего абзаца листа; логотип, фото — отдельным абзацем в конце листа."""
+        """Картинки скана, которым портал места не дал: печать — поверх текста там же на листе (привязана к последнему
+        абзацу листа); логотип, фото, QR — отдельным абзацем в конце листа."""
         for i, fig in enumerate(self.figs):
             if i in self.used or self.page is None:
                 continue
-            kd, r, _ = fig
+            kd = fig[0]
             self.used.add(i)
-            mid = (r.y0 + r.y1) / 2
-            near = min((s for s in self.slots if s[2] is not None), default=None,
-                       key=lambda s: abs((s[1].y0 + s[1].y1) / 2 - mid))
-            if kd in ("цвет", "круг") and near is not None and abs((near[1].y0 + near[1].y1) / 2 - mid) < 150:
-                self.place(near[0].add_run(), fig, "печать", None, y=near[2] + r.y0 - near[1].y0)
-            elif kd in ("цвет", "круг") and self.last is not None:
+            if kd in ("цвет", "круг") and self.last is not None:
                 self.place(self.last.add_run(), fig, "печать", None)
             else:
-                self.place(container.add_paragraph().add_run(), fig, {"тёмное": "логотип"}.get(kd, "фото"), None)
+                self.place(container.add_paragraph().add_run(), fig, {"тёмное": "логотип", "qr": "QR"}.get(kd, "фото"),
+                           None)
 
     def inline(self, par, node, fmt, cap=None):
         """Строчное содержимое узла → прогоны абзаца (b/i/u/sup/sub, br, img)."""
@@ -412,6 +485,8 @@ class Builder:
         self.inline(par, node, fmt, cap)
         if par.runs and par.runs[-1].text:
             par.runs[-1].text = par.runs[-1].text.rstrip()      # перевод строки в конце абзаца HTML — не пробел
+        if a not in ALIGN and a != "left" and cap is None and self.lines and (got := align_of(par.text, self.lines)):
+            par.alignment = ALIGN[got]                         # портал не сказал — по строке скана (не в ячейке)
         if size:
             for r in par.runs:
                 r.font.size = size
@@ -419,8 +494,10 @@ class Builder:
         self.last = par
         return par
 
-    def blocks(self, container, node, fmt=None, cap=None):
-        """Блочное содержимое узла → абзацы и таблицы контейнера (тело документа или ячейка)."""
+    def blocks(self, container, node, fmt=None, cap=None, align=None):
+        """Блочное содержимое узла → абзацы и таблицы контейнера (тело документа или ячейка). align — выравнивание
+        обёртки: text-align у <div> наследуют вложенные абзацы, как в браузере (портал оборачивает заголовок в
+        <div style="text-align: center">, Декларация о соответствии 12.11)."""
         from docx.shared import Pt
         fmt = fmt or {}
         loose = Node("p", [], node)                         # строчное между блоками — своим абзацем
@@ -428,7 +505,7 @@ class Builder:
             is_block = isinstance(k, Node) and k.tag in BLOCK
             if k is None or is_block:
                 if any(isinstance(x, Node) or x.strip() for x in loose.kids):
-                    self.paragraph(container, loose, fmt, cap=cap)
+                    self.paragraph(container, loose, fmt, align=align, cap=cap)
                 loose = Node("p", [], node)
             if k is None:
                 break
@@ -438,7 +515,7 @@ class Builder:
             tag = k.tag
             if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
                 self.paragraph(container, k, dict(fmt, b=True), size=Pt(self.size + {"h1": 3, "h2": 1}.get(tag, 0)),
-                               cap=cap)
+                               align=align, cap=cap)
             elif tag == "table":
                 self.table(container, k, cap)
             elif tag in ("ul", "ol"):
@@ -449,9 +526,9 @@ class Builder:
             elif tag == "li":
                 self.paragraph(container, k, fmt, cap=cap, prefix="– ")
             elif any(isinstance(x, Node) and x.tag in BLOCK for x in k.kids):
-                self.blocks(container, k, fmt, cap)          # div с абзацами внутри
+                self.blocks(container, k, fmt, cap, own_align(k) or align)       # div с абзацами внутри
             else:
-                self.paragraph(container, k, fmt, cap=cap)
+                self.paragraph(container, k, fmt, align=align, cap=cap)
 
     def table(self, container, node, cap=None):
         """<table> → таблица Word: сетка по colspan/rowspan, объединённые ячейки — merge."""
@@ -554,8 +631,9 @@ def page_setup(section, rect, m=(56.7, 42.5, 56.7, 42.5)):
     section.left_margin, section.top_margin, section.right_margin, section.bottom_margin = (Pt(v) for v in m)
 
 
-def build(pdf, pages, out, size=11):
-    """pages — [(HTML, ширина, высота, ошибка)] по листам → Word с кеглем size; → число абзацев."""
+def build(pdf, pages, out, size=11, lines=None):
+    """pages — [(HTML, ширина, высота, ошибка)] по листам → Word с кеглем size; lines — строки скана по листам
+    (text_lines) для выравнивания; → число абзацев."""
     import fitz
     from docx.enum.section import WD_SECTION
     doc = new_document(size)
@@ -579,7 +657,7 @@ def build(pdf, pages, out, size=11):
                 continue
             if "</body>" not in html and "</html>" not in html:
                 print(f"копия: {Path(pdf).name}, лист {pno + 1} — ответ портала оборван (нет </body>)", flush=True)
-            b = Builder(doc, page, w, h, figures(page), size)
+            b = Builder(doc, page, w, h, figures(page), size, lines[pno] if lines else ())
             b.blocks(doc, parse(html))
             b.finish(doc)
             n += b.paras
@@ -599,8 +677,10 @@ def fit(pdf, pages, out, n_pages, tmp_dir):
     from assemble import lo_convert
     tmp_dir.mkdir(parents=True, exist_ok=True)
     got = None
+    with fitz.open(str(pdf)) as d:
+        lines = [text_lines(pg) for pg in d]
     for size in SIZES:
-        k = build(pdf, pages, out, size)
+        k = build(pdf, pages, out, size, lines)
         try:
             lo_convert(out, tmp_dir / f"{out.stem}.pdf", timeout=300)
         except (OSError, RuntimeError) as e:
@@ -640,7 +720,7 @@ def run(in_dir, work, lang, progress=None):
             pages = list(ex.map(lambda p: read_page(up, p, L.NAME_RU.get(lang, lang)), range(cnt)))
             texts = list(ex.map(lambda p: read_text(up, p), range(cnt)))
         # оба чтения и путь к листам (выпрямленным) — для сверки копии (copycheck): Surya читает те же листы
-        rd = Path(work) / "copy_read" / f.stem
+        rd = Path(work) / "copy_read" / f.stem.rstrip(". ")      # «X..pdf»: папку с точкой на конце Windows не открывает
         rd.mkdir(parents=True, exist_ok=True)
         for pno, ((html, *_), (txt, terr)) in enumerate(zip(pages, texts)):
             (rd / f"p{pno:04d}.html").write_text(html, encoding="utf-8")
