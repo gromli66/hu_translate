@@ -500,6 +500,11 @@ def build_pdf(src, out, segs, res, progress=None, check=True):
                     plate = fitz.Rect(x0 - left, y0 - 1.5, max(x1 + 2, e1 + 1), y1 + 1.5)
                     plates.append(_trim_rules(plate, hmask) if hmask is not None else plate)
                     page.add_redact_annot(plates[-1] * der, fill=(1, 1, 1))
+                # вторая половина перенесённого слова — в начале следующей строки, вне рамок строк абзаца (segments._dehyphen)
+                for x0, y0, x1, y1 in s["loc"].get("wipe", ()):
+                    plate = fitz.Rect(x0 - 1, y0 - 1.5, x1 + 2, y1 + 1.5)
+                    plates.append(_trim_rules(plate, hmask) if hmask is not None else plate)
+                    page.add_redact_annot(plates[-1] * der, fill=(1, 1, 1))
             else:
                 for bb in s["loc"]["frags"]:
                     page.add_redact_annot(fitz.Rect(bb) * der, fill=False)

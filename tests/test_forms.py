@@ -264,3 +264,39 @@ def test_scan_plate_reaches_end_of_word_ink():
     assert A._ink_span(dark, 1.0, (10, 18, 30, 32), [(41, 18, 50, 32)], 20) == 40         # «:» — чужая строка
     assert A._ink_span(dark, 1.0, (90, 18, 95, 32), [], 20) == 99                         # линейка не берётся
     assert A._ink_span(dark, 1.0, (10, 18, 30, 32), [], 11) == 40                         # не дальше недостачи рамки
+
+
+def test_hyphen_tail_goes_to_wipe_of_its_fragment():
+    """«раз-» + «решенной»: слово — у первой половины, рамка второй — в wipe куска (лицензия RU→EN, 12.11)."""
+    ws = [word("требования", 10, 10, line=(1, 1, 1)), word("раз-", 45, 10, w=20, line=(1, 1, 1)),
+          word("решенной", 10, 22, w=40, line=(1, 1, 2)), word("деятельности.", 55, 22, w=60, line=(1, 1, 2))]
+    out = S._dehyphen(ws)
+    assert [w["t"] for w in out] == ["требования", "разрешенной", "деятельности."]
+    assert out[1]["wipe"] == [[10, 22, 50, 28]] and out[1]["box"] == [45, 10, 65, 16]
+    frags = S.ocr_frags(out)
+    assert [f.get("wipe") for f in frags] == [[[10, 22, 50, 28]], None]
+
+
+def test_build_pdf_wipes_hyphen_tail_on_scan(tmp_path):
+    """Вторая половина перенесённого слова в начале следующей строки стирается вместе с абзацем — не остаётся обрывком."""
+    from assemble import build_pdf
+    img = np.full((842, 595), 255, np.uint8)
+    img[100:110, 100:160] = 0                  # «раз-» — в рамке строки абзаца
+    img[120:130, 50:90] = 0                    # «решенной» — вне рамок строк (вторая половина переноса)
+    d = fitz.open(); p = d.new_page(width=595, height=842)
+    p.insert_image(p.rect, pixmap=fitz.Pixmap(fitz.csGRAY, 595, 842, img.tobytes(), False))
+    src = tmp_path / "src.pdf"; d.save(src)
+
+    def tail_ink(wipe):
+        loc = {"bbox": [100, 100, 160, 110], "avail": [100, 100, 400, 110], "frags": [[100, 100, 160, 110]],
+               "size": 10, "bold": False, "family": "serif", "ocr": True}
+        if wipe:
+            loc["wipe"] = [[50, 120, 90, 130]]
+        out = tmp_path / f"en{int(wipe)}.pdf"
+        build_pdf(str(src), str(out), [{"id": 0, "page": 0, "text": "разрешенной", "loc": loc}], {"0": {"ru": "permitted"}})
+        q = fitz.open(out)[0].get_pixmap(dpi=72, colorspace=fitz.csGRAY)
+        a = np.frombuffer(q.samples, np.uint8).reshape(q.height, q.width)
+        return int(a[122:128, 55:85].min())
+
+    assert tail_ink(False) < 60                # без wipe обрывок оставался
+    assert tail_ink(True) > 200

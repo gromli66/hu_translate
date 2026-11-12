@@ -36,7 +36,7 @@ def test_glue_is_the_only_rule_for_tesseract_words():
     """Слова Tesseract склеиваются тем же правилом, что строки слоя: прежде «fűtő-» + «és» → «fűtőés», «KI-» +
     «KAPCSOLVA» не склеивалось, «loss-of-» + «coolant» терял дефис."""
     import segments as S
-    w = lambda t, line, key=(1, 1): {"t": t, "line": line, "key": key}
+    w = lambda t, line, key=(1, 1): {"t": t, "line": line, "key": key, "box": [0, 0, 10, 5]}   # у слова Tesseract рамка есть всегда
     got = lambda ws: [x["t"] for x in S._dehyphen(ws)]
     assert got([w("végre-", (1, 1, 1)), w("hajtani", (1, 1, 2))]) == ["végrehajtani"]
     assert got([w("fűtő-", (1, 1, 1)), w("és", (1, 1, 2))]) == ["fűtő-", "és"]
