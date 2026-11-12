@@ -58,6 +58,63 @@ def read_text(pdf, pno):
     return r.get("text") or "", r.get("error")
 
 
+BOX_PROMPT = """На картинке — страница документа ({w}×{h} пикселей). Найди на ней: {names}.
+Для каждого — одна строка: название: x0, y0, x1, y1 — рамка в пикселях этой картинки (x вправо, y вниз от левого
+верхнего угла); несколько одинаковых — каждый своей строкой, сверху вниз и слева направо. Чего нет — название: нет.
+Больше ничего не пиши."""
+
+
+def read_boxes(pdf, pno, alts):
+    """Рамки картинок листа — отдельным коротким вопросом порталу. В задании «перепиши лист в HTML» портал место
+    логотипа в тексте ставит, а рамку не даёт; поиск по скану (figures) логотип из букв («АВАНГАРД-НСК», «PLANET») от
+    текста не отличает (Информационное письмо 12.11). → ([(название, доли листа x0, y0, x1, y1)], ошибка, ответ)."""
+    import fitz
+    from llm import chat, img_b64
+    with fitz.open(str(pdf)) as doc:
+        pix = doc[pno].get_pixmap(dpi=DPI_READ)
+    r = chat([{"role": "user", "content": BOX_PROMPT.format(w=pix.width, h=pix.height, names=", ".join(alts))}],
+             images=[img_b64(pix.tobytes("png"))], max_tokens=1000, tag=f"boxes{pno}")
+    out = []
+    num = r"(\d+(?:\.\d+)?)"
+    for ln in (r.get("text") or "").splitlines():
+        m = re.match(rf"\s*[-*•]?\s*(.+?)\s*:\s*{num}\D+{num}\D+{num}\D+{num}", ln)
+        if not m:
+            continue
+        x0, y0, x1, y1 = (float(v) for v in m.groups()[1:])
+        fr = (min(x0, x1) / pix.width, min(y0, y1) / pix.height, max(x0, x1) / pix.width, max(y0, y1) / pix.height)
+        if 0 <= fr[0] < fr[2] <= 1.02 and 0 <= fr[1] < fr[3] <= 1.02:
+            out.append((m.group(1).strip().strip("*").lower(), tuple(min(v, 1.0) for v in fr)))
+    return out, r.get("error"), r.get("text") or ""
+
+
+def placeholders(html):
+    """Подписи заглушек картинок (<img alt>) HTML листа по порядку."""
+    out = []
+
+    def walk(n):
+        for k in n.kids:
+            if isinstance(k, Node):
+                if k.tag == "img":
+                    out.append((k.attrs.get("alt") or "рисунок").strip())
+                walk(k)
+    walk(parse(html))
+    return out
+
+
+def has_ink(page, frac):
+    """В рамке (доли листа) есть краска — рамка портала не пустое место."""
+    import fitz
+    import numpy as np
+    r = page.rect
+    clip = fitz.Rect(r.x0 + frac[0] * r.width, r.y0 + frac[1] * r.height,
+                     r.x0 + frac[2] * r.width, r.y0 + frac[3] * r.height) & r
+    if clip.is_empty:
+        return False
+    pix = page.get_pixmap(dpi=50, clip=clip)
+    a = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width, pix.n)[:, :, :3]
+    return int((a.min(2) < 150).sum()) >= 30
+
+
 # ------------------------------------------------------------------ HTML → дерево
 class Node:
     def __init__(self, tag, attrs, parent):
@@ -365,8 +422,9 @@ def own_align(node):
 
 
 class Builder:
-    def __init__(self, doc, page, w, h, figs=(), size=11, lines=()):
+    def __init__(self, doc, page, w, h, figs=(), size=11, lines=(), boxes=()):
         self.doc, self.page, self.w, self.h, self.size, self.lines = doc, page, w, h, size, list(lines)
+        self.boxes, self.bused = list(boxes), set()                  # рамки портала (read_boxes)
         self.paras = 0
         self.figs, self.used, self.slots = list(figs), set(), []      # slots: (абзац, рамка)
         self.inked = False                                             # печать листа уже вставлена
@@ -423,6 +481,8 @@ class Builder:
             self.slots.append((run._parent, box))
             return
         a = alt.lower()
+        if a in DARK_ALT and self.page is not None and self.portal_box(run, a, width_cap, alt):
+            return
         want = ("qr",) if a == "qr" else ("тёмное", "фото") if a in DARK_ALT else ("цвет", "круг")
         i = next((i for i, f in enumerate(self.figs) if i not in self.used and f[0] in want), None)
         if i is None or self.page is None:
@@ -431,6 +491,28 @@ class Builder:
             return
         self.used.add(i)
         self.place(run, self.figs[i], alt, width_cap)
+
+    def portal_box(self, run, a, cap, alt):
+        """Логотип, герб, QR, фото — по рамке портала (read_boxes), если она есть и в ней краска: вырезка как есть, в
+        строке, у того края, что на скане; найденное поиском внутри неё — та же картинка (ромб логотипа). → вставлено ли."""
+        from docx.table import _Cell
+        j = next((j for j, (n, fr) in enumerate(self.boxes) if j not in self.bused and n == a
+                  and has_ink(self.page, fr)), None)
+        if j is None:
+            return False
+        self.bused.add(j)
+        fr = self.boxes[j][1]
+        png, wpt, _ = crop(self.page, fr)
+        self.picture(run, png, wpt, cap, alt)
+        r = self.page.rect
+        box = type(r)(r.x0 + fr[0] * r.width, r.y0 + fr[1] * r.height, r.x0 + fr[2] * r.width, r.y0 + fr[3] * r.height)
+        self.used.update(i for i, f in enumerate(self.figs) if f[1].intersects(box) and f[0] not in ("цвет", "круг"))
+        par = run._parent
+        if not par.text.strip() and not isinstance(par._parent, _Cell):
+            mid = (box.x0 + box.x1) / 2 - r.x0
+            par.alignment = 0 if mid < r.width / 3 else 2 if mid > 2 * r.width / 3 else 1
+        self.slots.append((par, box))
+        return True
 
     def finish(self, container):
         """Картинки скана, которым портал места не дал: печать — поверх текста там же на листе (привязана к последнему
@@ -657,7 +739,7 @@ def page_setup(section, rect, m=(56.7, 42.5, 56.7, 42.5)):
     section.left_margin, section.top_margin, section.right_margin, section.bottom_margin = (Pt(v) for v in m)
 
 
-def build(pdf, pages, out, size=11, lines=None):
+def build(pdf, pages, out, size=11, lines=None, boxes=None):
     """pages — [(HTML, ширина, высота, ошибка)] по листам → Word с кеглем size; lines — строки скана по листам
     (text_lines) для выравнивания; → число абзацев."""
     import fitz
@@ -683,7 +765,7 @@ def build(pdf, pages, out, size=11, lines=None):
                 continue
             if "</body>" not in html and "</html>" not in html:
                 print(f"копия: {Path(pdf).name}, лист {pno + 1} — ответ портала оборван (нет </body>)", flush=True)
-            b = Builder(doc, page, w, h, figures(page), size, lines[pno] if lines else ())
+            b = Builder(doc, page, w, h, figures(page), size, lines[pno] if lines else (), boxes[pno] if boxes else ())
             b.blocks(doc, parse(html))
             b.finish(doc)
             n += b.paras
@@ -695,7 +777,7 @@ def build(pdf, pages, out, size=11, lines=None):
 SIZES = (11, 10.5, 10, 9.5, 9, 8.5, 8)
 
 
-def fit(pdf, pages, out, n_pages, tmp_dir):
+def fit(pdf, pages, out, n_pages, tmp_dir, boxes=None):
     """Кегль копии — самый крупный из SIZES, при котором листов копии не больше, чем у оригинала (лист копии — лист
     оригинала: печати и разрывы листов — на своих листах). Листы считает LibreOffice; нет его — кегль 11.
     → (абзацев, кегль, листов копии или None)."""
@@ -706,7 +788,7 @@ def fit(pdf, pages, out, n_pages, tmp_dir):
     with fitz.open(str(pdf)) as d:
         lines = [text_lines(pg) for pg in d]
     for size in SIZES:
-        k = build(pdf, pages, out, size, lines)
+        k = build(pdf, pages, out, size, lines, boxes)
         try:
             lo_convert(out, tmp_dir / f"{out.stem}.pdf", timeout=300)
         except (OSError, RuntimeError) as e:
@@ -745,6 +827,10 @@ def run(in_dir, work, lang, progress=None):
         with ThreadPoolExecutor(4) as ex:
             pages = list(ex.map(lambda p: read_page(up, p, L.NAME_RU.get(lang, lang)), range(cnt)))
             texts = list(ex.map(lambda p: read_text(up, p), range(cnt)))
+            # рамки картинок — только у листов с заглушками логотипа, герба, QR, фото (печати поиск находит сам)
+            alts = [placeholders(html) for html, *_ in pages]
+            asked = list(ex.map(lambda p: read_boxes(up, p, alts[p]) if any(a.lower() in DARK_ALT for a in alts[p])
+                                else ([], None, ""), range(cnt)))
         # оба чтения и путь к листам (выпрямленным) — для сверки копии (copycheck): Surya читает те же листы
         rd = Path(work) / "copy_read" / f.stem.rstrip(". ")      # «X..pdf»: папку с точкой на конце Windows не открывает
         rd.mkdir(parents=True, exist_ok=True)
@@ -753,12 +839,15 @@ def run(in_dir, work, lang, progress=None):
             (rd / f"p{pno:04d}.txt").write_text(txt, encoding="utf-8")
             if terr:
                 print(f"копия: {f.name}, лист {pno + 1} — второе чтение не получено: {terr}"[:300], flush=True)
+            bx, berr, btxt = asked[pno]
+            if btxt or berr:
+                (rd / f"p{pno:04d}.boxes.txt").write_text(btxt or f"ошибка: {berr}", encoding="utf-8")
         (rd / "pages.json").write_text(json.dumps({"pdf": str(up), "pages": cnt}, ensure_ascii=False), encoding="utf-8")
         done += cnt
         if progress:
             progress("копия", done, total)
         out = Path(work) / "out" / f"{f.stem}.docx"
-        k, size, got = fit(up, pages, out, cnt, Path(work) / "copy_fit")
+        k, size, got = fit(up, pages, out, cnt, Path(work) / "copy_fit", [a[0] for a in asked])
         n += k
         print(f"копия: {f.name} — листов {cnt}, абзацев {k}, кегль {size}"
               + (f", листов копии {got}" if got is not None else ", без сверки листов (нет LibreOffice)")
