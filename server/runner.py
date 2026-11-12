@@ -4,6 +4,7 @@
 Токен приходит в переменной окружения ROSATOM_AI_TOKEN, в командной строке и логе его нет.
 Режимы: translate — перевод с нуля (память переводов из tm.json, который готовит очередь из БД);
 edits — разнос правок из edits_pending.json по похожим строкам и пересборка файлов.
+Задание с only_copy в job.json — только копия оригинала чистым набором (сканы → Word, src/rucopy.py), без перевода.
 usage: python -m server.runner <папка задачи> [translate|edits]   (job.json, in/ → work/, progress.json)"""
 import sys
 import json
@@ -21,6 +22,7 @@ W_REVIEW = {"извлечение": (0, 5), "перевод": (5, 50), "стру
 W_FAST = {"извлечение": (0, 5), "перевод": (5, 80), "структура": (80, 82), "шлифовка": (82, 85), "сборка": (85, 92),
           "термины": (92, 100)}
 W_EDITS = {"правки": (0, 70), "сборка": (70, 85), "термины": (85, 100)}
+W_COPY = {"копия": (0, 100)}
 TERMS_TOP = 100            # сколько частых сочетаний вне глоссария переводить в кандидаты за один перевод
 
 
@@ -116,6 +118,15 @@ def main(job_dir, mode="translate"):
         pend.unlink(missing_ok=True)          # только после успешной пересборки: при сбое правки не теряются
         edit_terms(items, jd / "edit_terms.json", pr)
         pr.write({"stage": "готово", "pct": 100, "summary": summary(work)})
+        return
+    if spec.get("only_copy"):
+        # только копия оригинала чистым набором (сканы): портал читает лист в HTML, Word без перевода (src/rucopy.py);
+        # человек смотрит копию, потом переводит её обычным заданием
+        import langs as L
+        import rucopy
+        pr = Progress(jd / "progress.json", W_COPY)
+        n = rucopy.run(jd / "in", work, L.pair_of(prj)[0], progress=pr)
+        pr.write({"stage": "готово", "pct": 100, "summary": {"segments": n, "issues": 0, "suspicious": 0}})
         return
     prj["tm"] = str(jd / "tm.json")           # утверждённая память проекта + неподтверждённая память владельца
     pr = Progress(jd / "progress.json", W_REVIEW if spec["review"] else W_FAST)

@@ -154,7 +154,7 @@ def jobs_list(request: Request):
 
 @app.post("/jobs")
 def create_job(request: Request, files: List[UploadFile] = File(...), project: str = Form(...),
-               review: bool = Form(False)):
+               review: bool = Form(False), only_copy: bool = Form(False)):
     u = need_user(request)
     if not u["token_enc"]:
         return RedirectResponse("/?m=no_token", status_code=303)
@@ -184,7 +184,7 @@ def create_job(request: Request, files: List[UploadFile] = File(...), project: s
             shutil.rmtree(jd, ignore_errors=True)          # папка только что создана этим запросом
             return RedirectResponse("/?m=too_big", status_code=303)
         names.append(name)
-    spec = {"project": str(config.PROJECTS / project / "project.json"), "review": review}
+    spec = {"project": str(config.PROJECTS / project / "project.json"), "review": review, "only_copy": only_copy}
     (jd / "job.json").write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
     db.x("insert into jobs(uid, owner, project, files, review, status, created) values (?, ?, ?, ?, ?, 'queued', ?)",
          (uid, u["id"], project, json.dumps(names, ensure_ascii=False), int(review), time.time()))
