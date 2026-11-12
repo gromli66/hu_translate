@@ -731,7 +731,7 @@ def _dehyphen(words):
 
 
 def page_missing_share(page, tess_words):
-    """Доля настоящих слов Tesseract (от 4 букв, с тремя строчными подряд), которых в текстовом слое нет ни по месту,
+    """Доля настоящих слов Tesseract (от 4 знаков, три буквы подряд — любого письма), которых в текстовом слое нет ни по месту,
     ни по написанию (похожее написание засчитывается: коды Tesseract дробит и искажает — «31RD315401»; кружки отметок
     читает как «oO», рамки — «LL»; 30RDGT feladat, 06.10).
     - Надписи внутри картинок (скриншоты, логотипы) — не потеря слоя, если слой на странице есть: страницы руководства
@@ -763,7 +763,9 @@ def page_missing_share(page, tess_words):
         r = fitz.Rect(w["box"]); a = r.get_area() or 1
         return any((r & b).get_area() > 0.3 * a for b in boxes if b.intersects(r))
 
-    cand = [w for w in words if re.fullmatch(r"\w{4,}", w["t"]) and re.search(r"[a-záéíóöőúüű]{3}", w["t"].lower())]
+    # три буквы подряд — любого письма: под латиницу (прежде [a-záéíóöőúüű]) русский лист без латинских слов давал
+    # долю 0 и не распознавался — в лицензии на 5 листов распознаны 2, обложка паспорта не переведена (ru-en, 12.11)
+    cand = [w for w in words if re.fullmatch(r"\w{4,}", w["t"]) and re.search(r"[^\W\d_]{3}", w["t"])]
     if not cand:
         return 0.0, words
     tl = {x.lower() for x in re.findall(r"\w{4,}", text)}

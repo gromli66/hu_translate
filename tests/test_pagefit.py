@@ -23,6 +23,13 @@ def test_pixels_only_labels_are_redrawn():
         assert not PF.pixels_only(t, known), t
 
 
+
+def test_pixels_only_cyrillic_is_redrawn():
+    # скан RU→EN: «Директор», «Цвет», «ГОСТ Р ИСО 1207-2013», фамилия — в переводе латиницей, пиксели оставили бы русский
+    for t in ("Директор", "Цвет", "ГОСТ Р ИСО 1207-2013, ГОСТ 4762-2012", "Рудницкий И. О.", "НШВИ 0,75-8", "14206/НЕ06"):
+        assert not PF.pixels_only(t, set()), t
+    assert PF.pixels_only("Schnepp Péter TO 2025.01.15.", set())            # латиница — как прежде
+
 def test_checkbox_glyph_read_as_letters_is_left_as_pixels():
     # ☒ прочитан как «G4» с уверенностью 32, портал значок не перепечатал (30GF(135), титул): слово не читается надёжно
     ws = [word("NUKLEÁRIS", 10, 10, w=60, h=11), word("ÉRINTI:", 75, 10, w=40, h=11, c=93),
