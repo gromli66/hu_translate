@@ -96,3 +96,55 @@ def test_only_copy_option_goes_to_job(client, env):
     uid = last_uid()
     assert json.loads((jobs.job_dir(uid) / "job.json").read_text(encoding="utf-8"))["only_copy"] is True
     wait(uid, "done", "failed")
+
+
+def page_with(tmp_path, draw):
+    img = np.full((1000, 595, 3), 255, np.uint8)
+    draw(img)
+    d = fitz.open(); p = d.new_page(width=595, height=1000)
+    p.insert_image(p.rect, pixmap=fitz.Pixmap(fitz.csRGB, 595, 1000, img.tobytes(), False))
+    f = tmp_path / "p.pdf"; d.save(f)
+    return f
+
+
+def text_and_figures(img):
+    for row in range(300, 600, 14):                                   # «текст»: буквы 5×7
+        for col in range(60, 520, 8):
+            img[row:row + 7, col:col + 5] = 30
+    img[60:110, 60:110] = 10                                          # логотип
+    yy, xx = np.ogrid[:1000, :595]
+    rr = (yy - 850) ** 2 + (xx - 450) ** 2
+    img[(rr < 62 ** 2) & (rr > 56 ** 2)] = (40, 60, 200)              # синяя круглая печать (обод)
+    img[(rr < 44 ** 2) & (rr > 41 ** 2)] = (40, 60, 200)
+
+
+def test_figures_finds_seal_and_logo_not_text(tmp_path):
+    with fitz.open(page_with(tmp_path, text_and_figures)) as d:
+        figs = RC.figures(d[0])
+    kinds = [f[0] for f in figs]
+    assert kinds == ["тёмное", "круг"] or kinds == ["тёмное", "цвет"], figs
+    logo, seal = figs[0][1], figs[1][1]
+    assert abs(logo.x0 - 60) < 6 and abs(logo.y1 - 110) < 6
+    assert abs((seal.x0 + seal.x1) / 2 - 450) < 6 and abs(seal.width - 124) < 12
+
+
+def test_placeholders_without_box_take_scan_figures_and_skip_translation(tmp_path):
+    import shots
+    pdf = page_with(tmp_path, text_and_figures)
+    html = ('<body><p><img alt="логотип" src="eac.png"></p><h1>ДЕКЛАРАЦИЯ</h1><p>Текст.</p>'
+            '<p>Директор <img alt="подпись" src="s.png"></p></body>')
+    out = tmp_path / "c.docx"
+    RC.build(pdf, [(html, 1240, 2000, None)], out)
+    doc = Document(str(out))
+    from docx.oxml.ns import qn
+    body = doc.element.body
+    assert len(doc.inline_shapes) == 1 and doc.paragraphs[0].text == ""         # логотип — в строке, первым абзацем
+    anchors = list(body.iter(qn("wp:anchor")))                                  # подпись — поверх текста, у «Директор»
+    assert len(anchors) == 1 and "Директор" in doc.paragraphs[-1].text
+    assert anchors[0].getparent().getparent().getparent() is doc.paragraphs[-1]._p
+    x = int(anchors[0].find(qn("wp:positionH"))[0].text) / 12700
+    assert abs(x - (450 - 62 - 56.7)) < 15                                        # левый край печати, что на скане
+    descr = [d.get("descr") for d in body.iter(qn("wp:docPr"))]
+    assert descr == ["логотип — не переводить", "подпись — не переводить"]
+    pics, skipped = shots.docx_pictures(out)
+    assert not pics and all("не переводить" in v for v in skipped.values())     # надписи печатей не переводятся

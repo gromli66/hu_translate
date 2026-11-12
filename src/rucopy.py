@@ -106,27 +106,166 @@ def box_of(node, w, h):
     return r if r[2] - r[0] > 0.005 and r[3] - r[1] > 0.005 else None
 
 
-def crop(page, frac):
-    """Вырезка скана по рамке портала (доли листа) с запасом 5 %, поджатая по краске → (PNG, ширина и высота в pt)."""
+def crop_rect(page, rect, ink=None):
+    """Вырезка по рамке в pt (figures) — та же, что по рамке портала."""
+    r = page.rect
+    return crop(page, ((rect.x0 - r.x0) / r.width, (rect.y0 - r.y0) / r.height,
+                       (rect.x1 - r.x0) / r.width, (rect.y1 - r.y0) / r.height), ink)
+
+
+def crop(page, frac, ink=None):
+    """Вырезка скана по рамке (доли листа) с запасом 5 %, поджатая по краске → (PNG, ширина и высота в pt).
+    ink — круги печатей в pt (может быть пустым): вырезка печати, штампа, подписи — только цветная краска и то, что
+    внутри круга печати, остальное белое: иначе в копию шёл и текст оригинала под печатью и рядом с ней («(подпись)»,
+    «Регистрационный номер…», Декларация 12.11). None — как есть (логотип, фото)."""
     import fitz
     import numpy as np
     r = page.rect
     x0, y0, x1, y1 = frac
     dx, dy = 0.05 * (x1 - x0), 0.05 * (y1 - y0)
+    if ink is not None:                     # бледный край штампа («К» у «КОПИЯ ВЕРНА») — лишнее вычистит маска цвета
+        dx, dy = max(dx, 12 / r.width), max(dy, 12 / r.height)
     clip = fitz.Rect(r.x0 + (x0 - dx) * r.width, r.y0 + (y0 - dy) * r.height,
                      r.x0 + (x1 + dx) * r.width, r.y0 + (y1 + dy) * r.height) & r
     pix = page.get_pixmap(dpi=DPI_CROP, clip=clip)
-    a = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width, pix.n)[:, :, :3].astype(np.int16)
-    ink = (a.min(2) < 200) | (a.max(2) - a.min(2) > 60)          # тёмное или цветное (синяя печать, подпись)
-    ys, xs = np.nonzero(ink)
+    a = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width, pix.n)[:, :, :3].copy()
+    k = DPI_CROP / 72
+    if ink is not None:
+        colored = a.max(2).astype(np.int16) - a.min(2) >= 40
+        keep = colored.copy()
+        yy, xx = np.ogrid[:pix.height, :pix.width]
+        for cx, cy, rad in ink:
+            disc = (xx - (cx - clip.x0) * k) ** 2 + (yy - (cy - clip.y0) * k) ** 2 <= ((rad + 2) * k) ** 2
+            # круг целиком — только у серой печати (ксерокопия): у цветной внутри круга чёрный текст оригинала
+            # (номер декларации под печатью) повторял бы набранный
+            if colored[disc].mean() < 0.03:
+                keep |= disc
+        a[~keep] = 255
+    m = (a.min(2) < 200) | (a.max(2).astype(np.int16) - a.min(2) > 60)          # тёмное или цветное
+    ys, xs = np.nonzero(m)
     if len(xs) > 20:
         pad = 6
-        cx0, cx1 = max(xs.min() - pad, 0), min(xs.max() + pad, pix.width - 1)
-        cy0, cy1 = max(ys.min() - pad, 0), min(ys.max() + pad, pix.height - 1)
-        k = 72 / DPI_CROP
-        clip = fitz.Rect(clip.x0 + cx0 * k, clip.y0 + cy0 * k, clip.x0 + cx1 * k, clip.y0 + cy1 * k)
-        pix = page.get_pixmap(dpi=DPI_CROP, clip=clip)
-    return pix.tobytes("png"), clip.width, clip.height
+        cx0, cx1 = max(xs.min() - pad, 0), min(xs.max() + pad + 1, pix.width)
+        cy0, cy1 = max(ys.min() - pad, 0), min(ys.max() + pad + 1, pix.height)
+        a = a[cy0:cy1, cx0:cx1]
+        clip = fitz.Rect(clip.x0 + cx0 / k, clip.y0 + cy0 / k, clip.x0 + cx1 / k, clip.y0 + cy1 / k)
+    if ink is not None:
+        # бумага — прозрачная: печать ложится поверх текста краской, а не белым кругом, закрывающим строки
+        alpha = np.where(a.min(2) > 225, 0, 255).astype(np.uint8)
+        rgba = np.ascontiguousarray(np.dstack([a, alpha]))
+        return (fitz.Pixmap(fitz.csRGB, rgba.shape[1], rgba.shape[0], rgba.tobytes(), True).tobytes("png"),
+                clip.width, clip.height)
+    a = np.ascontiguousarray(a)
+    return fitz.Pixmap(fitz.csRGB, a.shape[1], a.shape[0], a.tobytes(), False).tobytes("png"), clip.width, clip.height
+
+
+def float_shape(shape, x, y):
+    """Картинка в строке → поверх текста без обтекания (wp:anchor): x — от левого края колонки, y — от верха абзаца, pt.
+    Печать и подпись на скане стоят поверх текста и места не занимают; в строке они раздвигали лист (Декларация 1 → 2)."""
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+    inl = shape._inline
+    emu = lambda v: str(int(round(v * 12700)))
+    anc = parse_xml(
+        f'<wp:anchor {nsdecls("wp")} distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="251659264" '
+        f'behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/>'
+        f'<wp:positionH relativeFrom="column"><wp:posOffset>{emu(x)}</wp:posOffset></wp:positionH>'
+        f'<wp:positionV relativeFrom="paragraph"><wp:posOffset>{emu(y)}</wp:posOffset></wp:positionV></wp:anchor>')
+    anc.append(inl.extent)
+    anc.append(parse_xml(f'<wp:effectExtent {nsdecls("wp")} l="0" t="0" r="0" b="0"/>'))
+    anc.append(parse_xml(f'<wp:wrapNone {nsdecls("wp")}/>'))
+    for el in list(inl):
+        anc.append(el)                                      # docPr, cNvGraphicFramePr, graphic
+    inl.getparent().replace(inl, anc)
+
+
+# ------------------------------------------------------------------ печати, подписи, логотипы на скане
+# Портал место картинки в тексте ставит, а рамку не даёт (вместо data-box — src="stamp.png", Декларация 12.11): где
+# вырезать — находится по самому скану. Вырезки идут в копию картинками как есть и не переводятся (NO_TRANSLATE).
+NO_TRANSLATE = "не переводить"
+DARK_ALT = {"логотип", "герб", "qr", "фото", "рисунок", "изображение"}       # остальные (печать, штамп, подпись) — краска
+
+
+def _merge(rects, tol=8):
+    """Пересекающиеся (с запасом tol pt) рамки — одной: печать поверх подписи, «КОПИЯ ВЕРНА» рядом с печатью."""
+    import fitz
+    rects = [fitz.Rect(r) for r in rects]
+    i = 0
+    while i < len(rects):
+        a = fitz.Rect(rects[i].x0 - tol, rects[i].y0 - tol, rects[i].x1 + tol, rects[i].y1 + tol)
+        j = next((j for j in range(i + 1, len(rects)) if a.intersects(rects[j])), None)
+        if j is None:
+            i += 1
+        else:
+            rects[i] = rects[i] | rects.pop(j)
+    return rects
+
+
+def figures(page, dpi=100):
+    """Печати, штампы, подписи, логотипы, гербы, QR, фото на скане → [(вид, рамка в pt, круги печатей в ней)] по
+    высоте листа.
+    - «цвет»: явная цветная краска (синяя, фиолетовая, красная: max−min ≥ 60) — не оттенок бумаги бланка и не шум у
+      чёрных букв; куски ближе 6 pt — одна вырезка; больше 260 pt — фон бланка, не печать;
+    - «круг»: круглая печать любой краски (серая на ксерокопии) — краска лежит по ободу и её нет чуть внутри и снаружи
+      (иначе окружность «находится» в таблице с текстом);
+    - «фото»: сплошь не белое от 60×60 pt (фото изделия, заливка);
+    - «тёмное»: тёмное плотное пятно выше букв вчетверо (логотип, герб, QR), от 20×20 pt."""
+    import cv2
+    import fitz
+    import numpy as np
+    pix = page.get_pixmap(dpi=dpi)
+    a = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width, pix.n)[:, :, :3]
+    k, W, H = dpi / 72, pix.width, pix.height
+    gray = cv2.cvtColor(np.ascontiguousarray(a), cv2.COLOR_RGB2GRAY)
+    mx, mn = a.max(2).astype(np.int16), a.min(2).astype(np.int16)
+    color = cv2.morphologyEx(((mx - mn >= 60) & (mx >= 100) & (mn <= 200)).astype(np.uint8), cv2.MORPH_OPEN,
+                             np.ones((2, 2), np.uint8))
+    found = []
+    n, _, st, _ = cv2.connectedComponentsWithStats(cv2.dilate(color, np.ones((int(6 * k), int(6 * k)), np.uint8)), 8)
+    for i in range(1, n):
+        x, y, w, h, _ = st[i]
+        if 15 * k < w < 260 * k and 10 * k < h < 260 * k and color[y:y + h, x:x + w].sum() > 40 * k * k:
+            found.append(("цвет", fitz.Rect(x / k, y / k, (x + w) / k, (y + h) / k)))
+
+    def ring(cx, cy, r):
+        t = np.linspace(0, 2 * np.pi, 180, endpoint=False)
+        xs = np.clip((cx + r * np.cos(t)).astype(int), 0, W - 1)
+        ys = np.clip((cy + r * np.sin(t)).astype(int), 0, H - 1)
+        return float(np.mean([gray[max(y - 1, 0):y + 2, max(x - 1, 0):x + 2].min() < 160 for x, y in zip(xs, ys)]))
+    cs = cv2.HoughCircles(cv2.medianBlur(gray, 5), cv2.HOUGH_GRADIENT, dp=1.2, minDist=int(60 * k), param1=100,
+                          param2=45, minRadius=int(35 * k), maxRadius=int(80 * k))
+    for cx, cy, r in (cs[0] if cs is not None else []):
+        on, f = max((ring(cx, cy, r * f), f) for f in np.linspace(0.92, 1.08, 9))
+        if on >= 0.7 and on - (ring(cx, cy, r * f * 0.82) + ring(cx, cy, r * f * 1.18)) / 2 >= 0.25:
+            R = r * f
+            found.append(("круг", fitz.Rect((cx - R) / k, (cy - R) / k, (cx + R) / k, (cy + R) / k)))
+    win = int(16 * k)
+    dense = (cv2.blur((gray < 215).astype(np.float32), (win, win)) > 0.5).astype(np.uint8)
+    n, _, st, _ = cv2.connectedComponentsWithStats(dense, 8)
+    for i in range(1, n):
+        x, y, w, h, area = st[i]
+        if w >= 60 * k and h >= 60 * k and area >= 3600 * k * k:
+            found.append(("фото", fitz.Rect(x / k, y / k, (x + w) / k, (y + h) / k)))
+    dark = ((gray < 110) & (color == 0)).astype(np.uint8)
+    n, lab, st, _ = cv2.connectedComponentsWithStats(dark, 8)
+    hs = sorted(st[i][3] for i in range(1, n) if 3 <= st[i][3] <= 40 and st[i][2] <= 40)
+    med = hs[len(hs) // 2] if hs else 10
+    big = np.zeros_like(dark)
+    for i in range(1, n):
+        x, y, w, h, area = st[i]
+        if h >= 4 * med and area / (w * h) >= 0.15 and w < 0.6 * W:
+            big[lab == i] = 1
+    n, _, st, _ = cv2.connectedComponentsWithStats(cv2.dilate(big, np.ones((int(12 * k), int(12 * k)), np.uint8)), 8)
+    for i in range(1, n):
+        x, y, w, h, _ = st[i]
+        if h >= 20 * k and w >= 20 * k:
+            found.append(("тёмное", fitz.Rect(x / k, y / k, (x + w) / k, (y + h) / k)))
+    order = ["фото", "круг", "цвет", "тёмное"]
+    kind = lambda R: min((kd for kd, r in found if R.intersects(r)), key=order.index, default="тёмное")
+    rings = lambda R: [((r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2, r.width / 2) for kd, r in found
+                       if kd == "круг" and R.contains(fitz.Point((r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2))]
+    return sorted(((kind(R), R, rings(R)) for R in _merge([r for _, r in found])),
+                  key=lambda f: (f[1].y0 + f[1].y1) / 2)
 
 
 # ------------------------------------------------------------------ дерево → Word
@@ -136,25 +275,87 @@ ALIGN = {"center": 1, "right": 2, "justify": 3}           # WD_ALIGN_PARAGRAPH: 
 
 
 class Builder:
-    def __init__(self, doc, page, w, h):
-        self.doc, self.page, self.w, self.h = doc, page, w, h
+    def __init__(self, doc, page, w, h, figs=(), size=11):
+        self.doc, self.page, self.w, self.h, self.size = doc, page, w, h, size
         self.paras = 0
+        self.figs, self.used, self.slots = list(figs), set(), []      # slots: (абзац, рамка, сдвиг y или None)
+        self.last = None                                               # последний абзац листа
 
     def text_width_pt(self):
         s = self.doc.sections[-1]
         return (s.page_width - s.left_margin - s.right_margin) / 12700
 
-    def image(self, run, node, width_cap=None):
-        """Картинка-заглушка портала → вырезка скана в строку; без рамки — пометка курсивом."""
+    def picture(self, run, png, wpt, cap, alt):
+        """Вырезка в строку: ширина как на скане, не шире колонки; замещающий текст — «не переводить» (shots)."""
         from docx.shared import Pt
-        frac = box_of(node, self.w, self.h)
-        alt = node.attrs.get("alt") or "рисунок"
-        if frac is None or self.page is None:
+        shape = run.add_picture(io.BytesIO(png), width=Pt(min(wpt, cap or self.text_width_pt())))
+        shape._inline.docPr.set("descr", f"{alt} — {NO_TRANSLATE}")
+        return shape
+
+    def margin_pt(self):
+        return self.doc.sections[-1].left_margin / 12700
+
+    def place(self, run, fig, alt, cap, y=None):
+        """Картинка скана в абзац прогона: печать, штамп, подпись (краска) — поверх текста там же по горизонтали, что на
+        скане (y — сдвиг от верха абзаца; по умолчанию серединой на строке); логотип, фото — в строке. В ячейке
+        таблицы — в строке: поверх текста ячейки она уехала бы из ячейки."""
+        from docx.table import _Cell
+        kd, r, rings = fig
+        ink = kd in ("цвет", "круг")
+        png, wpt, hpt = crop_rect(self.page, r, rings if ink else None)
+        shape = self.picture(run, png, wpt, cap, alt)
+        par = run._parent
+        if ink and not isinstance(par._parent, _Cell):
+            w = min(wpt, cap or self.text_width_pt())
+            h = hpt * w / wpt
+            y = 6 - h / 2 if y is None else y
+            float_shape(shape, max(r.x0 - self.margin_pt(), 0), y)
+            self.slots.append((par, r, y))
+        else:
+            self.slots.append((par, r, None))
+
+    def image(self, run, node, width_cap=None):
+        """Заглушка портала (<img alt="печать">) → вырезка скана: по рамке портала, если дал, иначе — первая по
+        высоте листа ещё не вставленная картинка того же рода (логотип, герб, QR — тёмная; печать, штамп, подпись —
+        краска); нечего вставить — пометка курсивом «[печать]»."""
+        alt = (node.attrs.get("alt") or "рисунок").strip()
+        frac = box_of(node, self.w, self.h) if self.page is not None else None
+        if frac is not None:
+            png, wpt, _ = crop(self.page, frac)
+            self.picture(run, png, wpt, width_cap, alt)
+            r = self.page.rect
+            box = type(r)(r.x0 + frac[0] * r.width, r.y0 + frac[1] * r.height,
+                          r.x0 + frac[2] * r.width, r.y0 + frac[3] * r.height)
+            hit = [i for i, f in enumerate(self.figs) if f[1].intersects(box)]      # та же печать — не второй раз
+            self.used.update(hit)
+            self.slots.append((run._parent, box, None))
+            return
+        dark = alt.lower() in DARK_ALT
+        i = next((i for i, f in enumerate(self.figs) if i not in self.used
+                  and ((f[0] in ("тёмное", "фото")) == dark)), None)
+        if i is None or self.page is None:
             run.text = f"[{alt}]"; run.italic = True
             return
-        png, wpt, _ = crop(self.page, frac)
-        cap = width_cap or self.text_width_pt()
-        run.add_picture(io.BytesIO(png), width=Pt(min(wpt, cap)))
+        self.used.add(i)
+        self.place(run, self.figs[i], alt, width_cap)
+
+    def finish(self, container):
+        """Картинки скана, которым портал места не дал: печать — поверх текста у вставленной ближайшей по высоте (с тем
+        же сдвигом, что на скане) или у последнего абзаца листа; логотип, фото — отдельным абзацем в конце листа."""
+        for i, fig in enumerate(self.figs):
+            if i in self.used or self.page is None:
+                continue
+            kd, r, _ = fig
+            self.used.add(i)
+            mid = (r.y0 + r.y1) / 2
+            near = min((s for s in self.slots if s[2] is not None), default=None,
+                       key=lambda s: abs((s[1].y0 + s[1].y1) / 2 - mid))
+            if kd in ("цвет", "круг") and near is not None and abs((near[1].y0 + near[1].y1) / 2 - mid) < 150:
+                self.place(near[0].add_run(), fig, "печать", None, y=near[2] + r.y0 - near[1].y0)
+            elif kd in ("цвет", "круг") and self.last is not None:
+                self.place(self.last.add_run(), fig, "печать", None)
+            else:
+                self.place(container.add_paragraph().add_run(), fig, {"тёмное": "логотип"}.get(kd, "фото"), None)
 
     def inline(self, par, node, fmt, cap=None):
         """Строчное содержимое узла → прогоны абзаца (b/i/u/sup/sub, br, img)."""
@@ -201,6 +402,7 @@ class Builder:
             for r in par.runs:
                 r.font.size = size
         self.paras += 1
+        self.last = par
         return par
 
     def blocks(self, container, node, fmt=None, cap=None):
@@ -221,7 +423,8 @@ class Builder:
                 continue
             tag = k.tag
             if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
-                self.paragraph(container, k, dict(fmt, b=True), size=Pt({"h1": 14, "h2": 12}.get(tag, 11)), cap=cap)
+                self.paragraph(container, k, dict(fmt, b=True), size=Pt(self.size + {"h1": 3, "h2": 1}.get(tag, 0)),
+                               cap=cap)
             elif tag == "table":
                 self.table(container, k, cap)
             elif tag in ("ul", "ol"):
@@ -275,7 +478,7 @@ class Builder:
             self.blocks(box, c, {"b": True} if c.tag == "th" else {}, cap=cw * cs)
             for p in cell.paragraphs:
                 for r in p.runs:
-                    r.font.size = Pt(9)
+                    r.font.size = Pt(max(self.size - 2, 7))
         if not hasattr(container, "_take"):
             container.add_paragraph()                       # таблицы подряд не склеиваются в одну
 
@@ -300,41 +503,59 @@ class _Cell:
         return self.cell.add_table(rows=rows, cols=cols)
 
 
-def new_document():
+def new_document(size=11):
     from docx import Document
     from docx.shared import Pt
     doc = Document()
     st = doc.styles["Normal"]
-    st.font.name, st.font.size = "Times New Roman", Pt(11)
+    st.font.name, st.font.size = "Times New Roman", Pt(size)
     st.element.rPr.rFonts.set("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}eastAsia", "Times New Roman")
-    st.paragraph_format.space_after = Pt(3)
+    st.paragraph_format.space_after = Pt(1)
+    st.paragraph_format.line_spacing = 1.0
     return doc
 
 
-def page_setup(section, rect):
-    from docx.shared import Pt, Cm
+def margins(src):
+    """Поля копии — по краске скана (самые узкие по всем листам), 20–72 pt: у бланков поля уже 2 см, и копия с полями
+    шаблона уходила на лист больше оригинала."""
+    import numpy as np
+    out = [72.0] * 4                                          # слева, сверху, справа, снизу
+    for page in src:
+        pix = page.get_pixmap(dpi=50)
+        a = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width, pix.n)[:, :, :3].min(2)
+        cols, rows = np.nonzero((a < 150).sum(0) >= 3)[0], np.nonzero((a < 150).sum(1) >= 3)[0]
+        if not len(cols) or not len(rows):
+            continue
+        k = 72 / 50
+        got = [cols[0] * k, rows[0] * k, (pix.width - 1 - cols[-1]) * k, (pix.height - 1 - rows[-1]) * k]
+        out = [min(o, g) for o, g in zip(out, got)]
+    return [min(max(v - 2, 20.0), 72.0) for v in out]
+
+
+def page_setup(section, rect, m=(56.7, 42.5, 56.7, 42.5)):
+    from docx.shared import Pt
     from docx.enum.section import WD_ORIENT
     section.page_width, section.page_height = Pt(rect.width), Pt(rect.height)
     section.orientation = WD_ORIENT.LANDSCAPE if rect.width > rect.height else WD_ORIENT.PORTRAIT
-    section.left_margin = section.right_margin = Cm(2)
-    section.top_margin = section.bottom_margin = Cm(1.5)
+    section.left_margin, section.top_margin, section.right_margin, section.bottom_margin = (Pt(v) for v in m)
 
 
-def build(pdf, pages, out):
-    """pages — [(HTML, ширина, высота, ошибка)] по листам → Word; → число абзацев."""
+def build(pdf, pages, out, size=11):
+    """pages — [(HTML, ширина, высота, ошибка)] по листам → Word с кеглем size; → число абзацев."""
     import fitz
     from docx.enum.section import WD_SECTION
-    doc = new_document()
+    doc = new_document(size)
     n = 0
     with fitz.open(str(pdf)) as src:
+        m = margins(src)
         for pno, (html, w, h, err) in enumerate(pages):
             page = src[pno]
             if pno == 0:
-                page_setup(doc.sections[0], page.rect)
+                page_setup(doc.sections[0], page.rect, m)
             else:
                 prev = src[pno - 1].rect
                 if (prev.width > prev.height) != (page.rect.width > page.rect.height):
-                    page_setup(doc.add_section(WD_SECTION.NEW_PAGE), page.rect)
+                    page_setup(doc.add_section(WD_SECTION.NEW_PAGE), page.rect, m)
                 else:
                     doc.add_page_break()
             if err or not html.strip():
@@ -344,12 +565,38 @@ def build(pdf, pages, out):
                 continue
             if "</body>" not in html and "</html>" not in html:
                 print(f"копия: {Path(pdf).name}, лист {pno + 1} — ответ портала оборван (нет </body>)", flush=True)
-            b = Builder(doc, page, w, h)
+            b = Builder(doc, page, w, h, figures(page), size)
             b.blocks(doc, parse(html))
+            b.finish(doc)
             n += b.paras
     out.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(out))
     return n
+
+
+SIZES = (11, 10.5, 10, 9.5, 9, 8.5, 8)
+
+
+def fit(pdf, pages, out, n_pages, tmp_dir):
+    """Кегль копии — самый крупный из SIZES, при котором листов копии не больше, чем у оригинала (лист копии — лист
+    оригинала: печати и разрывы листов — на своих листах). Листы считает LibreOffice; нет его — кегль 11.
+    → (абзацев, кегль, листов копии или None)."""
+    import fitz
+    from assemble import lo_convert
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    got = None
+    for size in SIZES:
+        k = build(pdf, pages, out, size)
+        try:
+            lo_convert(out, tmp_dir / f"{out.stem}.pdf", timeout=300)
+        except (OSError, RuntimeError) as e:
+            print(f"копия: {out.name} — листы не сверены: {type(e).__name__}: {e}"[:300], flush=True)
+            return k, size, None
+        with fitz.open(str(tmp_dir / f"{out.stem}.pdf")) as d:
+            got = d.page_count
+        if got <= n_pages:
+            break
+    return k, size, got
 
 
 def run(in_dir, work, lang, progress=None):
@@ -379,7 +626,10 @@ def run(in_dir, work, lang, progress=None):
         done += cnt
         if progress:
             progress("копия", done, total)
-        k = build(up, pages, Path(work) / "out" / f"{f.stem}.docx")
+        out = Path(work) / "out" / f"{f.stem}.docx"
+        k, size, got = fit(up, pages, out, cnt, Path(work) / "copy_fit")
         n += k
-        print(f"копия: {f.name} — листов {cnt}, абзацев {k}, {time.time() - t0:.0f} с", flush=True)
+        print(f"копия: {f.name} — листов {cnt}, абзацев {k}, кегль {size}"
+              + (f", листов копии {got}" if got is not None else ", без сверки листов (нет LibreOffice)")
+              + f", {time.time() - t0:.0f} с", flush=True)
     return n
