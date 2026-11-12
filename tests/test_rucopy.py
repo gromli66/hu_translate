@@ -57,7 +57,9 @@ def test_html_to_word_text_table_and_figures(tmp_path):
     assert t.cell(0, 1).text == t.cell(0, 2).text == "Размеры, мм"                         # colspan
     assert t.cell(1, 0).text == t.cell(2, 0).text == "Лента"                               # rowspan
     assert t.cell(0, 0).paragraphs[0].runs[0].bold                                         # шапка th — полужирная
-    assert len(doc.inline_shapes) == 2                                                     # подпись и печать
+    from docx.oxml.ns import qn
+    # рамки data-box в разметке не берутся (портал ставит их наугад): подпись — найденная поиском печать, поверх текста
+    assert len(doc.inline_shapes) == 0 and len(list(doc.element.body.iter(qn("wp:anchor")))) == 1
     assert any(p.text.endswith("[QR]") for p in doc.paragraphs)                           # без рамки — пометка
     assert n >= 5
 
