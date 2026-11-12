@@ -48,3 +48,11 @@ def test_highlight_survives_into_translation_groups(tmp_path):
     segs = S.docx_segments(out)
     assert len(segs[0]["loc"]["groups"]) == 4                                    # Заявитель · текст · выделенное · текст
     assert "<f3>RU.32248.04СЕ10.1.15,</f3>" in segs[0]["text"]                     # выделенное — своей группой
+
+
+def test_placeholder_is_not_checked(tmp_path):
+    doc = Document()
+    doc.add_paragraph("Тел. +7 383 222-666-8, e-mail: info@avangardnsk.ru [логотип]")
+    sur = [{"t": "Тел. +7 383 222-666-8, e-mail: info@avangardnsk.ru", "box": [0, 0, 500, 20], "c": 0.97}]
+    plain = "Тел. +7 383 222-666-8, e-mail: info@avangardnsk.ru АВАНГАРД-НСК PLANET Networking"
+    assert CC.check(doc, {0: plain}, {0: sur}) == (0, 0)

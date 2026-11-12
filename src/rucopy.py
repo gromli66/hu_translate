@@ -146,7 +146,9 @@ def crop(page, frac, ink=None):
     a = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width, pix.n)[:, :, :3].copy()
     k = DPI_CROP / 72
     if ink is not None:
-        colored = a.max(2).astype(np.int16) - a.min(2) >= 40
+        # тот же порог, что у поиска печатей (figures): с 40 бледная синяя печать «Авангард LLC» находилась, но из
+        # вырезки вычищалась (Информационное письмо 12.11)
+        colored = (a.max(2).astype(np.int16) - a.min(2) >= 25) & (a.min(2) <= 200)
         keep = colored.copy()
         yy, xx = np.ogrid[:pix.height, :pix.width]
         for cx, cy, rad in ink:
