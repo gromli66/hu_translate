@@ -61,7 +61,10 @@ def copy_tokens(doc):
     pages = {}
     for page, par in paragraphs(doc):
         text = "".join(r.text for r in par.runs)
-        pages.setdefault(page, []).extend((par, m.start(), m.end(), m.group()) for m in re.finditer(r"\S+", text))
+        # заглушка копии «[логотип]», «[печать]» — не текст листа: второе чтение переписывает надписи логотипа, и
+        # заглушка выходила «спорной» (жёлтое [logo] в переводе, Информационное письмо 12.11)
+        pages.setdefault(page, []).extend((par, m.start(), m.end(), m.group()) for m in re.finditer(r"\S+", text)
+                                          if not re.fullmatch(r"\[[^\]]+\]", m.group()))
     return pages
 
 
