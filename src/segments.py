@@ -617,6 +617,9 @@ def ocr_frags(words, vs=(), pix=None):
             ws = ws[:k]
             f["t"] = " ".join(w["t"] for w in ws)
             f["bbox"] = _union([w["box"] for w in ws])
+        wipe = [b for w in ws for b in w.get("wipe", ())]      # вторые половины переносов (_dehyphen)
+        if wipe:
+            f["wipe"] = wipe
         # кегль — по уверенно прочитанным словам: рукописная дата, исправленная порталом («2025.ot,» → «2025.04.07.»),
         # раздувала кегль строки «Dátum: …» до 15 pt (32RDGT, 07.10)
         sure = [w for w in ws if w.get("c", 100) >= 80] or ws
@@ -717,14 +720,17 @@ def _stroke(gray, box, dpi):
 
 def _dehyphen(words):
     """Склейка переносов на концах строк Tesseract (внутри абзаца Tesseract) — по общим правилам переноса (lines.glue).
-    Рамка склейки — рамка первой половины: inbox — её знаки («mű-» у «működik»; PF.ruleword меряет по ним)."""
+    Рамка склейки — рамка первой половины: inbox — её знаки («mű-» у «működik»; PF.ruleword меряет по ним); wipe —
+    рамки второй половины: перевод слова стоит у первой, а вторая на скане стирается вместе с абзацем (assemble.build_pdf)."""
     from lines import glue
     out = []
     for w in words:
         prev = out[-1] if out else None
         word = glue(prev["t"], w["t"], ranges=False) if prev and prev["line"] != w["line"] and prev["key"] == w["key"] else None
         if word:
-            out[-1] = dict(out[-1], t=word, inbox=prev.get("inbox", prev["t"]))
+            # вторая половина («решенной» у «раз-решенной») прежде пропадала из рамок: начало следующей строки оставалось
+            # на скане обрывком оригинала рядом с переводом (лицензия RU→EN: 12 обрывков на 3 листах, 12.11)
+            out[-1] = dict(out[-1], t=word, inbox=prev.get("inbox", prev["t"]), wipe=prev.get("wipe", []) + [list(w["box"])])
         else:
             out.append(dict(w))
     return out
@@ -1004,6 +1010,9 @@ def pdf_segments(path, pages=None, ocr="auto", dpi_tess=300, dpi_portal=200, rat
                                  "ocr": plan[pno]}})
             if plan[pno] and PF.pixels_only(p["text"]):
                 segs[-1]["loc"]["pix"] = True               # не перерисовывается (assemble.build_pdf)
+            wipe = [[round(v, 2) for v in b] for f in p["frags"] for b in f.get("wipe", ())]
+            if wipe:
+                segs[-1]["loc"]["wipe"] = wipe              # стирается вместе с абзацем (_dehyphen)
             # каждому абзацу листа — по меткам портала. Блок повёрнутых подписей (6388eca, 29.10) вставили между
             # сегментом и этими строками, и они ушли из цикла: метку получал только последний сегмент текстового листа
             # (с ролью последнего абзаца), распознанные листы — ни один
