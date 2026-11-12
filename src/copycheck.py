@@ -245,6 +245,39 @@ def host_path(p):
 
 
 SURYA_DPI = 200
+def stamp_lines(pdf, sur, dpi):
+    """Строки Surya, набранные краской печати или штампа, — "stamp": больше половины тёмного в строке — цветное, и
+    центр строки — в цветной печати, найденной на скане (rucopy.figures: «цвет», «круг»), то есть в той, что уже стоит в
+    копии вырезкой. Такой текст в копии — дубль вырезки (copylayout снимает). Рамки «штамп» вопроса порталу для этого
+    неточны: синий штамп «Генеральный директор…» портал обвёл не там (Отказное письмо 2). → число помеченных строк."""
+    import fitz
+    import numpy as np
+    import rucopy
+    n = 0
+    with fitz.open(str(pdf)) as d:
+        for page, lines in sur.items():
+            if page >= d.page_count:
+                continue
+            pg = d[page]
+            inks = [r for kd, r, _ in rucopy.figures(pg) if kd in ("цвет", "круг")]
+            if not inks:
+                continue
+            pix = pg.get_pixmap(dpi=dpi)
+            a = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width, pix.n)[:, :, :3]
+            mx, mn = a.max(2).astype(np.int16), a.min(2).astype(np.int16)
+            dark = mn < 200
+            col = dark & (mx - mn >= 25)
+            k = 72 / dpi
+            for ln in lines:
+                x0, y0, x1, y1 = (max(int(v), 0) for v in ln["box"])
+                pt = fitz.Point(pg.rect.x0 + (x0 + x1) / 2 * k, pg.rect.y0 + (y0 + y1) / 2 * k)
+                if not any(r.contains(pt) for r in inks):
+                    continue
+                dk = int(dark[y0:y1, x0:x1].sum())
+                if dk and col[y0:y1, x0:x1].sum() / dk >= 0.5:
+                    ln["stamp"] = True
+                    n += 1
+    return n
 
 
 def run_surya(pdf, pages, python):
@@ -276,11 +309,14 @@ def main(copy_docx, read_dir, out_docx, surya_python):
     import copylayout
     doc = Document(str(copy_docx))
     # раскладка по строкам Surya — до сверки текста: деление абзацев по переносам не сдвигает её правок
-    laid, linked = copylayout.apply(doc, sur, SURYA_DPI)
+    stamp_lines(host_path(meta["pdf"]), sur, SURYA_DPI)
+    laid, linked, dropped = copylayout.apply(doc, sur, SURYA_DPI)
     fixed, marked = check(doc, plain, sur)
     doc.save(str(out_docx))
     print(f"сверка: {Path(copy_docx).name} — раскладка со скана {laid}, в одну строку {linked}, "
-          f"исправлено {fixed}, выделено {marked}")
+          f"снят текст штампов {len(dropped)}, исправлено {fixed}, выделено {marked}")
+    for t in dropped:
+        print(f"  текст штампа (стоит вырезкой): {t[:100]}")
     return fixed, marked
 
 

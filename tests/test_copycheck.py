@@ -56,3 +56,26 @@ def test_placeholder_is_not_checked(tmp_path):
     sur = [{"t": "Тел. +7 383 222-666-8, e-mail: info@avangardnsk.ru", "box": [0, 0, 500, 20], "c": 0.97}]
     plain = "Тел. +7 383 222-666-8, e-mail: info@avangardnsk.ru АВАНГАРД-НСК PLANET Networking"
     assert CC.check(doc, {0: plain}, {0: sur}) == (0, 0)
+
+
+def test_stamp_lines_marked_by_ink(tmp_path):
+    """Строка краски штампа (в цветной печати, найденной на скане) — "stamp"; чёрная строка внутри той же печати и
+    вне её — нет."""
+    import fitz
+    import numpy as np
+    img = np.full((1000, 600, 3), 255, np.uint8)
+    blue = (40, 60, 200)
+    img[470:474, 80:340] = blue                                       # рамка штампа
+    img[586:590, 80:340] = blue
+    img[470:590, 80:84] = blue
+    img[470:590, 336:340] = blue
+    img[500:520, 100:300] = blue                                      # синяя строка штампа
+    img[540:560, 100:300] = 20                                        # чёрная строка внутри рамки штампа
+    img[100:120, 100:300] = 20                                        # чёрная строка вне печати
+    d = fitz.open(); p = d.new_page(width=432, height=720)          # 600×1000 px при 100 dpi
+    p.insert_image(p.rect, pixmap=fitz.Pixmap(fitz.csRGB, 600, 1000, img.tobytes(), False))
+    pdf = tmp_path / "s.pdf"; d.save(pdf)
+    lines = [{"t": "КОПИЯ ВЕРНА", "box": [100, 500, 300, 520]}, {"t": "Текст", "box": [100, 540, 300, 560]},
+             {"t": "Шапка", "box": [100, 100, 300, 120]}]
+    assert CC.stamp_lines(pdf, {0: lines}, 100) == 1
+    assert [bool(ln.get("stamp")) for ln in lines] == [True, False, False]
