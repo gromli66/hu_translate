@@ -471,7 +471,9 @@ class Builder:
         высоте листа ещё не вставленная картинка того же рода (логотип, герб, QR — тёмная; печать, штамп, подпись —
         краска); нечего вставить — пометка курсивом «[печать]»."""
         alt = (node.attrs.get("alt") or "рисунок").strip()
-        frac = box_of(node, self.w, self.h) if self.page is not None else None
+        # рамка в самой разметке (data-box) — не берётся: портал ставит её наугад («подпись» на строках «Руководитель
+        # органа…» — в копию шли вырезки текста, Крепеж сертификат 12.11); точные рамки — отдельным вопросом (read_boxes)
+        frac = None
         if frac is not None:
             png, wpt, _ = crop(self.page, frac)
             self.picture(run, png, wpt, width_cap, alt)
@@ -517,18 +519,15 @@ class Builder:
         return True
 
     def finish(self, container):
-        """Картинки скана, которым портал места не дал: печать — поверх текста там же на листе (привязана к последнему
-        абзацу листа); логотип, фото, QR — отдельным абзацем в конце листа."""
+        """Печати скана, которым портал места не дал, — поверх текста там же на листе (привязаны к последнему абзацу
+        листа). Логотип, фото, QR без места в разметке не вставляются: картинки листа портал называет сам, а «фото»
+        поиска на бланке с серым фоном и водяным знаком — фон с обрывками текста (Крепеж сертификат 12.11)."""
         for i, fig in enumerate(self.figs):
             if i in self.used or self.page is None:
                 continue
-            kd = fig[0]
             self.used.add(i)
-            if kd in ("цвет", "круг") and self.last is not None:
+            if fig[0] in ("цвет", "круг") and self.last is not None:
                 self.place(self.last.add_run(), fig, "печать", None)
-            else:
-                self.place(container.add_paragraph().add_run(), fig, {"тёмное": "логотип", "qr": "QR"}.get(kd, "фото"),
-                           None)
 
     def inline(self, par, node, fmt, cap=None):
         """Строчное содержимое узла → прогоны абзаца (b/i/u/sup/sub, br, img)."""
