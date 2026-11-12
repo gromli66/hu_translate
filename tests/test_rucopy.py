@@ -213,3 +213,74 @@ def test_logo_taken_by_portal_box(tmp_path):
     assert len(doc.inline_shapes) == 1
     w = doc.inline_shapes[0].width.pt
     assert w > 120                                                     # ромб и надпись, а не один ромб (50 pt)
+
+
+def stamps_in_row(img):
+    """Печать, рамка штампа и вторая печать подряд — одно синее пятно шириной 300 pt (Письмо о гарантии 12.11) и
+    синий фон бланка во всю ширину листа сверху."""
+    yy, xx = np.ogrid[:1000, :595]
+    blue = (40, 60, 200)
+    for cx in (200, 400):
+        rr = (yy - 800) ** 2 + (xx - cx) ** 2
+        img[(rr < 52 ** 2) & (rr > 47 ** 2)] = blue
+    img[770:774, 240:500] = blue                                      # рамка штампа между печатями
+    img[830:834, 240:500] = blue
+    img[20:200:6, 10:585] = blue                                      # фон бланка: линии во весь лист
+
+
+def test_stamps_in_a_row_one_figure_background_not(tmp_path):
+    with fitz.open(page_with(tmp_path, stamps_in_row)) as d:
+        figs = RC.figures(d[0])
+    ink = [f for f in figs if f[0] in ("цвет", "круг")]
+    assert len(ink) == 1, figs
+    r = ink[0][1]
+    assert r.x0 < 155 and r.x1 > 445 and r.y0 > 700                  # обе печати и штамп — одной вырезкой, фон — нет
+
+
+def text_and_signature(img):
+    for row in range(300, 420, 14):                                   # «текст»: буквы 5×7
+        for col in range(60, 520, 8):
+            img[row:row + 7, col:col + 5] = 30
+    xs = np.arange(100, 260)
+    ys = (700 + 18 * np.sin((xs - 100) / 12)).astype(int)
+    for dx in range(2):                                               # росчерк подписи 160×36
+        img[ys, xs + dx] = 20
+        img[ys + 1, xs + dx] = 20
+    img[745:747, 90:300] = 30                                         # линейка под подписью
+    for col in range(120, 200, 8):                                    # «(подпись)» под линейкой
+        img[752:759, col:col + 5] = 30
+
+
+def test_black_signature_by_portal_box(tmp_path):
+    """Чёрная подпись от руки — по рамке портала, только штрихи (ни «(подпись)», ни линейки); рамка на тексте — пусто."""
+    pdf = page_with(tmp_path, text_and_signature)
+    with fitz.open(pdf) as d:
+        page = d[0]
+        L = RC.letter_pt(page)
+        assert 5 <= L <= 9
+        png, w, h, (x, y) = RC.crop_strokes(page, (80 / 595, 670 / 1000, 320 / 595, 770 / 1000), L)
+        assert abs(x - 100) < 6 and abs(w - 162) < 12 and h < 50 and y > 670           # без линейки и «(подпись)»
+        assert RC.crop_strokes(page, (50 / 595, 290 / 1000, 300 / 595, 330 / 1000), L) is None    # рамка на тексте
+    html = "<body><p>Текст.</p><p>Директор</p></body>"
+    out = tmp_path / "c.docx"
+    RC.build(pdf, [(html, 1240, 2000, None)], out, boxes=[[("подпись", (80 / 595, 670 / 1000, 320 / 595, 770 / 1000))]])
+    from docx.oxml.ns import qn
+    anchors = list(Document(str(out)).element.body.iter(qn("wp:anchor")))
+    assert len(anchors) == 1 and anchors[0].find(qn("wp:positionH")).get("relativeFrom") == "page"
+
+
+def test_logo_box_without_placeholder_floats(tmp_path):
+    """Логотип, которого портал в HTML не назвал, — по рамке портала поверх листа; рамка на уже вставленной печати
+    или без краски — нет."""
+    pdf = page_with(tmp_path, text_and_figures)
+    html = "<body><h1>ДЕКЛАРАЦИЯ</h1><p>Текст.</p></body>"
+    out = tmp_path / "c.docx"
+    boxes = [[("логотип", (55 / 595, 55 / 1000, 115 / 595, 115 / 1000)), ("логотип", (300 / 595, 150 / 1000, 400 / 595, 250 / 1000))]]
+    RC.build(pdf, [(html, 1240, 2000, None)], out, boxes=boxes)
+    from docx.oxml.ns import qn
+    doc = Document(str(out))
+    anchors = list(doc.element.body.iter(qn("wp:anchor")))
+    descr = sorted(a.find(qn("wp:docPr")).get("descr") for a in anchors)
+    assert descr == ["логотип — не переводить", "печать — не переводить"], descr          # пустая рамка — мимо
+    assert RC.box_names(["подпись", "штамп"]) == ["подпись", "штамп", "логотип"]
+    assert RC.box_names(["QR", "подпись"]) == ["QR", "подпись"]                             # как прежде — из кэша
